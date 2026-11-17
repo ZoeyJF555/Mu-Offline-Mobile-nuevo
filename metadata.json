@@ -1,0 +1,6 @@
+{
+  "name": "MU Lorencia Offline & Sync",
+  "description": "Juego 3D Mu Offline con base de datos SQLite integrada, vinculación local Wi-Fi y Bluetooth para eventos e intercambio de armas/sets en tiempo real, asesor Oráculo IA y kit APK auto-actualizable.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
