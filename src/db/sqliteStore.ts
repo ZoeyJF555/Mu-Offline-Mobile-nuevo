@@ -213,7 +213,7 @@ export async function initSqlite(): Promise<Database> {
   initPromise = (async () => {
     if (!SQL) {
       SQL = await initSqlJs({
-        locateFile: () => '/sql-wasm.wasm',
+        locateFile: () => `${import.meta.env.BASE_URL}sql-wasm.wasm`,
       });
     }
     const existingBytes = await readDbBytesFromIdb();
@@ -853,7 +853,7 @@ export async function exportSqliteFile(): Promise<Blob> {
 
 export async function importSqliteFile(file: File): Promise<void> {
   if (!SQL) {
-    SQL = await initSqlJs({ locateFile: () => '/sql-wasm.wasm' });
+    SQL = await initSqlJs({ locateFile: () => `${import.meta.env.BASE_URL}sql-wasm.wasm` });
   }
   const buf = new Uint8Array(await file.arrayBuffer());
   const nextDb = new SQL.Database(buf);

@@ -7,14 +7,16 @@ import {VitePWA} from 'vite-plugin-pwa';
 
 export default defineConfig(() => {
   return {
+    base: './',
     plugins: [
       react(),
       tailwindcss(),
       VitePWA({
+        base: './',
         registerType: 'autoUpdate',
         includeAssets: ['icon.svg', 'apple-touch-icon.png', 'sql-wasm.wasm'],
         manifest: {
-          id: '/',
+          id: './',
           name: 'MU Lorencia Offline & Sync',
           short_name: 'MU Lorencia',
           description:
@@ -23,23 +25,23 @@ export default defineConfig(() => {
           background_color: '#0c1018',
           display: 'standalone',
           orientation: 'landscape',
-          start_url: '/',
-          scope: '/',
+          start_url: './',
+          scope: './',
           icons: [
             {
-              src: '/pwa-192x192.png',
+              src: './pwa-192x192.png',
               sizes: '192x192',
               type: 'image/png',
               purpose: 'any',
             },
             {
-              src: '/pwa-512x512.png',
+              src: './pwa-512x512.png',
               sizes: '512x512',
               type: 'image/png',
               purpose: 'any',
             },
             {
-              src: '/pwa-maskable-512x512.png',
+              src: './pwa-maskable-512x512.png',
               sizes: '512x512',
               type: 'image/png',
               purpose: 'maskable',
