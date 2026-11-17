@@ -1,10 +1,21 @@
 import initSqlJs, { type Database, type SqlJsStatic } from 'sql.js';
+import {
+  DEFAULT_BUTTON_LAYOUTS,
+  MU_CLASSES,
+  getDefaultComboConfig,
+  getStarterItemsForMuClass,
+} from '../data/muSkillsAndClasses';
 import type {
+  ButtonLayoutItem,
+  CharacterComboConfig,
   ChatMessageRecord,
   EventSessionRecord,
   EventType,
+  GameSettings,
   HeroClass,
+  HudButtonId,
   ItemSlot,
+  MuAccount,
   MuCharacter,
   MuItem,
   SharedLedgerEntry,
@@ -68,10 +79,41 @@ async function writeDbBytesToIdb(bytes: Uint8Array): Promise<void> {
   }
 }
 
+function hashPassword(pwd: string): string {
+  // Deterministic lightweight hash for local offline SQLite auth
+  let h = 2166136261;
+  for (let i = 0; i < pwd.length; i++) {
+    h ^= pwd.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return `mu6_${(h >>> 0).toString(16)}`;
+}
+
+function ensureColumn(db: Database, table: string, colName: string, colDef: string) {
+  const info = db.exec(`PRAGMA table_info(${table})`);
+  const cols = (info[0]?.values || []).map((r) => String(r[1]));
+  if (!cols.includes(colName)) {
+    db.run(`ALTER TABLE ${table} ADD COLUMN ${colName} ${colDef}`);
+  }
+}
+
 function createSchema(db: Database) {
   db.run(`
+    CREATE TABLE IF NOT EXISTS accounts (
+      id TEXT PRIMARY KEY,
+      username TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS kv_settings (
+      key TEXT PRIMARY KEY,
+      value_json TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS characters (
       id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL DEFAULT 'acc-local',
       name TEXT NOT NULL,
       class_type TEXT NOT NULL,
       level INTEGER NOT NULL DEFAULT 1,
@@ -81,6 +123,7 @@ function createSchema(db: Database) {
       agi INTEGER NOT NULL DEFAULT 20,
       vit INTEGER NOT NULL DEFAULT 25,
       ene INTEGER NOT NULL DEFAULT 15,
+      cmd INTEGER NOT NULL DEFAULT 0,
       zen INTEGER NOT NULL DEFAULT 15000,
       bless INTEGER NOT NULL DEFAULT 3,
       soul INTEGER NOT NULL DEFAULT 3,
@@ -89,6 +132,10 @@ function createSchema(db: Database) {
       max_hp INTEGER NOT NULL DEFAULT 220,
       mp INTEGER NOT NULL DEFAULT 90,
       max_mp INTEGER NOT NULL DEFAULT 90,
+      sd INTEGER NOT NULL DEFAULT 200,
+      max_sd INTEGER NOT NULL DEFAULT 200,
+      ag INTEGER NOT NULL DEFAULT 100,
+      max_ag INTEGER NOT NULL DEFAULT 100,
       kills INTEGER NOT NULL DEFAULT 0,
       resets INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL
@@ -149,352 +196,14 @@ function createSchema(db: Database) {
       created_at TEXT NOT NULL
     );
   `);
-}
 
-function getStarterItemsForClass(charId: string, ownerName: string, classType: HeroClass): MuItem[] {
-  const now = new Date().toISOString();
-  if (classType === 'DK') {
-    return [
-      {
-        id: `itm-${charId}-w1`,
-        charId,
-        name: 'Espada del Dragón',
-        slot: 'weapon',
-        category: 'weapon',
-        setName: 'Dragon',
-        rarity: 'excellent',
-        enhanceLevel: 7,
-        minDmg: 42,
-        maxDmg: 68,
-        defense: 0,
-        magicPower: 0,
-        luck: true,
-        excellentOpt: 'Daño Excelente +10%',
-        isEquipped: true,
-        originalOwner: ownerName,
-        sharedFromSession: null,
-        acquiredAt: now,
-      },
-      {
-        id: `itm-${charId}-s1`,
-        charId,
-        name: 'Escudo de Placas Dragón',
-        slot: 'shield',
-        category: 'armor',
-        setName: 'Dragon',
-        rarity: 'normal',
-        enhanceLevel: 5,
-        minDmg: 0,
-        maxDmg: 0,
-        defense: 24,
-        magicPower: 0,
-        luck: true,
-        excellentOpt: 'Defensa +5%',
-        isEquipped: true,
-        originalOwner: ownerName,
-        sharedFromSession: null,
-        acquiredAt: now,
-      },
-      {
-        id: `itm-${charId}-a1`,
-        charId,
-        name: 'Armadura Dragón Carmesí',
-        slot: 'armor',
-        category: 'armor',
-        setName: 'Dragon',
-        rarity: 'excellent',
-        enhanceLevel: 7,
-        minDmg: 0,
-        maxDmg: 0,
-        defense: 46,
-        magicPower: 0,
-        luck: true,
-        excellentOpt: 'Reducción de Daño +4%',
-        isEquipped: true,
-        originalOwner: ownerName,
-        sharedFromSession: null,
-        acquiredAt: now,
-      },
-      {
-        id: `itm-${charId}-h1`,
-        charId,
-        name: 'Yelmo Dragón Carmesí',
-        slot: 'helm',
-        category: 'armor',
-        setName: 'Dragon',
-        rarity: 'normal',
-        enhanceLevel: 6,
-        minDmg: 0,
-        maxDmg: 0,
-        defense: 28,
-        magicPower: 0,
-        luck: false,
-        excellentOpt: '',
-        isEquipped: true,
-        originalOwner: ownerName,
-        sharedFromSession: null,
-        acquiredAt: now,
-      },
-      {
-        id: `itm-${charId}-w2`,
-        charId,
-        name: 'Espada del Arcángel',
-        slot: 'weapon',
-        category: 'weapon',
-        setName: 'Archangel',
-        rarity: 'ancient',
-        enhanceLevel: 9,
-        minDmg: 64,
-        maxDmg: 96,
-        defense: 0,
-        magicPower: 0,
-        luck: true,
-        excellentOpt: 'Velocidad Ataque +7 · Listo para Intercambio',
-        isEquipped: false,
-        originalOwner: ownerName,
-        sharedFromSession: null,
-        acquiredAt: now,
-      },
-      {
-        id: `itm-${charId}-wg1`,
-        charId,
-        name: 'Alas de Satán',
-        slot: 'wings',
-        category: 'wings',
-        setName: 'Satan Wings',
-        rarity: 'excellent',
-        enhanceLevel: 6,
-        minDmg: 18,
-        maxDmg: 18,
-        defense: 22,
-        magicPower: 0,
-        luck: true,
-        excellentOpt: 'Absorbe 25% de Daño',
-        isEquipped: true,
-        originalOwner: ownerName,
-        sharedFromSession: null,
-        acquiredAt: now,
-      },
-    ];
-  }
-
-  if (classType === 'DW') {
-    return [
-      {
-        id: `itm-${charId}-w1`,
-        charId,
-        name: 'Báculo Legendario',
-        slot: 'weapon',
-        category: 'weapon',
-        setName: 'Legendary',
-        rarity: 'excellent',
-        enhanceLevel: 7,
-        minDmg: 24,
-        maxDmg: 38,
-        defense: 0,
-        magicPower: 74,
-        luck: true,
-        excellentOpt: 'Poder Mágico +10%',
-        isEquipped: true,
-        originalOwner: ownerName,
-        sharedFromSession: null,
-        acquiredAt: now,
-      },
-      {
-        id: `itm-${charId}-a1`,
-        charId,
-        name: 'Túnica Legendaria',
-        slot: 'armor',
-        category: 'armor',
-        setName: 'Legendary',
-        rarity: 'excellent',
-        enhanceLevel: 7,
-        minDmg: 0,
-        maxDmg: 0,
-        defense: 36,
-        magicPower: 14,
-        luck: true,
-        excellentOpt: 'Mana Máximo +4%',
-        isEquipped: true,
-        originalOwner: ownerName,
-        sharedFromSession: null,
-        acquiredAt: now,
-      },
-      {
-        id: `itm-${charId}-h1`,
-        charId,
-        name: 'Capucha Legendaria',
-        slot: 'helm',
-        category: 'armor',
-        setName: 'Legendary',
-        rarity: 'normal',
-        enhanceLevel: 5,
-        minDmg: 0,
-        maxDmg: 0,
-        defense: 22,
-        magicPower: 8,
-        luck: false,
-        excellentOpt: '',
-        isEquipped: true,
-        originalOwner: ownerName,
-        sharedFromSession: null,
-        acquiredAt: now,
-      },
-      {
-        id: `itm-${charId}-w2`,
-        charId,
-        name: 'Báculo de Kundun',
-        slot: 'weapon',
-        category: 'weapon',
-        setName: 'Kundun',
-        rarity: 'ancient',
-        enhanceLevel: 9,
-        minDmg: 32,
-        maxDmg: 50,
-        defense: 0,
-        magicPower: 112,
-        luck: true,
-        excellentOpt: 'Ignora Defensa 3% · Listo para Intercambio',
-        isEquipped: false,
-        originalOwner: ownerName,
-        sharedFromSession: null,
-        acquiredAt: now,
-      },
-      {
-        id: `itm-${charId}-wg1`,
-        charId,
-        name: 'Alas del Alma',
-        slot: 'wings',
-        category: 'wings',
-        setName: 'Soul Wings',
-        rarity: 'excellent',
-        enhanceLevel: 6,
-        minDmg: 0,
-        maxDmg: 0,
-        defense: 20,
-        magicPower: 26,
-        luck: true,
-        excellentOpt: 'Recuperación MP +5%',
-        isEquipped: true,
-        originalOwner: ownerName,
-        sharedFromSession: null,
-        acquiredAt: now,
-      },
-    ];
-  }
-
-  return [
-    {
-      id: `itm-${charId}-w1`,
-      charId,
-      name: 'Arco Celestial',
-      slot: 'weapon',
-      category: 'weapon',
-      setName: 'Guardian',
-      rarity: 'excellent',
-      enhanceLevel: 7,
-      minDmg: 38,
-      maxDmg: 62,
-      defense: 0,
-      magicPower: 0,
-      luck: true,
-      excellentOpt: 'Velocidad Ataque +7',
-      isEquipped: true,
-      originalOwner: ownerName,
-      sharedFromSession: null,
-      acquiredAt: now,
-    },
-    {
-      id: `itm-${charId}-a1`,
-      charId,
-      name: 'Armadura Guardián',
-      slot: 'armor',
-      category: 'armor',
-      setName: 'Guardian',
-      rarity: 'excellent',
-      enhanceLevel: 7,
-      minDmg: 0,
-      maxDmg: 0,
-      defense: 40,
-      magicPower: 0,
-      luck: true,
-      excellentOpt: 'Evasión +10%',
-      isEquipped: true,
-      originalOwner: ownerName,
-      sharedFromSession: null,
-      acquiredAt: now,
-    },
-    {
-      id: `itm-${charId}-h1`,
-      charId,
-      name: 'Diadema Guardián',
-      slot: 'helm',
-      category: 'armor',
-      setName: 'Guardian',
-      rarity: 'normal',
-      enhanceLevel: 5,
-      minDmg: 0,
-      maxDmg: 0,
-      defense: 24,
-      magicPower: 0,
-      luck: false,
-      excellentOpt: '',
-      isEquipped: true,
-      originalOwner: ownerName,
-      sharedFromSession: null,
-      acquiredAt: now,
-    },
-    {
-      id: `itm-${charId}-w2`,
-      charId,
-      name: 'Ballesta de Cristal',
-      slot: 'weapon',
-      category: 'weapon',
-      setName: 'Celestial',
-      rarity: 'ancient',
-      enhanceLevel: 9,
-      minDmg: 58,
-      maxDmg: 88,
-      defense: 0,
-      magicPower: 0,
-      luck: true,
-      excellentOpt: 'Daño Crítico +15% · Listo para Intercambio',
-      isEquipped: false,
-      originalOwner: ownerName,
-      sharedFromSession: null,
-      acquiredAt: now,
-    },
-    {
-      id: `itm-${charId}-wg1`,
-      charId,
-      name: 'Alas de Elfa',
-      slot: 'wings',
-      category: 'wings',
-      setName: 'Elf Wings',
-      rarity: 'excellent',
-      enhanceLevel: 6,
-      minDmg: 16,
-      maxDmg: 16,
-      defense: 22,
-      magicPower: 0,
-      luck: true,
-      excellentOpt: 'Velocidad Movimiento +15%',
-      isEquipped: true,
-      originalOwner: ownerName,
-      sharedFromSession: null,
-      acquiredAt: now,
-    },
-  ];
-}
-
-function getBaseStatsForClass(classType: HeroClass) {
-  if (classType === 'DK') {
-    return { str: 36, agi: 22, vit: 30, ene: 12, maxHp: 280, maxMp: 80 };
-  }
-  if (classType === 'DW') {
-    return { str: 16, agi: 22, vit: 20, ene: 42, maxHp: 210, maxMp: 180 };
-  }
-  return { str: 20, agi: 38, vit: 22, ene: 20, maxHp: 235, maxMp: 120 };
+  // Safe migrations for databases created in Step 1
+  ensureColumn(db, 'characters', 'account_id', "TEXT NOT NULL DEFAULT 'acc-local'");
+  ensureColumn(db, 'characters', 'cmd', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'characters', 'sd', 'INTEGER NOT NULL DEFAULT 220');
+  ensureColumn(db, 'characters', 'max_sd', 'INTEGER NOT NULL DEFAULT 220');
+  ensureColumn(db, 'characters', 'ag', 'INTEGER NOT NULL DEFAULT 100');
+  ensureColumn(db, 'characters', 'max_ag', 'INTEGER NOT NULL DEFAULT 100');
 }
 
 export async function initSqlite(): Promise<Database> {
@@ -511,11 +220,18 @@ export async function initSqlite(): Promise<Database> {
     const db = existingBytes ? new SQL.Database(existingBytes) : new SQL.Database();
     createSchema(db);
 
-    // Ensure at least one hero exists
-    const res = db.exec('SELECT COUNT(*) as c FROM characters');
-    const count = Number(res[0]?.values[0]?.[0] ?? 0);
-    if (count === 0) {
-      seedCharacterInternal(db, 'GuerreroLorencia', 'DK');
+    // Ensure default local account exists if empty
+    const accRes = db.exec('SELECT COUNT(*) FROM accounts');
+    if (Number(accRes[0]?.values[0]?.[0] ?? 0) === 0) {
+      db.run(
+        'INSERT INTO accounts (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)',
+        ['acc-local', 'lorencia', hashPassword('123456'), new Date().toISOString()],
+      );
+    }
+
+    const charRes = db.exec('SELECT COUNT(*) FROM characters');
+    if (Number(charRes[0]?.values[0]?.[0] ?? 0) === 0) {
+      seedCharacterInternal(db, 'acc-local', 'GuerreroLorencia', 'DK');
     }
 
     dbInstance = db;
@@ -532,20 +248,110 @@ export async function persistDb(): Promise<void> {
   await writeDbBytesToIdb(bytes);
 }
 
-function seedCharacterInternal(db: Database, name: string, classType: HeroClass): string {
+// Accounts
+export async function listAccounts(): Promise<MuAccount[]> {
+  const db = await initSqlite();
+  const res = db.exec('SELECT id, username, created_at FROM accounts ORDER BY created_at ASC');
+  if (!res.length) return [];
+  return res[0].values.map((r) => ({
+    id: String(r[0]),
+    username: String(r[1]),
+    createdAt: String(r[2]),
+  }));
+}
+
+export async function registerAccount(
+  username: string,
+  password: string,
+): Promise<{ ok: true; account: MuAccount } | { ok: false; error: string }> {
+  const db = await initSqlite();
+  const cleanUser = username.trim().toLowerCase();
+  if (cleanUser.length < 3 || password.length < 4) {
+    return { ok: false, error: 'El usuario debe tener al menos 3 letras y la clave 4 caracteres.' };
+  }
+
+  const existing = db.exec(`SELECT id FROM accounts WHERE username = '${cleanUser.replace(/'/g, "''")}'`);
+  if (existing.length && existing[0].values.length > 0) {
+    return { ok: false, error: `La cuenta "${cleanUser}" ya existe. Usa Ingresar.` };
+  }
+
+  const id = `acc-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
+  const now = new Date().toISOString();
+  db.run('INSERT INTO accounts (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)', [
+    id,
+    cleanUser,
+    hashPassword(password),
+    now,
+  ]);
+  await persistDb();
+  return { ok: true, account: { id, username: cleanUser, createdAt: now } };
+}
+
+export async function loginAccount(
+  username: string,
+  password: string,
+): Promise<{ ok: true; account: MuAccount } | { ok: false; error: string }> {
+  const db = await initSqlite();
+  const cleanUser = username.trim().toLowerCase();
+  const res = db.exec(
+    `SELECT id, username, password_hash, created_at FROM accounts WHERE username = '${cleanUser.replace(/'/g, "''")}'`,
+  );
+  if (!res.length || res[0].values.length === 0) {
+    return { ok: false, error: `No existe la cuenta "${cleanUser}". Regístrate primero.` };
+  }
+  const row = res[0].values[0];
+  if (String(row[2]) !== hashPassword(password)) {
+    return { ok: false, error: 'Contraseña incorrecta.' };
+  }
+  return {
+    ok: true,
+    account: {
+      id: String(row[0]),
+      username: String(row[1]),
+      createdAt: String(row[3]),
+    },
+  };
+}
+
+function seedCharacterInternal(
+  db: Database,
+  accountId: string,
+  name: string,
+  classType: HeroClass,
+): string {
   const id = `hero-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const now = new Date().toISOString();
-  const base = getBaseStatsForClass(classType);
+  const meta = MU_CLASSES.find((c) => c.id === classType) || MU_CLASSES[0];
+  const base = meta.baseStats;
 
   db.run(
     `INSERT INTO characters (
-      id, name, class_type, level, xp, xp_to_next, str, agi, vit, ene,
-      zen, bless, soul, chaos, hp, max_hp, mp, max_mp, kills, resets, updated_at
-    ) VALUES (?, ?, ?, 15, 40, 220, ?, ?, ?, ?, 25000, 5, 5, 2, ?, ?, ?, ?, 0, 0, ?)`,
-    [id, name, classType, base.str, base.agi, base.vit, base.ene, base.maxHp, base.maxHp, base.maxMp, base.maxMp, now],
+      id, account_id, name, class_type, level, xp, xp_to_next, str, agi, vit, ene, cmd,
+      zen, bless, soul, chaos, hp, max_hp, mp, max_mp, sd, max_sd, ag, max_ag, kills, resets, updated_at
+    ) VALUES (?, ?, ?, ?, 15, 40, 220, ?, ?, ?, ?, ?, 30000, 6, 6, 2, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
+    [
+      id,
+      accountId,
+      name,
+      classType,
+      base.str,
+      base.agi,
+      base.vit,
+      base.ene,
+      base.cmd,
+      base.maxHp,
+      base.maxHp,
+      base.maxMp,
+      base.maxMp,
+      base.maxSd,
+      base.maxSd,
+      base.maxAg,
+      base.maxAg,
+      now,
+    ],
   );
 
-  const items = getStarterItemsForClass(id, name, classType);
+  const items = getStarterItemsForMuClass(id, name, classType);
   for (const item of items) {
     insertItemInternal(db, item);
   }
@@ -587,6 +393,7 @@ function mapCharacterRow(cols: string[], row: unknown[]): MuCharacter {
   cols.forEach((c, idx) => (obj[c] = row[idx]));
   return {
     id: String(obj.id),
+    accountId: String(obj.account_id || 'acc-local'),
     name: String(obj.name),
     classType: obj.class_type as HeroClass,
     level: Number(obj.level),
@@ -596,6 +403,7 @@ function mapCharacterRow(cols: string[], row: unknown[]): MuCharacter {
     agi: Number(obj.agi),
     vit: Number(obj.vit),
     ene: Number(obj.ene),
+    cmd: Number(obj.cmd || 0),
     zen: Number(obj.zen),
     bless: Number(obj.bless),
     soul: Number(obj.soul),
@@ -604,6 +412,10 @@ function mapCharacterRow(cols: string[], row: unknown[]): MuCharacter {
     maxHp: Number(obj.max_hp),
     mp: Number(obj.mp),
     maxMp: Number(obj.max_mp),
+    sd: Number(obj.sd ?? 200),
+    maxSd: Number(obj.max_sd ?? 200),
+    ag: Number(obj.ag ?? 100),
+    maxAg: Number(obj.max_ag ?? 100),
     kills: Number(obj.kills),
     resets: Number(obj.resets),
     updatedAt: String(obj.updated_at),
@@ -642,18 +454,26 @@ export async function listCharacters(): Promise<MuCharacter[]> {
   return res[0].values.map((r) => mapCharacterRow(res[0].columns, r));
 }
 
-export async function createOrSelectClassHero(name: string, classType: HeroClass): Promise<MuCharacter> {
+export async function listCharactersByAccount(accountId: string): Promise<MuCharacter[]> {
   const db = await initSqlite();
-  const existing = await listCharacters();
-  const found = existing.find((c) => c.classType === classType && (!name || c.name === name));
-  if (found && existing.length <= 3 && name === found.name) {
-    return found;
-  }
-  const cleanName = name.trim() || (classType === 'DK' ? 'GuerreroLorencia' : classType === 'DW' ? 'MagoLorencia' : 'ElfaLorencia');
-  const id = seedCharacterInternal(db, cleanName, classType);
+  const res = db.exec(
+    `SELECT * FROM characters WHERE account_id = '${accountId.replace(/'/g, "''")}' ORDER BY updated_at DESC`,
+  );
+  if (!res.length) return [];
+  return res[0].values.map((r) => mapCharacterRow(res[0].columns, r));
+}
+
+export async function createCharacterForAccount(
+  accountId: string,
+  name: string,
+  classType: HeroClass,
+): Promise<MuCharacter> {
+  const db = await initSqlite();
+  const cleanName = name.trim().slice(0, 16) || `Heroe_${classType}`;
+  const id = seedCharacterInternal(db, accountId, cleanName, classType);
   await persistDb();
-  const all = await listCharacters();
-  return all.find((c) => c.id === id)!;
+  const list = await listCharactersByAccount(accountId);
+  return list.find((c) => c.id === id)!;
 }
 
 export async function updateCharacter(char: MuCharacter): Promise<void> {
@@ -661,9 +481,9 @@ export async function updateCharacter(char: MuCharacter): Promise<void> {
   const now = new Date().toISOString();
   db.run(
     `UPDATE characters SET
-      name = ?, level = ?, xp = ?, xp_to_next = ?, str = ?, agi = ?, vit = ?, ene = ?,
+      name = ?, level = ?, xp = ?, xp_to_next = ?, str = ?, agi = ?, vit = ?, ene = ?, cmd = ?,
       zen = ?, bless = ?, soul = ?, chaos = ?, hp = ?, max_hp = ?, mp = ?, max_mp = ?,
-      kills = ?, resets = ?, updated_at = ?
+      sd = ?, max_sd = ?, ag = ?, max_ag = ?, kills = ?, resets = ?, updated_at = ?
     WHERE id = ?`,
     [
       char.name,
@@ -674,6 +494,7 @@ export async function updateCharacter(char: MuCharacter): Promise<void> {
       char.agi,
       char.vit,
       char.ene,
+      char.cmd,
       char.zen,
       char.bless,
       char.soul,
@@ -682,6 +503,10 @@ export async function updateCharacter(char: MuCharacter): Promise<void> {
       char.maxHp,
       char.mp,
       char.maxMp,
+      char.sd,
+      char.maxSd,
+      char.ag,
+      char.maxAg,
       char.kills,
       char.resets,
       now,
@@ -693,7 +518,9 @@ export async function updateCharacter(char: MuCharacter): Promise<void> {
 
 export async function getItemsForCharacter(charId: string): Promise<MuItem[]> {
   const db = await initSqlite();
-  const res = db.exec(`SELECT * FROM items WHERE char_id = '${charId.replace(/'/g, "''")}' ORDER BY is_equipped DESC, enhance_level DESC, acquired_at DESC`);
+  const res = db.exec(
+    `SELECT * FROM items WHERE char_id = '${charId.replace(/'/g, "''")}' ORDER BY is_equipped DESC, enhance_level DESC, acquired_at DESC`,
+  );
   if (!res.length) return [];
   return res[0].values.map((r) => mapItemRow(res[0].columns, r));
 }
@@ -757,7 +584,6 @@ export async function upgradeItemWithJewel(
     };
   }
 
-  // Soul (+0 to +13)
   if (char.soul <= 0) {
     return { success: false, message: 'No tienes Jewel of Soul suficientes.', character: char, items };
   }
@@ -815,6 +641,76 @@ export async function removeItemFromCharacter(charId: string, itemId: string): P
   db.run('DELETE FROM items WHERE id = ? AND char_id = ?', [itemId, charId]);
   await persistDb();
   return getItemsForCharacter(charId);
+}
+
+// Settings, Button Layouts & Combo Config persisted in SQLite
+const DEFAULT_SETTINGS: GameSettings = {
+  brightness: 1.08,
+  volume: 0.75,
+  muted: false,
+  free3dCamera: false,
+  targetFps: 60,
+};
+
+export async function loadGameSettings(): Promise<GameSettings> {
+  const db = await initSqlite();
+  const res = db.exec("SELECT value_json FROM kv_settings WHERE key = 'game_settings'");
+  if (!res.length || !res[0].values.length) return DEFAULT_SETTINGS;
+  try {
+    return { ...DEFAULT_SETTINGS, ...JSON.parse(String(res[0].values[0][0])) };
+  } catch {
+    return DEFAULT_SETTINGS;
+  }
+}
+
+export async function saveGameSettings(settings: GameSettings): Promise<void> {
+  const db = await initSqlite();
+  db.run('INSERT OR REPLACE INTO kv_settings (key, value_json) VALUES (?, ?)', [
+    'game_settings',
+    JSON.stringify(settings),
+  ]);
+  await persistDb();
+}
+
+export async function loadButtonLayouts(): Promise<Record<HudButtonId, ButtonLayoutItem>> {
+  const db = await initSqlite();
+  const res = db.exec("SELECT value_json FROM kv_settings WHERE key = 'hud_button_layouts'");
+  if (!res.length || !res[0].values.length) return DEFAULT_BUTTON_LAYOUTS;
+  try {
+    return { ...DEFAULT_BUTTON_LAYOUTS, ...JSON.parse(String(res[0].values[0][0])) };
+  } catch {
+    return DEFAULT_BUTTON_LAYOUTS;
+  }
+}
+
+export async function saveButtonLayouts(layouts: Record<HudButtonId, ButtonLayoutItem>): Promise<void> {
+  const db = await initSqlite();
+  db.run('INSERT OR REPLACE INTO kv_settings (key, value_json) VALUES (?, ?)', [
+    'hud_button_layouts',
+    JSON.stringify(layouts),
+  ]);
+  await persistDb();
+}
+
+export async function loadComboConfig(charId: string, classType: HeroClass): Promise<CharacterComboConfig> {
+  const db = await initSqlite();
+  const key = `combo_${charId}`;
+  const res = db.exec(`SELECT value_json FROM kv_settings WHERE key = '${key.replace(/'/g, "''")}'`);
+  if (!res.length || !res[0].values.length) return getDefaultComboConfig(classType);
+  try {
+    return JSON.parse(String(res[0].values[0][0])) as CharacterComboConfig;
+  } catch {
+    return getDefaultComboConfig(classType);
+  }
+}
+
+export async function saveComboConfig(charId: string, config: CharacterComboConfig): Promise<void> {
+  const db = await initSqlite();
+  db.run('INSERT OR REPLACE INTO kv_settings (key, value_json) VALUES (?, ?)', [
+    `combo_${charId}`,
+    JSON.stringify(config),
+  ]);
+  await persistDb();
 }
 
 export async function recordSharedLedger(entry: SharedLedgerEntry): Promise<void> {
@@ -939,7 +835,7 @@ export async function getSqliteStats(): Promise<{
   byteSize: number;
 }> {
   const db = await initSqlite();
-  const names = ['characters', 'items', 'shared_ledger', 'event_sessions', 'chat_messages'];
+  const names = ['accounts', 'characters', 'items', 'shared_ledger', 'event_sessions', 'chat_messages'];
   const tables = names.map((name) => {
     const res = db.exec(`SELECT COUNT(*) FROM ${name}`);
     return { name, rows: Number(res[0]?.values[0]?.[0] ?? 0) };

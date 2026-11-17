@@ -1,4 +1,4 @@
-export type HeroClass = 'DK' | 'DW' | 'ELF';
+export type HeroClass = 'DK' | 'DW' | 'ELF' | 'DL' | 'MG';
 
 export type ItemSlot =
   | 'weapon'
@@ -22,8 +22,15 @@ export type EventType =
   | 'kundun_boss'
   | 'free_trade';
 
+export interface MuAccount {
+  id: string;
+  username: string;
+  createdAt: string;
+}
+
 export interface MuCharacter {
   id: string;
+  accountId: string;
   name: string;
   classType: HeroClass;
   level: number;
@@ -33,6 +40,7 @@ export interface MuCharacter {
   agi: number;
   vit: number;
   ene: number;
+  cmd: number;
   zen: number;
   bless: number;
   soul: number;
@@ -41,6 +49,10 @@ export interface MuCharacter {
   maxHp: number;
   mp: number;
   maxMp: number;
+  sd: number;
+  maxSd: number;
+  ag: number;
+  maxAg: number;
   kills: number;
   resets: number;
   updatedAt: string;
@@ -65,6 +77,54 @@ export interface MuItem {
   originalOwner: string;
   sharedFromSession: string | null;
   acquiredAt: string;
+}
+
+export interface SkillDef {
+  id: string;
+  classType: HeroClass;
+  name: string;
+  shortName: string;
+  description: string;
+  mpCost: number;
+  agCost: number;
+  damageMultiplier: number;
+  range: number;
+  isAoe: boolean;
+  isBuff?: boolean;
+  colorHex: number;
+  badgeColor: string;
+}
+
+export interface CharacterComboConfig {
+  defaultSkillId: string;
+  comboSkillIds: [string, string, string];
+}
+
+export type HudButtonId =
+  | 'joystick'
+  | 'attack'
+  | 'combo'
+  | 'skillTray'
+  | 'potion'
+  | 'loot'
+  | 'inventory'
+  | 'sync'
+  | 'settings';
+
+export interface ButtonLayoutItem {
+  id: HudButtonId;
+  label: string;
+  xPct: number;
+  yPct: number;
+  scale: number;
+}
+
+export interface GameSettings {
+  brightness: number; // 0.6 to 1.5
+  volume: number; // 0 to 1
+  muted: boolean;
+  free3dCamera: boolean;
+  targetFps: 30 | 45 | 60;
 }
 
 export interface SharedLedgerEntry {

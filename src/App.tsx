@@ -1,33 +1,32 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Bluetooth, RotateCw, ShieldAlert, Wifi } from 'lucide-react';
 import {
-  Backpack,
-  Bluetooth,
-  Bot,
-  ChevronDown,
-  ChevronUp,
-  Pause,
-  Play,
-  ShieldAlert,
-  Smartphone,
-  Sparkles,
-  Sword,
-  Volume2,
-  VolumeX,
-  Wifi,
-} from 'lucide-react';
+  DEFAULT_BUTTON_LAYOUTS,
+  MU_SKILLS,
+  getDefaultComboConfig,
+} from './data/muSkillsAndClasses';
 import {
   addItemToCharacter,
-  createOrSelectClassHero,
+  createCharacterForAccount,
   equipItem,
   getChatHistory,
   getEventSessions,
   getItemsForCharacter,
   getSharedLedger,
   initSqlite,
-  listCharacters,
+  listAccounts,
+  listCharactersByAccount,
+  loadButtonLayouts,
+  loadComboConfig,
+  loadGameSettings,
+  loginAccount,
   recordSharedLedger,
+  registerAccount,
   removeItemFromCharacter,
+  saveButtonLayouts,
   saveChatMessage,
+  saveComboConfig,
+  saveGameSettings,
   updateCharacter,
   upgradeItemWithJewel,
   upsertEventSession,
@@ -36,21 +35,28 @@ import { MuWorldEngine, type EngineCallbacks } from './game/MuWorldEngine';
 import { soundSynth } from './game/soundSynth';
 import { LocalSyncManager } from './services/syncManager';
 import { ApkSyncDrawer } from './components/ApkSyncDrawer';
-import { InventoryDrawer } from './components/InventoryDrawer';
+import { ClassicLoginFlow } from './components/ClassicLoginFlow';
+import { MuHudOverlay } from './components/MuHudOverlay';
+import { MuInventoryModal } from './components/MuInventoryModal';
 import { OracleChatDrawer } from './components/OracleChatDrawer';
-import { OfflineIndicator, PWAInstallButton } from './components/PWAInstallButton';
+import { OfflineIndicator } from './components/PWAInstallButton';
+import { SettingsModal } from './components/SettingsModal';
 import { SyncLinkDrawer } from './components/SyncLinkDrawer';
 import type {
+  ButtonLayoutItem,
+  CharacterComboConfig,
   ChatMessageRecord,
   EventSessionRecord,
-  EventType,
+  GameSettings,
   HeroClass,
+  HudButtonId,
+  MuAccount,
   MuCharacter,
   MuItem,
   RoomPeer,
   RoomState,
   SharedLedgerEntry,
-  TransportMode,
+  SkillDef,
 } from './types/game';
 
 interface FloatingBanner {
@@ -59,20 +65,22 @@ interface FloatingBanner {
   color: string;
 }
 
-const CLASS_INFO: Array<{ id: HeroClass; title: string; subtitle: string }> = [
-  { id: 'DK', title: 'Dark Knight', subtitle: 'Espada y Armadura Dragón' },
-  { id: 'DW', title: 'Dark Wizard', subtitle: 'Báculo y Magia Arcana' },
-  { id: 'ELF', title: 'Fairy Elf', subtitle: 'Arco Celestial y Agilidad' },
-];
+const INITIAL_SETTINGS: GameSettings = {
+  brightness: 1.08,
+  volume: 0.75,
+  muted: false,
+  free3dCamera: false,
+  targetFps: 60,
+};
 
 export default function App() {
   const canvasMountRef = useRef<HTMLDivElement | null>(null);
   const engineRef = useRef<MuWorldEngine | null>(null);
   const syncRef = useRef<LocalSyncManager | null>(null);
 
-  const [gameState, setGameState] = useState<'title' | 'playing' | 'paused'>('title');
-  const [selectedClass, setSelectedClass] = useState<HeroClass>('DK');
-  const [heroNameInput, setHeroNameInput] = useState('GuerreroLorencia');
+  const [screenStage, setScreenStage] = useState<'login' | 'character_select' | 'playing' | 'paused'>('login');
+  const [accounts, setAccounts] = useState<MuAccount[]>([]);
+  const [currentAccount, setCurrentAccount] = useState<MuAccount | null>(null);
   const [characters, setCharacters] = useState<MuCharacter[]>([]);
   const [character, setCharacter] = useState<MuCharacter | null>(null);
   const [items, setItems] = useState<MuItem[]>([]);
@@ -80,66 +88,150 @@ export default function App() {
   const [eventHistory, setEventHistory] = useState<EventSessionRecord[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessageRecord[]>([]);
 
-  const [activeDrawer, setActiveDrawer] = useState<'none' | 'inventory' | 'sync' | 'oracle' | 'apk'>('none');
-  const [dockCollapsed, setDockCollapsed] = useState(false);
-  const [muted, setMuted] = useState(false);
+  const [gameSettings, setGameSettings] = useState<GameSettings>(INITIAL_SETTINGS);
+  const [buttonLayouts, setButtonLayouts] = useState<Record<HudButtonId, ButtonLayoutItem>>(DEFAULT_BUTTON_LAYOUTS);
+  const [comboConfig, setComboConfig] = useState<CharacterComboConfig>(getDefaultComboConfig('DK'));
+  const [comboArmed, setComboArmed] = useState(false);
+  const [editMode, setEditMode] = useState(false);
+  const [measuredFps, setMeasuredFps] = useState(60);
+  const [isPortraitMobile, setIsPortraitMobile] = useState(
+    () => typeof window !== 'undefined' && window.innerHeight > window.innerWidth && window.innerWidth < 900,
+  );
+
+  const [activeDrawer, setActiveDrawer] = useState<'none' | 'inventory' | 'sync' | 'oracle' | 'apk' | 'settings'>('none');
   const [forgeMessage, setForgeMessage] = useState<string | null>(null);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [wsConnected, setWsConnected] = useState(false);
   const [roomState, setRoomState] = useState<RoomState | null>(null);
   const [btDeviceName, setBtDeviceName] = useState<string | null>(null);
   const [banners, setBanners] = useState<FloatingBanner[]>([]);
-  const [showTouchPad, setShowTouchPad] = useState(
-    () => typeof window !== 'undefined' && ('ontouchstart' in window || window.innerWidth < 900),
-  );
 
-  // Refs for stable callbacks inside 3D loop and WebSocket handlers
+  // Refs for stable access inside WebGL loop and WebSocket handlers
   const charRef = useRef<MuCharacter | null>(null);
   const itemsRef = useRef<MuItem[]>([]);
   const roomRef = useRef<RoomState | null>(null);
+  const settingsRef = useRef<GameSettings>(INITIAL_SETTINGS);
+  const screenStageRef = useRef(screenStage);
   charRef.current = character;
   itemsRef.current = items;
   roomRef.current = roomState;
+  settingsRef.current = gameSettings;
+  screenStageRef.current = screenStage;
 
   const pushBanner = useCallback((text: string, color = '#fbbf24') => {
     const id = Date.now() + Math.random();
     setBanners((prev) => [...prev.slice(-3), { id, text, color }]);
-    setTimeout(() => {
+    window.setTimeout(() => {
       setBanners((prev) => prev.filter((b) => b.id !== id));
-    }, 2400);
+    }, 2200);
   }, []);
 
-  const loadAllFromSqlite = useCallback(async (preferCharId?: string) => {
-    await initSqlite();
-    const chars = await listCharacters();
-    setCharacters(chars);
-    const active = (preferCharId && chars.find((c) => c.id === preferCharId)) || chars[0];
-    if (active) {
-      setCharacter(active);
-      setSelectedClass(active.classType);
-      setHeroNameInput(active.name);
-      const charItems = await getItemsForCharacter(active.id);
-      setItems(charItems);
-      engineRef.current?.syncHeroAppearance(
-        active.classType,
-        charItems.filter((i) => i.isEquipped),
-      );
+  const requestLandscapeFullscreen = useCallback(async () => {
+    try {
+      if (document.documentElement.requestFullscreen && !document.fullscreenElement) {
+        await document.documentElement.requestFullscreen();
+      }
+      const orient = screen.orientation as unknown as { lock?: (o: string) => Promise<void> };
+      if (orient?.lock) {
+        await orient.lock('landscape');
+      }
+    } catch {
+      // Browsers on desktop or iOS Safari may ignore orientation lock without error
     }
-    setLedger(await getSharedLedger());
-    setEventHistory(await getEventSessions());
-    setChatMessages(await getChatHistory());
   }, []);
 
-  // Initialize SQLite on mount
+  useEffect(() => {
+    const checkOrient = () => {
+      setIsPortraitMobile(window.innerHeight > window.innerWidth && window.innerWidth < 900);
+    };
+    window.addEventListener('resize', checkOrient);
+    return () => window.removeEventListener('resize', checkOrient);
+  }, []);
+
+  const selectAndHydrateCharacter = useCallback(async (charObj: MuCharacter) => {
+    setCharacter(charObj);
+    const [charItems, charCombo] = await Promise.all([
+      getItemsForCharacter(charObj.id),
+      loadComboConfig(charObj.id, charObj.classType),
+    ]);
+    setItems(charItems);
+    setComboConfig(charCombo);
+    engineRef.current?.syncHeroAppearance(
+      charObj.classType,
+      charItems.filter((i) => i.isEquipped),
+    );
+  }, []);
+
+  const loadAllFromSqlite = useCallback(async (preferAccountId?: string, preferCharId?: string) => {
+    await initSqlite();
+    const [accList, loadedSettings, loadedLayouts, led, evs, chats] = await Promise.all([
+      listAccounts(),
+      loadGameSettings(),
+      loadButtonLayouts(),
+      getSharedLedger(),
+      getEventSessions(),
+      getChatHistory(),
+    ]);
+
+    setAccounts(accList);
+    setGameSettings(loadedSettings);
+    setButtonLayouts(loadedLayouts);
+    setLedger(led);
+    setEventHistory(evs);
+    setChatMessages(chats);
+
+    const activeAccId = preferAccountId || currentAccount?.id || accList[0]?.id;
+    if (activeAccId) {
+      const chars = await listCharactersByAccount(activeAccId);
+      setCharacters(chars);
+      const chosen = (preferCharId && chars.find((c) => c.id === preferCharId)) || chars[0] || null;
+      if (chosen) {
+        await selectAndHydrateCharacter(chosen);
+      } else {
+        setCharacter(null);
+        setItems([]);
+      }
+    }
+  }, [currentAccount?.id, selectAndHydrateCharacter]);
+
+  // Initial SQLite hydration
   useEffect(() => {
     loadAllFromSqlite();
     const params = new URLSearchParams(window.location.search);
     if (params.get('sala')) {
       setActiveDrawer('sync');
     }
-  }, [loadAllFromSqlite]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Initialize WebSocket / Bluetooth SyncManager once
+  // Sync gameSettings to engine & soundSynth
+  useEffect(() => {
+    soundSynth.volume = gameSettings.volume;
+    soundSynth.muted = gameSettings.muted;
+    engineRef.current?.setBrightness(gameSettings.brightness);
+    engineRef.current?.setFree3dMode(gameSettings.free3dCamera);
+    engineRef.current?.setTargetFps(gameSettings.targetFps);
+  }, [gameSettings]);
+
+  // Passive MU SD / MP / AG regeneration while playing
+  useEffect(() => {
+    if (screenStage !== 'playing') return;
+    const timer = window.setInterval(() => {
+      setCharacter((prev) => {
+        if (!prev) return prev;
+        if (prev.mp >= prev.maxMp && prev.ag >= prev.maxAg && prev.sd >= prev.maxSd) return prev;
+        return {
+          ...prev,
+          mp: Math.min(prev.maxMp, prev.mp + 6),
+          ag: Math.min(prev.maxAg, prev.ag + 8),
+          sd: Math.min(prev.maxSd, prev.sd + 5),
+        };
+      });
+    }, 1100);
+    return () => window.clearInterval(timer);
+  }, [screenStage]);
+
+  // Initialize WebSocket / Bluetooth SyncManager
   useEffect(() => {
     const manager = new LocalSyncManager({
       onConnectionChange: (connected) => setWsConnected(connected),
@@ -241,7 +333,7 @@ export default function App() {
           setLedger(await getSharedLedger());
           setEventHistory(await getEventSessions());
         }
-        pushBanner(`¡Evento completado! Recibido ${reward.itemName} +7 en SQLite`, '#34d399');
+        pushBanner(`¡Evento completado! Recibido ${reward.itemName} +7`, '#34d399');
       },
       onTradeReceived: async (payload) => {
         const activeChar = charRef.current;
@@ -300,7 +392,7 @@ export default function App() {
         });
         setLedger(await getSharedLedger());
         soundSynth.playTradeSync();
-        setSyncMessage(`Transferido ${payload.item.name} +${payload.item.enhanceLevel} a ${payload.toPeerName}. Historial SQLite actualizado.`);
+        setSyncMessage(`Transferido ${payload.item.name} +${payload.item.enhanceLevel} a ${payload.toPeerName}. Guardado en SQLite.`);
       },
       onRoomEnded: async (message) => {
         setRoomState(null);
@@ -319,7 +411,7 @@ export default function App() {
     };
   }, [pushBanner]);
 
-  // Mount Three.js WebGL Engine once in isolated ref container
+  // Mount Three.js WebGL Engine once
   useEffect(() => {
     const mount = canvasMountRef.current;
     if (!mount) return;
@@ -333,20 +425,42 @@ export default function App() {
         let nextXpToNext = c.xpToNext;
         let nextMaxHp = c.maxHp;
         let nextMaxMp = c.maxMp;
+        let nextMaxSd = c.maxSd;
+        let nextMaxAg = c.maxAg;
         let str = c.str;
         let agi = c.agi;
         let vit = c.vit;
         let ene = c.ene;
+        let cmd = c.cmd;
 
         while (nextXp >= nextXpToNext) {
           nextXp -= nextXpToNext;
           nextLevel += 1;
           nextXpToNext = Math.round(nextXpToNext * 1.25);
-          nextMaxHp += 24;
-          nextMaxMp += 14;
-          if (c.classType === 'DK') { str += 3; vit += 2; }
-          else if (c.classType === 'DW') { ene += 4; agi += 1; }
-          else { agi += 3; ene += 2; }
+          nextMaxHp += 26;
+          nextMaxMp += 16;
+          nextMaxSd += 20;
+          nextMaxAg += 5;
+
+          if (c.classType === 'DK') {
+            str += 3;
+            vit += 2;
+          } else if (c.classType === 'DW') {
+            ene += 4;
+            agi += 1;
+          } else if (c.classType === 'ELF') {
+            agi += 4;
+            ene += 1;
+          } else if (c.classType === 'DL') {
+            cmd += 2;
+            str += 2;
+            ene += 1;
+          } else {
+            // MG receives 7 stat pts per level feel
+            str += 3;
+            ene += 3;
+            agi += 1;
+          }
           pushBanner(`¡Subiste a Nivel ${nextLevel}!`, '#fbbf24');
         }
 
@@ -359,10 +473,15 @@ export default function App() {
           hp: nextMaxHp,
           maxMp: nextMaxMp,
           mp: nextMaxMp,
+          maxSd: nextMaxSd,
+          sd: nextMaxSd,
+          maxAg: nextMaxAg,
+          ag: nextMaxAg,
           str,
           agi,
           vit,
           ene,
+          cmd,
           zen: c.zen + zen,
           kills: c.kills + 1,
         };
@@ -380,14 +499,22 @@ export default function App() {
         };
         setCharacter(updated);
         await updateCharacter(updated);
-        pushBanner(`+${drop.label}`, drop.kind === 'bless' ? '#f87171' : drop.kind === 'soul' ? '#60a5fa' : '#fbbf24');
+        pushBanner(
+          `+${drop.label}`,
+          drop.kind === 'bless' ? '#f87171' : drop.kind === 'soul' ? '#60a5fa' : '#fbbf24',
+        );
       },
-      onPlayerDamaged: async (amount) => {
-        const c = charRef.current;
-        if (!c) return;
-        const nextHp = Math.max(15, c.hp - amount);
-        const updated = { ...c, hp: nextHp };
-        setCharacter(updated);
+      onPlayerDamaged: (amount) => {
+        setCharacter((prev) => {
+          if (!prev) return prev;
+          const sdAbsorb = Math.min(prev.sd, Math.round(amount * 0.7));
+          const hpDamage = Math.max(1, amount - sdAbsorb);
+          return {
+            ...prev,
+            sd: Math.max(0, prev.sd - sdAbsorb),
+            hp: Math.max(15, prev.hp - hpDamage),
+          };
+        });
       },
       onHeroMoveSync: (x, z, rotY, action) => {
         if (roomRef.current && syncRef.current) {
@@ -400,10 +527,16 @@ export default function App() {
       onFloatingText: (text, color) => {
         pushBanner(text, color);
       },
+      onFpsUpdate: (fps) => {
+        setMeasuredFps(fps);
+      },
     };
 
     const engine = new MuWorldEngine(mount, callbacks);
     engineRef.current = engine;
+    engine.setBrightness(settingsRef.current.brightness);
+    engine.setFree3dMode(settingsRef.current.free3dCamera);
+    engine.setTargetFps(settingsRef.current.targetFps);
 
     if (charRef.current) {
       engine.syncHeroAppearance(
@@ -418,55 +551,199 @@ export default function App() {
     };
   }, [pushBanner]);
 
-  const handleStartGame = useCallback(async () => {
-    const hero = await createOrSelectClassHero(heroNameInput, selectedClass);
-    await loadAllFromSqlite(hero.id);
-    engineRef.current?.setMode('playing');
-    setGameState('playing');
-  }, [heroNameInput, selectedClass, loadAllFromSqlite]);
+  // Combat Execution: Default Attack vs Combo x3 Chain + Single Skill
+  const handleCastSkill = useCallback(
+    (skill: SkillDef) => {
+      const c = charRef.current;
+      if (!c || screenStageRef.current !== 'playing') return;
 
-  // Global keyboard shortcuts for Title / Pause
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') {
+      const useSkill =
+        c.mp >= skill.mpCost && c.ag >= skill.agCost
+          ? skill
+          : MU_SKILLS[c.classType][0];
+
+      if (useSkill.id !== skill.id) {
+        pushBanner('MP/AG bajo · Ataque básico', '#f87171');
+      }
+
+      setCharacter((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          mp: Math.max(0, prev.mp - useSkill.mpCost),
+          ag: Math.max(0, prev.ag - useSkill.agCost),
+          hp: useSkill.isBuff ? Math.min(prev.maxHp, prev.hp + 45) : prev.hp,
+          sd: useSkill.isBuff ? Math.min(prev.maxSd, prev.sd + 35) : prev.sd,
+        };
+      });
+
+      engineRef.current?.executeSkill(useSkill);
+    },
+    [pushBanner],
+  );
+
+  const handlePressAttack = useCallback(() => {
+    const c = charRef.current;
+    if (!c || screenStageRef.current !== 'playing') return;
+    const classSkills = MU_SKILLS[c.classType] || MU_SKILLS.DK;
+
+    if (comboArmed) {
+      const s1 = classSkills.find((s) => s.id === comboConfig.comboSkillIds[0]) || classSkills[1] || classSkills[0];
+      const s2 = classSkills.find((s) => s.id === comboConfig.comboSkillIds[1]) || classSkills[2] || classSkills[0];
+      const s3 = classSkills.find((s) => s.id === comboConfig.comboSkillIds[2]) || classSkills[3] || classSkills[0];
+      const totalMp = Math.round((s1.mpCost + s2.mpCost + s3.mpCost) * 0.65);
+      const totalAg = Math.round((s1.agCost + s2.agCost + s3.agCost) * 0.65);
+
+      if (c.mp < totalMp || c.ag < totalAg) {
+        pushBanner('MP/AG insuficiente para Combo · Ejecutando ataque base', '#fbbf24');
+        const def = classSkills.find((s) => s.id === comboConfig.defaultSkillId) || classSkills[0];
+        handleCastSkill(def);
         return;
       }
-      if (gameState === 'title' && (e.code === 'Enter' || e.code === 'Space')) {
-        e.preventDefault();
-        handleStartGame();
-      } else if (e.code === 'Escape') {
+
+      setCharacter((prev) =>
+        prev
+          ? {
+              ...prev,
+              mp: Math.max(0, prev.mp - totalMp),
+              ag: Math.max(0, prev.ag - totalAg),
+            }
+          : prev,
+      );
+      engineRef.current?.executeComboChain([s1, s2, s3]);
+    } else {
+      const def = classSkills.find((s) => s.id === comboConfig.defaultSkillId) || classSkills[0];
+      handleCastSkill(def);
+    }
+  }, [comboArmed, comboConfig, handleCastSkill, pushBanner]);
+
+  // Global keyboard shortcuts while playing/paused
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA' || document.activeElement?.tagName === 'SELECT') {
+        return;
+      }
+      if (e.code === 'Escape') {
         if (activeDrawer !== 'none') {
           setActiveDrawer('none');
-        } else if (gameState === 'playing') {
-          setGameState('paused');
-        } else if (gameState === 'paused') {
-          setGameState('playing');
+        } else if (editMode) {
+          setEditMode(false);
+        } else if (screenStage === 'playing') {
+          setScreenStage('paused');
+        } else if (screenStage === 'paused') {
+          setScreenStage('playing');
         }
+        return;
+      }
+
+      if (screenStage !== 'playing' || activeDrawer !== 'none') return;
+      const c = charRef.current;
+      if (!c) return;
+      const skills = MU_SKILLS[c.classType];
+
+      if (e.code === 'Space') {
+        e.preventDefault();
+        handlePressAttack();
+      } else if (e.code === 'Digit1' && skills[0]) {
+        handleCastSkill(skills[0]);
+      } else if (e.code === 'Digit2' && skills[1]) {
+        handleCastSkill(skills[1]);
+      } else if (e.code === 'Digit3' && skills[2]) {
+        handleCastSkill(skills[2]);
+      } else if (e.code === 'Digit4' && skills[3]) {
+        handleCastSkill(skills[3]);
+      } else if (e.code === 'KeyC') {
+        setComboArmed((v) => !v);
+      } else if (e.code === 'KeyV' || e.code === 'KeyI') {
+        setActiveDrawer('inventory');
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [gameState, activeDrawer, handleStartGame]);
+  }, [screenStage, activeDrawer, editMode, handlePressAttack, handleCastSkill]);
 
-  const buildPeerSnapshot = (): RoomPeer => {
-    const c = character!;
-    const eqWeapon = items.find((i) => i.slot === 'weapon' && i.isEquipped);
-    const eqArmor = items.find((i) => i.slot === 'armor' && i.isEquipped);
-    return {
-      peerId: syncRef.current?.peerId || 'peer-local',
-      name: c.name,
-      classType: c.classType,
-      level: c.level,
-      role: 'host',
-      transport: 'wifi',
-      x: 0,
-      z: 6,
-      rotY: Math.PI,
-      action: 'idle',
-      equippedSet: eqArmor?.setName || 'Básico',
-      equippedWeapon: eqWeapon?.name || 'Espada',
-      enhanceLevel: eqWeapon?.enhanceLevel ?? 5,
+  const handleLogin = async (username: string, password: string) => {
+    const res = await loginAccount(username, password);
+    if (!res.ok) return { ok: false, error: res.error };
+    setCurrentAccount(res.account);
+    const chars = await listCharactersByAccount(res.account.id);
+    setCharacters(chars);
+    if (chars[0]) {
+      await selectAndHydrateCharacter(chars[0]);
+    } else {
+      setCharacter(null);
+      setItems([]);
+    }
+    engineRef.current?.setMode('character_select');
+    setScreenStage('character_select');
+    return { ok: true };
+  };
+
+  const handleRegister = async (username: string, password: string) => {
+    const res = await registerAccount(username, password);
+    if (!res.ok) return { ok: false, error: res.error };
+    setAccounts(await listAccounts());
+    setCurrentAccount(res.account);
+    setCharacters([]);
+    setCharacter(null);
+    setItems([]);
+    engineRef.current?.setMode('character_select');
+    setScreenStage('character_select');
+    return { ok: true };
+  };
+
+  const handleCreateCharacter = async (name: string, classType: HeroClass) => {
+    if (!currentAccount) return;
+    const created = await createCharacterForAccount(currentAccount.id, name, classType);
+    const chars = await listCharactersByAccount(currentAccount.id);
+    setCharacters(chars);
+    await selectAndHydrateCharacter(created);
+    soundSynth.playForge(true);
+  };
+
+  const handleEnterWorld = async () => {
+    if (!character) return;
+    if (window.innerWidth < 1024) {
+      await requestLandscapeFullscreen();
+    }
+    engineRef.current?.syncHeroAppearance(
+      character.classType,
+      items.filter((i) => i.isEquipped),
+    );
+    engineRef.current?.setMode('playing');
+    setScreenStage('playing');
+  };
+
+  const handleUpdateSettings = async (next: GameSettings) => {
+    setGameSettings(next);
+    await saveGameSettings(next);
+  };
+
+  const handleUpdateButtonLayouts = async (next: Record<HudButtonId, ButtonLayoutItem>) => {
+    setButtonLayouts(next);
+    await saveButtonLayouts(next);
+  };
+
+  const handleUpdateComboConfig = async (next: CharacterComboConfig) => {
+    setComboConfig(next);
+    if (character) {
+      await saveComboConfig(character.id, next);
+    }
+  };
+
+  const handleHealPotion = async () => {
+    if (!character) return;
+    const updated = {
+      ...character,
+      hp: character.maxHp,
+      mp: character.maxMp,
+      sd: character.maxSd,
+      ag: character.maxAg,
     };
+    setCharacter(updated);
+    await updateCharacter(updated);
+    soundSynth.playTradeSync();
+    pushBanner('HP, MP, SD y AG restaurados', '#4ade80');
   };
 
   const handleEquip = async (itemId: string) => {
@@ -494,249 +771,117 @@ export default function App() {
     );
   };
 
-  const toggleMute = () => {
-    soundSynth.muted = !muted;
-    setMuted(!muted);
-  };
-
-  const handleHealPotion = async () => {
-    if (!character) return;
-    const updated = { ...character, hp: character.maxHp, mp: character.maxMp };
-    setCharacter(updated);
-    await updateCharacter(updated);
-    pushBanner('HP y MP restaurados', '#4ade80');
+  const buildPeerSnapshot = (): RoomPeer => {
+    const c = character!;
+    const eqWeapon = items.find((i) => i.slot === 'weapon' && i.isEquipped);
+    const eqArmor = items.find((i) => i.slot === 'armor' && i.isEquipped);
+    return {
+      peerId: syncRef.current?.peerId || 'peer-local',
+      name: c.name,
+      classType: c.classType,
+      level: c.level,
+      role: 'host',
+      transport: 'wifi',
+      x: 0,
+      z: 6,
+      rotY: Math.PI,
+      action: 'idle',
+      equippedSet: eqArmor?.setName || 'Básico',
+      equippedWeapon: eqWeapon?.name || 'Espada',
+      enhanceLevel: eqWeapon?.enhanceLevel ?? 5,
+    };
   };
 
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-[#0c1018]">
-      {/* Isolated 3D WebGL Canvas Mount */}
+      {/* Isolated Three.js 3D Canvas */}
       <div ref={canvasMountRef} className="absolute inset-0 w-full h-full" />
 
       <OfflineIndicator />
 
-      {/* TITLE SCREEN OVERLAY */}
-      {gameState === 'title' && (
-        <div className="absolute inset-0 z-20 flex flex-col justify-between p-6 md:p-10 bg-gradient-to-r from-[#0c1018]/92 via-[#0c1018]/65 to-transparent">
-          <div className="flex items-center justify-between gap-4">
-            <div className="text-xs text-slate-300 font-mono-tabular">
-              SQLite Integrado · Wi-Fi y Bluetooth Local
-            </div>
-            <PWAInstallButton onOpenApkCenter={() => setActiveDrawer('apk')} />
-          </div>
-
-          <div className="max-w-xl space-y-6 my-auto">
-            {/* Bespoke SVG Title Lockup */}
-            <div>
-              <svg
-                viewBox="0 0 520 112"
-                className="w-full max-w-[440px] h-auto"
-                role="img"
-                aria-label="MU Lorencia Offline"
-              >
-                <defs>
-                  <linearGradient id="muTitleGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                    <stop offset="0%" stopColor="#fef3c7" />
-                    <stop offset="50%" stopColor="#f59e0b" />
-                    <stop offset="100%" stopColor="#b45309" />
-                  </linearGradient>
-                </defs>
-                <path
-                  d="M8 22 L46 22 L54 10 L62 22 L100 22"
-                  fill="none"
-                  stroke="#d97706"
-                  strokeWidth="2"
-                  opacity="0.7"
-                />
-                <text
-                  x="6"
-                  y="72"
-                  fill="url(#muTitleGrad)"
-                  fontFamily="Cinzel, Georgia, serif"
-                  fontWeight="700"
-                  fontSize="46"
-                  letterSpacing="3"
-                >
-                  MU LORENCIA
-                </text>
-                <text
-                  x="8"
-                  y="100"
-                  fill="#cbd5e1"
-                  fontFamily="Plus Jakarta Sans, sans-serif"
-                  fontWeight="600"
-                  fontSize="15"
-                  letterSpacing="5"
-                >
-                  OFFLINE · SQLITE · SYNC LOCAL
-                </text>
-              </svg>
-              <p className="text-sm text-slate-300 mt-2 max-w-md leading-relaxed">
-                Explora Lorencia en 3D sin conexión, forja tu set hasta +13 en tu base SQLite y conéctate por Wi-Fi o Bluetooth para compartir armas y eventos sin perder nada.
-              </p>
-            </div>
-
-            {/* Class Picker & Hero Name */}
-            <div className="space-y-3 bg-[#101521]/92 border border-slate-700/80 rounded-xl p-4">
-              <div className="grid grid-cols-3 gap-2">
-                {CLASS_INFO.map((cls) => (
-                  <button
-                    key={cls.id}
-                    onClick={() => {
-                      setSelectedClass(cls.id);
-                      const existing = characters.find((c) => c.classType === cls.id);
-                      if (existing) {
-                        setHeroNameInput(existing.name);
-                        engineRef.current?.syncHeroAppearance(cls.id, []);
-                      } else {
-                        setHeroNameInput(
-                          cls.id === 'DK'
-                            ? 'GuerreroLorencia'
-                            : cls.id === 'DW'
-                              ? 'MagoLorencia'
-                              : 'ElfaLorencia',
-                        );
-                        engineRef.current?.syncHeroAppearance(cls.id, []);
-                      }
-                    }}
-                    className={`min-h-[54px] p-2.5 rounded-lg border text-left transition-colors cursor-pointer ${
-                      selectedClass === cls.id
-                        ? 'bg-amber-600/20 border-amber-500 text-amber-200'
-                        : 'bg-[#151c2c] border-slate-800 text-slate-300 hover:border-slate-600'
-                    }`}
-                  >
-                    <div className="text-xs font-bold whitespace-nowrap truncate">{cls.title}</div>
-                    <div className="text-[11px] text-slate-400 truncate mt-0.5">{cls.subtitle}</div>
-                  </button>
-                ))}
-              </div>
-
-              <div className="flex flex-col sm:flex-row gap-2.5">
-                <input
-                  type="text"
-                  value={heroNameInput}
-                  onChange={(e) => setHeroNameInput(e.target.value)}
-                  placeholder="Nombre del Héroe"
-                  maxLength={18}
-                  className="flex-1 min-h-[46px] rounded-lg bg-[#0b0f18] border border-slate-700 px-3.5 text-sm text-slate-100 focus:outline-none focus:border-amber-500"
-                />
-                <button
-                  onClick={handleStartGame}
-                  className="min-h-[46px] px-6 rounded-lg bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-sm inline-flex items-center justify-center gap-2 whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  <Play className="w-4 h-4 fill-current" />
-                  Entrar al Mundo
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div className="text-xs text-slate-400 font-mono-tabular">
-            WASD Mover · Espacio Atacar · 1-3 Habilidades · E Recoger · Esc Pausa
-          </div>
+      {/* Subtle Portrait Hint Banner on Mobile -> One-tap Horizontal Fullscreen */}
+      {isPortraitMobile && (
+        <div className="fixed top-2 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 rounded-lg bg-[#161c2a] border border-amber-500/70 px-3 py-1.5 shadow-xl max-w-[94vw]">
+          <span className="text-[11px] text-amber-200 whitespace-nowrap">
+            Recomendado en Horizontal
+          </span>
+          <button
+            onClick={requestLandscapeFullscreen}
+            className="min-h-[30px] px-2.5 rounded bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-[11px] inline-flex items-center gap-1 whitespace-nowrap cursor-pointer"
+          >
+            <RotateCw className="w-3 h-3" />
+            Girar
+          </button>
         </div>
       )}
 
-      {/* PLAYING HUD (>= 85% Unobstructed Playfield, No backdrop-filter over WebGL) */}
-      {gameState !== 'title' && character && (
+      {/* STAGE 1 & 2: CLASSIC MU ONLINE S6 EP3 LOGIN & CHARACTER SELECT */}
+      {(screenStage === 'login' || screenStage === 'character_select') && (
+        <ClassicLoginFlow
+          stage={screenStage}
+          accounts={accounts}
+          currentAccount={currentAccount}
+          characters={characters}
+          selectedCharId={character?.id || null}
+          onLogin={handleLogin}
+          onRegister={handleRegister}
+          onSelectCharacter={(id) => {
+            const found = characters.find((c) => c.id === id);
+            if (found) selectAndHydrateCharacter(found);
+          }}
+          onCreateCharacter={handleCreateCharacter}
+          onEnterWorld={handleEnterWorld}
+          onLogoutAccount={() => {
+            setCurrentAccount(null);
+            engineRef.current?.setMode('title');
+            setScreenStage('login');
+          }}
+          onOpenApkCenter={() => setActiveDrawer('apk')}
+          onPreviewClass={(cls) => engineRef.current?.syncHeroAppearance(cls, [])}
+        />
+      )}
+
+      {/* STAGE 3: PLAYING HUD (PUBG Stick + Combo x3 + Skill Tray + MU HP/MP Globes + Custom Layout) */}
+      {(screenStage === 'playing' || screenStage === 'paused') && character && (
         <>
-          {/* Top-Left Hero Status Cluster */}
-          <div className="pointer-events-none fixed top-3 left-3 z-20 flex flex-col gap-2 max-w-[280px]">
-            <div className="rounded-xl bg-[#0e131d]/92 border border-slate-700/80 px-3.5 py-2.5 shadow-lg">
-              <div className="flex items-center justify-between gap-3">
-                <span className="font-display text-sm font-bold text-amber-300 truncate">
-                  {character.name}
-                </span>
-                <span className="text-xs font-mono-tabular text-slate-300 whitespace-nowrap shrink-0">
-                  {character.classType} · Nv.{character.level}
-                </span>
-              </div>
-
-              {/* HP & MP Bars */}
-              <div className="mt-2 space-y-1.5">
-                <div className="h-2 w-full rounded bg-slate-800 overflow-hidden">
-                  <div
-                    className="h-full bg-rose-600 transition-all"
-                    style={{ width: `${Math.round((character.hp / character.maxHp) * 100)}%` }}
-                  />
-                </div>
-                <div className="h-1.5 w-full rounded bg-slate-800 overflow-hidden">
-                  <div
-                    className="h-full bg-sky-500 transition-all"
-                    style={{ width: `${Math.round((character.mp / character.maxMp) * 100)}%` }}
-                  />
-                </div>
-              </div>
-
-              <div className="mt-2 flex items-center gap-2 text-[11px] font-mono-tabular text-slate-300">
-                <span>Zen {character.zen.toLocaleString()}</span>
-                <span>·</span>
-                <span className="text-rose-300">Bless {character.bless}</span>
-                <span>·</span>
-                <span className="text-sky-300">Soul {character.soul}</span>
-              </div>
-            </div>
-
-            {roomState && (
-              <div className="rounded-lg bg-[#0e131d]/92 border border-sky-500/40 px-3 py-1.5 text-xs font-mono-tabular text-sky-200 flex items-center gap-2">
+          {/* Room & Event Status Banners */}
+          {roomState && (
+            <div className="pointer-events-none fixed top-2.5 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-1.5">
+              <div className="rounded-lg bg-[#0e131d]/92 border border-sky-500/40 px-3 py-1 text-xs font-mono-tabular text-sky-200 flex items-center gap-2">
                 {roomState.transport === 'wifi' ? (
                   <Wifi className="w-3.5 h-3.5 text-sky-400 shrink-0" />
                 ) : (
                   <Bluetooth className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
                 )}
                 <span>
-                  Sala {roomState.code} · {roomState.peers.length} en línea
+                  Sala {roomState.code} · {roomState.peers.length} conectados
                 </span>
               </div>
-            )}
-          </div>
 
-          {/* Top-Center Active Event Boss HP Bar */}
-          {roomState?.activeEvent && (
-            <div className="pointer-events-none fixed top-3 left-1/2 -translate-x-1/2 z-20 w-[min(360px,72vw)] rounded-xl bg-[#1a1014]/95 border border-rose-500/50 px-4 py-2 shadow-xl">
-              <div className="flex items-center justify-between text-xs font-semibold text-rose-200">
-                <span className="inline-flex items-center gap-1.5">
-                  <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
-                  Jefe de Evento · Oleada {roomState.eventWave}
-                </span>
-                <span className="font-mono-tabular">
-                  {roomState.bossHp} / {roomState.bossMaxHp}
-                </span>
-              </div>
-              <div className="mt-1.5 h-2.5 w-full rounded bg-slate-900 overflow-hidden">
-                <div
-                  className="h-full bg-rose-500 transition-all"
-                  style={{ width: `${Math.round((roomState.bossHp / roomState.bossMaxHp) * 100)}%` }}
-                />
-              </div>
+              {roomState.activeEvent && (
+                <div className="w-[min(340px,70vw)] rounded-lg bg-[#1a1014]/95 border border-rose-500/60 px-3 py-1.5 shadow-xl">
+                  <div className="flex items-center justify-between text-[11px] font-semibold text-rose-200">
+                    <span className="inline-flex items-center gap-1">
+                      <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
+                      Jefe · Oleada {roomState.eventWave}
+                    </span>
+                    <span className="font-mono-tabular">
+                      {roomState.bossHp} / {roomState.bossMaxHp}
+                    </span>
+                  </div>
+                  <div className="mt-1 h-2 w-full rounded bg-slate-900 overflow-hidden">
+                    <div
+                      className="h-full bg-rose-500 transition-all"
+                      style={{ width: `${Math.round((roomState.bossHp / roomState.bossMaxHp) * 100)}%` }}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
-          {/* Top-Right Compact Controls */}
-          <div className="fixed top-3 right-3 z-20 flex items-center gap-2">
-            <button
-              onClick={() => setShowTouchPad((v) => !v)}
-              className="min-h-[44px] px-3 rounded-lg bg-[#0e131d]/92 border border-slate-700 text-xs font-medium text-slate-200 hover:border-amber-500/60 hidden sm:inline-flex items-center cursor-pointer"
-            >
-              {showTouchPad ? 'Ocultar Pad' : 'Pad Táctil'}
-            </button>
-            <button
-              onClick={toggleMute}
-              aria-label={muted ? 'Activar audio' : 'Silenciar audio'}
-              className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-lg bg-[#0e131d]/92 border border-slate-700 text-slate-200 hover:border-amber-500/60 cursor-pointer"
-            >
-              {muted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-            </button>
-            <button
-              onClick={() => setGameState(gameState === 'playing' ? 'paused' : 'playing')}
-              aria-label="Pausa"
-              className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-lg bg-[#0e131d]/92 border border-slate-700 text-slate-200 hover:border-amber-500/60 cursor-pointer"
-            >
-              <Pause className="w-4 h-4" />
-            </button>
-          </div>
-
-          {/* Floating Combat / Loot Feedback */}
-          <div className="pointer-events-none fixed top-24 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-1">
+          {/* Floating Combat & Loot Feedback */}
+          <div className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-1">
             {banners.map((b) => (
               <div
                 key={b.id}
@@ -748,204 +893,71 @@ export default function App() {
             ))}
           </div>
 
-          {/* Mobile Touch Controls (Thumb Zones) */}
-          {showTouchPad && gameState === 'playing' && (
-            <>
-              {/* Left Thumb D-Pad */}
-              <div className="fixed bottom-24 left-4 z-20 grid grid-cols-3 gap-1 w-36 h-36">
-                <div />
-                <button
-                  onPointerDown={() => engineRef.current?.setJoystickVector(0, -1)}
-                  onPointerUp={() => engineRef.current?.setJoystickVector(0, 0)}
-                  onPointerLeave={() => engineRef.current?.setJoystickVector(0, 0)}
-                  className="rounded-lg bg-[#111723]/85 border border-slate-600/80 text-slate-200 text-xs font-bold active:bg-amber-600"
-                >
-                  ▲
-                </button>
-                <div />
-                <button
-                  onPointerDown={() => engineRef.current?.setJoystickVector(-1, 0)}
-                  onPointerUp={() => engineRef.current?.setJoystickVector(0, 0)}
-                  onPointerLeave={() => engineRef.current?.setJoystickVector(0, 0)}
-                  className="rounded-lg bg-[#111723]/85 border border-slate-600/80 text-slate-200 text-xs font-bold active:bg-amber-600"
-                >
-                  ◀
-                </button>
-                <button
-                  onClick={() => engineRef.current?.pickupNearestLoot()}
-                  className="rounded-lg bg-amber-600/90 text-slate-950 text-[10px] font-bold"
-                >
-                  E
-                </button>
-                <button
-                  onPointerDown={() => engineRef.current?.setJoystickVector(1, 0)}
-                  onPointerUp={() => engineRef.current?.setJoystickVector(0, 0)}
-                  onPointerLeave={() => engineRef.current?.setJoystickVector(0, 0)}
-                  className="rounded-lg bg-[#111723]/85 border border-slate-600/80 text-slate-200 text-xs font-bold active:bg-amber-600"
-                >
-                  ▶
-                </button>
-                <div />
-                <button
-                  onPointerDown={() => engineRef.current?.setJoystickVector(0, 1)}
-                  onPointerUp={() => engineRef.current?.setJoystickVector(0, 0)}
-                  onPointerLeave={() => engineRef.current?.setJoystickVector(0, 0)}
-                  className="rounded-lg bg-[#111723]/85 border border-slate-600/80 text-slate-200 text-xs font-bold active:bg-amber-600"
-                >
-                  ▼
-                </button>
-                <div />
-              </div>
-
-              {/* Right Thumb Combat Cluster */}
-              <div className="fixed bottom-24 right-4 z-20 flex flex-col items-end gap-2">
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => engineRef.current?.triggerSkill(1)}
-                    className="w-12 h-12 rounded-xl bg-[#182133]/90 border border-rose-500/60 text-rose-200 text-xs font-bold active:scale-95"
-                  >
-                    1
-                  </button>
-                  <button
-                    onClick={() => engineRef.current?.triggerSkill(2)}
-                    className="w-12 h-12 rounded-xl bg-[#182133]/90 border border-sky-500/60 text-sky-200 text-xs font-bold active:scale-95"
-                  >
-                    2
-                  </button>
-                </div>
-                <button
-                  onClick={() => engineRef.current?.triggerBasicAttack()}
-                  className="w-16 h-16 rounded-2xl bg-amber-600 border-2 border-amber-300 text-slate-950 font-bold text-xs flex flex-col items-center justify-center shadow-lg active:scale-95"
-                >
-                  <Sword className="w-5 h-5" />
-                  Atacar
-                </button>
-              </div>
-            </>
-          )}
-
-          {/* Unified Collapsible Bottom Control Dock */}
-          <div className="fixed bottom-3 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center max-w-[96vw]">
-            <button
-              onClick={() => setDockCollapsed((c) => !c)}
-              className="px-3 py-1 rounded-t-lg bg-[#0e131d]/95 border border-b-0 border-slate-700 text-[11px] font-medium text-slate-300 inline-flex items-center gap-1 cursor-pointer"
-            >
-              {dockCollapsed ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-              {dockCollapsed ? 'Mostrar Barra' : 'Ocultar Barra'}
-            </button>
-
-            {!dockCollapsed && (
-              <div className="flex items-center gap-1.5 sm:gap-2 px-3 py-2 rounded-xl bg-[#0e131d]/95 border border-slate-700/90 shadow-2xl overflow-x-auto max-w-[96vw]">
-                {/* Combat Skills */}
-                <button
-                  onClick={() => engineRef.current?.triggerBasicAttack()}
-                  className="min-h-[44px] px-3 rounded-lg bg-amber-600 hover:bg-amber-500 text-slate-950 text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  <Sword className="w-4 h-4" />
-                  Atacar
-                </button>
-                <button
-                  onClick={() => engineRef.current?.triggerSkill(1)}
-                  className="min-h-[44px] px-2.5 rounded-lg bg-[#192233] hover:bg-slate-700 text-rose-300 text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  [1] Tajo
-                </button>
-                <button
-                  onClick={() => engineRef.current?.triggerSkill(2)}
-                  className="min-h-[44px] px-2.5 rounded-lg bg-[#192233] hover:bg-slate-700 text-sky-300 text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  [2] Espiral
-                </button>
-                <button
-                  onClick={handleHealPotion}
-                  className="min-h-[44px] px-2.5 rounded-lg bg-[#192233] hover:bg-slate-700 text-emerald-300 text-xs font-semibold inline-flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  <Sparkles className="w-3.5 h-3.5" />
-                  Poción
-                </button>
-
-                <div className="h-6 w-px bg-slate-700 mx-0.5 shrink-0" />
-
-                {/* Core Management Drawers */}
-                <button
-                  onClick={() => setActiveDrawer('inventory')}
-                  className="min-h-[44px] px-3 rounded-lg bg-[#171f2f] hover:bg-slate-700 text-slate-100 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  <Backpack className="w-4 h-4 text-amber-400" />
-                  Inventario
-                </button>
-                <button
-                  onClick={() => setActiveDrawer('sync')}
-                  className="min-h-[44px] px-3 rounded-lg bg-[#171f2f] hover:bg-slate-700 text-slate-100 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  <Wifi className="w-4 h-4 text-sky-400" />
-                  Wi-Fi / BT
-                </button>
-                <button
-                  onClick={() => setActiveDrawer('oracle')}
-                  className="min-h-[44px] px-3 rounded-lg bg-[#171f2f] hover:bg-slate-700 text-slate-100 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  <Bot className="w-4 h-4 text-emerald-400" />
-                  Oráculo IA
-                </button>
-                <button
-                  onClick={() => setActiveDrawer('apk')}
-                  className="min-h-[44px] px-3 rounded-lg bg-[#171f2f] hover:bg-slate-700 text-slate-100 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  <Smartphone className="w-4 h-4 text-amber-300" />
-                  APK / SQLite
-                </button>
-              </div>
-            )}
-          </div>
+          <MuHudOverlay
+            character={character}
+            comboConfig={comboConfig}
+            comboArmed={comboArmed}
+            buttonLayouts={buttonLayouts}
+            editMode={editMode}
+            measuredFps={measuredFps}
+            free3dCamera={gameSettings.free3dCamera}
+            onJoystickVector={(x, y) => engineRef.current?.setJoystickVector(x, y)}
+            onPressAttack={handlePressAttack}
+            onToggleComboArmed={() => setComboArmed((v) => !v)}
+            onCastSkill={handleCastSkill}
+            onUpdateComboConfig={handleUpdateComboConfig}
+            onHealPotion={handleHealPotion}
+            onPickupLoot={() => engineRef.current?.pickupNearestLoot()}
+            onOpenInventory={() => setActiveDrawer('inventory')}
+            onOpenSync={() => setActiveDrawer('sync')}
+            onOpenOracle={() => setActiveDrawer('oracle')}
+            onOpenApk={() => setActiveDrawer('apk')}
+            onOpenSettings={() => setActiveDrawer('settings')}
+            onUpdateButtonLayouts={handleUpdateButtonLayouts}
+            onExitEditMode={() => setEditMode(false)}
+          />
         </>
       )}
 
       {/* PAUSE MODAL */}
-      {gameState === 'paused' && activeDrawer === 'none' && (
+      {screenStage === 'paused' && activeDrawer === 'none' && (
         <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/75 p-4">
-          <div className="w-full max-w-sm rounded-2xl bg-[#111622] border border-slate-700 p-6 space-y-3 shadow-2xl">
+          <div className="w-full max-w-sm rounded-2xl bg-[#111622] border-2 border-amber-700/70 p-6 space-y-3 shadow-2xl">
             <h2 className="font-display text-xl font-bold text-amber-300 text-center">
               Juego en Pausa
             </h2>
             <p className="text-xs text-slate-400 text-center">
-              Todo tu progreso y los intercambios están guardados en SQLite local.
+              Tu progreso, botones y equipamiento están guardados en SQLite.
             </p>
             <button
-              onClick={() => setGameState('playing')}
+              onClick={() => setScreenStage('playing')}
               className="w-full min-h-[44px] rounded-lg bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-sm cursor-pointer"
             >
-              Continuar Aventura
+              Continuar Jugando
             </button>
             <button
-              onClick={() => setActiveDrawer('sync')}
+              onClick={() => setActiveDrawer('settings')}
               className="w-full min-h-[44px] rounded-lg bg-[#192233] hover:bg-slate-700 text-slate-100 font-semibold text-sm cursor-pointer"
             >
-              Vinculación Wi-Fi y Bluetooth
-            </button>
-            <button
-              onClick={() => setActiveDrawer('apk')}
-              className="w-full min-h-[44px] rounded-lg bg-[#192233] hover:bg-slate-700 text-slate-100 font-semibold text-sm cursor-pointer"
-            >
-              APK Móvil y Respaldo SQLite
+              Ajustes (Brillo, Sonido, 3D, Botones)
             </button>
             <button
               onClick={() => {
-                engineRef.current?.setMode('title');
-                setGameState('title');
+                engineRef.current?.setMode('character_select');
+                setScreenStage('character_select');
               }}
-              className="w-full min-h-[44px] rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium text-sm cursor-pointer"
+              className="w-full min-h-[44px] rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium text-sm cursor-pointer"
             >
-              Volver a Pantalla Principal
+              Cambiar Personaje
             </button>
           </div>
         </div>
       )}
 
-      {/* FEATURE DRAWERS */}
+      {/* FEATURE MODALS & DRAWERS */}
       {character && (
         <>
-          <InventoryDrawer
+          <MuInventoryModal
             open={activeDrawer === 'inventory'}
             character={character}
             items={items}
@@ -1012,6 +1024,21 @@ export default function App() {
           />
         </>
       )}
+
+      <SettingsModal
+        open={activeDrawer === 'settings'}
+        settings={gameSettings}
+        measuredFps={measuredFps}
+        onClose={() => setActiveDrawer('none')}
+        onUpdateSettings={handleUpdateSettings}
+        onEnterButtonEditor={() => setEditMode(true)}
+        onRequestLandscapeFullscreen={requestLandscapeFullscreen}
+        onSwitchCharacter={() => {
+          setActiveDrawer('none');
+          engineRef.current?.setMode('character_select');
+          setScreenStage('character_select');
+        }}
+      />
 
       <ApkSyncDrawer
         open={activeDrawer === 'apk'}
