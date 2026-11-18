@@ -93,7 +93,20 @@ async function startServer() {
   app.use(express.json({ limit: '2mb' }));
 
   const httpServer = http.createServer(app);
-  const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+  const wss = new WebSocketServer({ noServer: true });
+
+  httpServer.on('upgrade', (req, socket, head) => {
+    try {
+      const pathname = new URL(req.url || '/', 'http://localhost').pathname;
+      if (pathname === '/ws') {
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          wss.emit('connection', ws, req);
+        });
+      }
+    } catch {
+      socket.destroy();
+    }
+  });
 
   wss.on('connection', (ws) => {
     let currentRoomCode: string | null = null;
@@ -499,7 +512,11 @@ Registros en historial compartido Wi-Fi/Bluetooth: ${ledgerCount || 0}`;
   // Vite middleware in dev, static dist in production
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        allowedHosts: true,
+        ws: { server: httpServer },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
