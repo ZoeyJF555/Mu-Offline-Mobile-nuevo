@@ -163,7 +163,7 @@ export const MuInventoryModal: React.FC<MuInventoryModalProps> = ({
           <div className="md:col-span-7 flex flex-col gap-3">
             <div className="bg-[#090c14] border border-slate-800 rounded-lg p-3">
               <div className="flex items-center justify-between text-[11px] text-slate-400 mb-2">
-                <span>Mochila (SQLite · {backpackItems.length} ítems guardados)</span>
+                <span>Mochila (IndexedDB · {backpackItems.length} ítems guardados)</span>
                 <span>Toca un cuadro para equipar o forjar</span>
               </div>
               <div className="grid grid-cols-6 gap-1.5">

@@ -109,7 +109,7 @@ export const SyncLinkDrawer: React.FC<SyncLinkDrawerProps> = ({
               Vinculación Local Wi-Fi y Bluetooth · Intercambio en Tiempo Real
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              Invita amigos a eventos y comparte armas o sets; cada cambio se guarda al instante en SQLite sin perder nada al cerrar la sala.
+              Invita amigos a eventos y comparte armas o sets; cada cambio se guarda al instante en IndexedDB (Dexie) sin perder nada al cerrar la sala.
             </p>
           </div>
           <button
@@ -348,7 +348,7 @@ export const SyncLinkDrawer: React.FC<SyncLinkDrawerProps> = ({
             <div className="space-y-4">
               {!roomState || remotePeers.length === 0 ? (
                 <div className="p-5 rounded-xl bg-[#141a26] border border-slate-800 text-sm text-slate-300">
-                  Conecta al menos a otro jugador (en otra pestaña o móvil conectado al mismo Wi-Fi / sala) para transferir armas y sets en tiempo real. Todo lo transferido queda registrado en el SQLite de ambos jugadores.
+                  Conecta al menos a otro jugador (en otra pestaña o móvil conectado al mismo Wi-Fi / sala) para transferir armas y sets en tiempo real. Todo lo transferido queda registrado en IndexedDB de ambos jugadores.
                 </div>
               ) : (
                 <>
@@ -368,7 +368,7 @@ export const SyncLinkDrawer: React.FC<SyncLinkDrawerProps> = ({
                       </select>
                     </div>
                     <div className="text-xs text-emerald-300">
-                      Persistencia automática SQLite activa · Propietario original preservado
+                      Persistencia automática IndexedDB (Dexie) activa · Propietario original preservado
                     </div>
                   </div>
 
@@ -405,7 +405,7 @@ export const SyncLinkDrawer: React.FC<SyncLinkDrawerProps> = ({
           {tab === 'history' && (
             <div className="space-y-4">
               <div className="text-xs text-slate-300">
-                Este libro contable vive dentro de tu base de datos SQLite local (`shared_ledger` y `event_sessions`). Aunque termine la invitación o desconectes el Wi-Fi/Bluetooth, tanto el patrocinador como los invitados conservan sus armas, sets y registro completo.
+                Este libro contable vive dentro de tu base de datos IndexedDB local (`SharedLedger` y `EventSessions`). Aunque termine la invitación o desconectes el Wi-Fi/Bluetooth, tanto el patrocinador como los invitados conservan sus armas, sets y registro completo.
               </div>
 
               {ledger.length === 0 ? (
@@ -433,7 +433,7 @@ export const SyncLinkDrawer: React.FC<SyncLinkDrawerProps> = ({
                         </div>
                       </div>
                       <div className="text-xs text-emerald-300 font-mono-tabular">
-                        Guardado en SQLite · {new Date(entry.createdAt).toLocaleTimeString()}
+                        Guardado en IndexedDB · {new Date(entry.createdAt).toLocaleTimeString()}
                       </div>
                     </div>
                   ))}

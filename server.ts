@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import fs from 'fs';
 import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -9,6 +10,8 @@ import { createServer as createViteServer } from 'vite';
 import type {
   EventType,
   HeroClass,
+  MuAccount,
+  MuCharacter,
   MuItem,
   RoomPeer,
   RoomState,
@@ -19,7 +22,39 @@ import type {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PORT = 3000;
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '2.0.0';
+const CLOUD_STORE_PATH = path.join(__dirname, '.mu-cloud-sync-store.json');
+
+interface CloudStoreData {
+  accounts: Record<string, MuAccount>;
+  characters: Record<string, MuCharacter>;
+}
+
+function loadCloudStore(): CloudStoreData {
+  try {
+    if (fs.existsSync(CLOUD_STORE_PATH)) {
+      const raw = fs.readFileSync(CLOUD_STORE_PATH, 'utf8');
+      const parsed = JSON.parse(raw) as CloudStoreData;
+      return {
+        accounts: parsed.accounts || {},
+        characters: parsed.characters || {},
+      };
+    }
+  } catch {
+    // fallback to empty store
+  }
+  return { accounts: {}, characters: {} };
+}
+
+function saveCloudStore(data: CloudStoreData) {
+  try {
+    fs.writeFileSync(CLOUD_STORE_PATH, JSON.stringify(data, null, 2), 'utf8');
+  } catch (err) {
+    console.warn('No se pudo guardar .mu-cloud-sync-store.json:', err);
+  }
+}
+
+const cloudStore = loadCloudStore();
 
 interface ServerRoom {
   code: string;
@@ -369,9 +404,140 @@ async function startServer() {
       version: APP_VERSION,
       buildTimestamp: new Date().toISOString(),
       webEntryUrl: origin,
-      offlineEngine: 'sql.js (SQLite WASM + IndexedDB)',
+      offlineEngine: 'Dexie.js (IndexedDB Offline-First) + Babylon.js GLB',
       transports: ['wifi-websocket', 'web-bluetooth-gatt'],
       githubWorkflow: '.github/workflows/build-apk.yml',
+    });
+  });
+
+  // API: Cloud Sync (Golden Rule: Compare updatedAt timestamps, never overwrite newer data)
+  app.post('/api/cloud/sync', (req, res) => {
+    const {
+      accounts = [],
+      characters = [],
+      activeAccountId = null,
+    } = req.body as {
+      accounts?: MuAccount[];
+      characters?: MuCharacter[];
+      activeAccountId?: string | null;
+    };
+
+    const acceptedAccountIds: string[] = [];
+    const acceptedCharacterIds: string[] = [];
+    const newerAccounts: MuAccount[] = [];
+    const newerCharacters: MuCharacter[] = [];
+    let dirty = false;
+
+    for (const localAcc of accounts) {
+      if (!localAcc?.id) continue;
+      const serverAcc = cloudStore.accounts[localAcc.id];
+      if (!serverAcc || Number(localAcc.updatedAt) >= Number(serverAcc.updatedAt)) {
+        cloudStore.accounts[localAcc.id] = { ...localAcc, isSynced: true };
+        acceptedAccountIds.push(localAcc.id);
+        dirty = true;
+      } else {
+        // Server is newer -> cloud wins
+        newerAccounts.push({ ...serverAcc, isSynced: true });
+      }
+    }
+
+    for (const localChar of characters) {
+      if (!localChar?.id) continue;
+      const serverChar = cloudStore.characters[localChar.id];
+      if (!serverChar || Number(localChar.updatedAt) >= Number(serverChar.updatedAt)) {
+        cloudStore.characters[localChar.id] = { ...localChar, isSynced: true };
+        acceptedCharacterIds.push(localChar.id);
+        dirty = true;
+      } else {
+        // Server is newer -> cloud wins
+        newerCharacters.push({ ...serverChar, isSynced: true });
+      }
+    }
+
+    // Pull any characters belonging to activeAccountId that exist on cloud
+    if (activeAccountId) {
+      const sentIds = new Set(characters.map((c) => c.id));
+      for (const serverChar of Object.values(cloudStore.characters)) {
+        if (serverChar.accountId === activeAccountId && !sentIds.has(serverChar.id)) {
+          newerCharacters.push({ ...serverChar, isSynced: true });
+        }
+      }
+    }
+
+    if (dirty) {
+      saveCloudStore(cloudStore);
+    }
+
+    res.json({
+      acceptedAccountIds,
+      acceptedCharacterIds,
+      newerAccounts,
+      newerCharacters,
+      serverTimestamp: Date.now(),
+    });
+  });
+
+  // API: Fetch secret questions for cross-device account recovery
+  app.get('/api/cloud/recovery-questions', (req, res) => {
+    const username = String(req.query.username || '').trim().toLowerCase();
+    if (!username) {
+      res.status(400).json({ found: false });
+      return;
+    }
+    const found = Object.values(cloudStore.accounts).find(
+      (a) => a.username.toLowerCase() === username,
+    );
+    if (!found) {
+      res.json({ found: false });
+      return;
+    }
+    res.json({
+      found: true,
+      secretQ1: found.secretQ1,
+      secretQ2: found.secretQ2,
+    });
+  });
+
+  // API: Verify secret answers, set new password, and download Account + Characters to device
+  app.post('/api/cloud/recover', (req, res) => {
+    const { username, secretA1Hash, secretA2Hash, newPasswordHash, updatedAt } = req.body as {
+      username: string;
+      secretA1Hash: string;
+      secretA2Hash: string;
+      newPasswordHash: string;
+      updatedAt: number;
+    };
+
+    const cleanUser = String(username || '').trim().toLowerCase();
+    const account = Object.values(cloudStore.accounts).find(
+      (a) => a.username.toLowerCase() === cleanUser,
+    );
+    if (!account) {
+      res.status(404).json({ ok: false, error: 'Cuenta no encontrada en la nube.' });
+      return;
+    }
+    if (account.secretA1 !== secretA1Hash || account.secretA2 !== secretA2Hash) {
+      res.status(403).json({ ok: false, error: 'Las respuestas secretas no coinciden con el respaldo en la nube.' });
+      return;
+    }
+
+    const updatedAccount: MuAccount = {
+      ...account,
+      passwordHash: newPasswordHash,
+      updatedAt: Math.max(Date.now(), Number(updatedAt) || Date.now()),
+      isSynced: true,
+    };
+    cloudStore.accounts[updatedAccount.id] = updatedAccount;
+    saveCloudStore(cloudStore);
+
+    const characters = Object.values(cloudStore.characters)
+      .filter((c) => c.accountId === updatedAccount.id)
+      .map((c) => ({ ...c, isSynced: true }));
+
+    res.json({
+      ok: true,
+      account: updatedAccount,
+      characters,
     });
   });
 

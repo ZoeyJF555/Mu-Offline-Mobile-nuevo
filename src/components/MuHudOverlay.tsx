@@ -3,6 +3,8 @@ import {
   Backpack,
   Bot,
   Check,
+  Cloud,
+  CloudOff,
   Compass,
   Flame,
   Hand,
@@ -10,9 +12,11 @@ import {
   MessageSquare,
   RotateCcw,
   Settings,
+  Shield,
   SlidersHorizontal,
   Smartphone,
   Sword,
+  Swords,
   User,
   Wifi,
   X,
@@ -24,12 +28,24 @@ import { getMapById } from '../data/muWorldData';
 import type {
   ButtonLayoutItem,
   CharacterComboConfig,
+  FloatingDamageNumber,
   HudButtonId,
   MuCharacter,
   NpcDef,
   SkillDef,
+  SyncStatusInfo,
 } from '../types/game';
 import { PubgJoystick } from './PubgJoystick';
+
+export interface WorldTelemetryInfo {
+  x: number;
+  z: number;
+  inSafeCity: boolean;
+  totalMonsters: number;
+  nearbyMonsters: number;
+  mapName: string;
+  areaKm2: number;
+}
 
 interface MuHudOverlayProps {
   character: MuCharacter;
@@ -40,6 +56,9 @@ interface MuHudOverlayProps {
   measuredFps: number;
   free3dCamera: boolean;
   nearbyNpc: NpcDef | null;
+  worldTelemetry: WorldTelemetryInfo;
+  damageNumbers: FloatingDamageNumber[];
+  syncStatus: SyncStatusInfo;
   onJoystickVector: (x: number, y: number) => void;
   onPressAttack: () => void;
   onToggleComboArmed: () => void;
@@ -68,6 +87,9 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
   measuredFps,
   free3dCamera,
   nearbyNpc,
+  worldTelemetry,
+  damageNumbers,
+  syncStatus,
   onJoystickVector,
   onPressAttack,
   onToggleComboArmed,
@@ -194,37 +216,80 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
 
   return (
     <>
-      {/* TOP-LEFT: Compact Character, Current Map & FPS Readout */}
-      <div className="pointer-events-none fixed top-2.5 left-3 z-20 rounded-lg bg-[#0d121c]/90 border border-amber-700/50 px-3 py-1.5 shadow-lg">
-        <div className="flex items-center gap-2 text-xs">
+      {/* 3D-PROJECTED FLOATING DAMAGE NUMBERS */}
+      <div className="pointer-events-none fixed inset-0 z-15 overflow-hidden">
+        {damageNumbers.map((d) => (
+          <div
+            key={d.id}
+            style={{
+              left: `${d.xPct}%`,
+              top: `${d.yPct}%`,
+              color: d.color,
+              transform: 'translate(-50%, -100%)',
+            }}
+            className={`absolute font-mono-tabular font-extrabold drop-shadow-[0_2px_4px_rgba(0,0,0,0.95)] transition-transform duration-700 -translate-y-4 ${
+              d.isCritical ? 'text-lg sm:text-xl' : 'text-sm sm:text-base'
+            }`}
+          >
+            {d.text}
+          </div>
+        ))}
+      </div>
+
+      {/* TOP-LEFT: Compact Character, Safe Zone / Hunting Zone, Coords & FPS */}
+      <div className="pointer-events-none fixed top-2.5 left-3 z-20 rounded-lg bg-[#0d121c]/90 border border-amber-700/50 px-3 py-1.5 shadow-lg space-y-0.5">
+        <div className="flex items-center gap-2 text-xs flex-wrap">
           <span className="font-display font-bold text-amber-300">{character.name}</span>
           <span className="font-mono-tabular text-slate-300">
             {character.classType} Nv.{character.level}
           </span>
-          <span className="font-mono-tabular text-sky-300">· {mapCfg.name}</span>
+          <span className="font-mono-tabular text-sky-300">
+            · {mapCfg.name} ({mapCfg.areaKm2.toFixed(2)} km²)
+          </span>
           <span className="font-mono-tabular text-emerald-300">{measuredFps} FPS</span>
           {free3dCamera && (
             <span className="font-mono-tabular text-purple-300">· 3D Libre</span>
           )}
         </div>
+        <div className="flex items-center gap-2 text-[11px] font-mono-tabular">
+          {worldTelemetry.inSafeCity ? (
+            <span className="inline-flex items-center gap-1 text-emerald-300 font-semibold">
+              <Shield className="w-3 h-3" />
+              Capital Segura (Sin ataques ni monstruos)
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 text-rose-300 font-semibold">
+              <Swords className="w-3 h-3" />
+              Zona de Caza ({worldTelemetry.nearbyMonsters} cerca / {worldTelemetry.totalMonsters.toLocaleString()} mapa)
+            </span>
+          )}
+          <span className="text-slate-400">
+            ({worldTelemetry.x}, {worldTelemetry.z})
+          </span>
+        </div>
       </div>
 
-      {/* TOP-LEFT SECONDARY: Quick Oracle & APK Buttons */}
+      {/* TOP-LEFT SECONDARY: Quick Oracle, APK / Cloud Sync Buttons */}
       {!editMode && (
-        <div className="fixed top-12 left-3 z-20 flex items-center gap-1.5">
+        <div className="fixed top-[62px] left-3 z-20 flex items-center gap-1.5">
           <button
             onClick={onOpenOracle}
-            className="min-h-[36px] px-2.5 rounded-lg bg-[#0e1420]/90 border border-slate-700 hover:border-emerald-500/60 text-emerald-300 text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+            className="min-h-[34px] px-2.5 rounded-lg bg-[#0e1420]/90 border border-slate-700 hover:border-emerald-500/60 text-emerald-300 text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
           >
             <Bot className="w-3.5 h-3.5" />
             Oráculo
           </button>
           <button
             onClick={onOpenApk}
-            className="min-h-[36px] px-2.5 rounded-lg bg-[#0e1420]/90 border border-slate-700 hover:border-amber-500/60 text-amber-200 text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+            className="min-h-[34px] px-2.5 rounded-lg bg-[#0e1420]/90 border border-slate-700 hover:border-amber-500/60 text-amber-200 text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
           >
             <Smartphone className="w-3.5 h-3.5" />
-            APK / SQLite
+            APK / Sync
+            {syncStatus.isOnline ? (
+              <Cloud className="w-3 h-3 text-emerald-400 ml-0.5" />
+            ) : (
+              <CloudOff className="w-3 h-3 text-amber-400 ml-0.5" />
+            )}
           </button>
         </div>
       )}
@@ -291,7 +356,7 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
           className="min-h-[42px] px-2.5 rounded-lg bg-[#0f1522]/92 border border-emerald-600/50 hover:border-emerald-400 text-emerald-200 text-xs font-semibold inline-flex items-center gap-1.5 shadow-lg cursor-pointer whitespace-nowrap"
         >
           <Compass className="w-4 h-4 text-emerald-400" />
-          15 Mapas
+          6 Mapas
         </button>,
       )}
 

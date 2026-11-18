@@ -14,13 +14,13 @@ export default defineConfig(() => {
       VitePWA({
         base: './',
         registerType: 'autoUpdate',
-        includeAssets: ['icon.svg', 'apple-touch-icon.png', 'sql-wasm.wasm'],
+        includeAssets: ['icon.svg', 'apple-touch-icon.png', 'models/*.glb'],
         manifest: {
           id: './',
           name: 'MU Lorencia Offline & Sync',
           short_name: 'MU Lorencia',
           description:
-            'Juego 3D Mu Offline con SQLite integrado, vinculación Wi-Fi y Bluetooth para eventos e intercambio en tiempo real.',
+            'Juego Web3D Babylon.js Offline-First con IndexedDB (Dexie), modelos .glb medievales, 6 mapas de 1-1.6 km², sincronización por timestamp y kit APK.',
           theme_color: '#0c1018',
           background_color: '#0c1018',
           display: 'standalone',
@@ -49,9 +49,26 @@ export default defineConfig(() => {
           ],
         },
         workbox: {
-          globPatterns: ['**/*.{js,css,html,ico,png,svg,wasm,woff,woff2}'],
-          maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+          globPatterns: ['**/*.{js,css,html,ico,png,svg,glb,woff,woff2}'],
+          maximumFileSizeToCacheInBytes: 25 * 1024 * 1024,
+          cleanupOutdatedCaches: true,
+          clientsClaim: true,
+          skipWaiting: true,
           runtimeCaching: [
+            {
+              urlPattern: /\/models\/.*\.glb$/i,
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'mu-3d-glb-models-cache',
+                expiration: {
+                  maxEntries: 80,
+                  maxAgeSeconds: 60 * 60 * 24 * 365,
+                },
+                cacheableResponse: {
+                  statuses: [0, 200],
+                },
+              },
+            },
             {
               urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
               handler: 'CacheFirst',
@@ -97,8 +114,8 @@ export default defineConfig(() => {
           if (error) {
             return;
           }
-          const distDir = path.resolve(__dirname, 'dist');
-          const srcAssets = path.resolve(__dirname, 'src/assets');
+          const distDir = path.resolve(import.meta.dirname, 'dist');
+          const srcAssets = path.resolve(import.meta.dirname, 'src/assets');
           const distAssets = path.resolve(distDir, 'src/assets');
           if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
             fs.cpSync(srcAssets, distAssets, {recursive: true, force: true});
@@ -106,9 +123,20 @@ export default defineConfig(() => {
         },
       },
     ],
+    build: {
+      rolldownOptions: {
+        output: {
+          manualChunks(id: string) {
+            if (id.includes('@babylonjs/loaders')) return 'babylon-loaders';
+            if (id.includes('@babylonjs/core')) return 'babylon-core';
+            if (id.includes('dexie')) return 'dexie-db';
+          },
+        },
+      },
+    },
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(import.meta.dirname, '.'),
       },
     },
     server: {

@@ -192,7 +192,7 @@ jobs:
         webEntryUrl: cleanWebUrl,
         repoUrl: opts.repoUrl || 'https://github.com/tu-usuario/mu-lorencia-offline',
         autoUpdateWebBundle: true,
-        sqliteLocalEngine: 'sql.js + IndexedDB',
+        offlineEngine: 'Dexie IndexedDB + Workbox GLB Cache',
       },
       null,
       2,

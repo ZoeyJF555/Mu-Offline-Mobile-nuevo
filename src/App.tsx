@@ -11,14 +11,16 @@ import {
   allocateStatPoint,
   buyJewelFromNpc,
   buyShopItem,
+  changeAccountPassword,
   createCharacterForAccount,
   equipItem,
   executeChaosMixWing,
   getChatHistory,
   getEventSessions,
   getItemsForCharacter,
+  getLocalRecoveryQuestions,
   getSharedLedger,
-  initSqlite,
+  initDexie,
   listAccounts,
   listCharactersByAccount,
   loadButtonLayouts,
@@ -26,6 +28,7 @@ import {
   loadGameSettings,
   loginAccount,
   recordSharedLedger,
+  recoverAccountLocal,
   registerAccount,
   removeItemFromCharacter,
   saveButtonLayouts,
@@ -36,15 +39,16 @@ import {
   updateCharacter,
   upgradeItemWithJewel,
   upsertEventSession,
-} from './db/sqliteStore';
+} from './db/dexieStore';
 import { MuWorldEngine, type EngineCallbacks } from './game/MuWorldEngine';
 import { soundSynth } from './game/soundSynth';
+import { cloudSyncManager } from './services/cloudSyncManager';
 import { LocalSyncManager } from './services/syncManager';
 import { ApkSyncDrawer } from './components/ApkSyncDrawer';
 import { CharacterStatsModal } from './components/CharacterStatsModal';
 import { ClassicLoginFlow } from './components/ClassicLoginFlow';
 import { MapWarpModal } from './components/MapWarpModal';
-import { MuHudOverlay } from './components/MuHudOverlay';
+import { MuHudOverlay, type WorldTelemetryInfo } from './components/MuHudOverlay';
 import { MuInventoryModal } from './components/MuInventoryModal';
 import { NpcShopModal } from './components/NpcShopModal';
 import { OracleChatDrawer } from './components/OracleChatDrawer';
@@ -56,6 +60,7 @@ import type {
   CharacterComboConfig,
   ChatMessageRecord,
   EventSessionRecord,
+  FloatingDamageNumber,
   GameSettings,
   HeroClass,
   HudButtonId,
@@ -69,6 +74,7 @@ import type {
   SharedLedgerEntry,
   ShopItemDef,
   SkillDef,
+  SyncStatusInfo,
 } from './types/game';
 
 interface FloatingBanner {
@@ -101,6 +107,7 @@ export default function App() {
   const [ledger, setLedger] = useState<SharedLedgerEntry[]>([]);
   const [eventHistory, setEventHistory] = useState<EventSessionRecord[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessageRecord[]>([]);
+  const [syncStatus, setSyncStatus] = useState<SyncStatusInfo>(() => cloudSyncManager.getStatus());
 
   const [gameSettings, setGameSettings] = useState<GameSettings>(INITIAL_SETTINGS);
   const [buttonLayouts, setButtonLayouts] = useState<Record<HudButtonId, ButtonLayoutItem>>(DEFAULT_BUTTON_LAYOUTS);
@@ -108,6 +115,16 @@ export default function App() {
   const [comboArmed, setComboArmed] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [measuredFps, setMeasuredFps] = useState(60);
+  const [worldTelemetry, setWorldTelemetry] = useState<WorldTelemetryInfo>({
+    x: 0,
+    z: 8,
+    inSafeCity: true,
+    totalMonsters: 24000,
+    nearbyMonsters: 0,
+    mapName: 'Lorencia',
+    areaKm2: 1.0,
+  });
+  const [damageNumbers, setDamageNumbers] = useState<FloatingDamageNumber[]>([]);
   const [isPortraitMobile, setIsPortraitMobile] = useState(
     () => typeof window !== 'undefined' && window.innerHeight > window.innerWidth && window.innerWidth < 900,
   );
@@ -130,11 +147,13 @@ export default function App() {
   const roomRef = useRef<RoomState | null>(null);
   const settingsRef = useRef<GameSettings>(INITIAL_SETTINGS);
   const screenStageRef = useRef(screenStage);
+  const currentAccRef = useRef<MuAccount | null>(null);
   charRef.current = character;
   itemsRef.current = items;
   roomRef.current = roomState;
   settingsRef.current = gameSettings;
   screenStageRef.current = screenStage;
+  currentAccRef.current = currentAccount;
 
   const pushBanner = useCallback((text: string, color = '#fbbf24') => {
     const id = Date.now() + Math.random();
@@ -142,6 +161,13 @@ export default function App() {
     window.setTimeout(() => {
       setBanners((prev) => prev.filter((b) => b.id !== id));
     }, 2200);
+  }, []);
+
+  const pushDamageNumber = useCallback((dmg: FloatingDamageNumber) => {
+    setDamageNumbers((prev) => [...prev.slice(-14), dmg]);
+    window.setTimeout(() => {
+      setDamageNumbers((prev) => prev.filter((d) => d.id !== dmg.id));
+    }, 950);
   }, []);
 
   const requestLandscapeFullscreen = useCallback(async () => {
@@ -181,6 +207,7 @@ export default function App() {
 
   const selectAndHydrateCharacter = useCallback(async (charObj: MuCharacter) => {
     setCharacter(charObj);
+    engineRef.current?.updateHeroStats(charObj);
     const [charItems, charCombo] = await Promise.all([
       getItemsForCharacter(charObj.id),
       loadComboConfig(charObj.id, charObj.classType),
@@ -193,44 +220,72 @@ export default function App() {
     );
   }, []);
 
-  const loadAllFromSqlite = useCallback(async (preferAccountId?: string, preferCharId?: string) => {
-    await initSqlite();
-    const [accList, loadedSettings, loadedLayouts, led, evs, chats] = await Promise.all([
-      listAccounts(),
-      loadGameSettings(),
-      loadButtonLayouts(),
-      getSharedLedger(),
-      getEventSessions(),
-      getChatHistory(),
-    ]);
+  const loadAllFromDexie = useCallback(
+    async (preferAccountId?: string, preferCharId?: string) => {
+      await initDexie();
+      const [accList, loadedSettings, loadedLayouts, led, evs, chats] = await Promise.all([
+        listAccounts(),
+        loadGameSettings(),
+        loadButtonLayouts(),
+        getSharedLedger(),
+        getEventSessions(),
+        getChatHistory(),
+      ]);
 
-    setAccounts(accList);
-    setGameSettings(loadedSettings);
-    setButtonLayouts(loadedLayouts);
-    setLedger(led);
-    setEventHistory(evs);
-    setChatMessages(chats);
+      setAccounts(accList);
+      setGameSettings(loadedSettings);
+      setButtonLayouts(loadedLayouts);
+      setLedger(led);
+      setEventHistory(evs);
+      setChatMessages(chats);
 
-    const activeAccId = preferAccountId || currentAccount?.id || accList[0]?.id;
-    if (activeAccId) {
-      const chars = await listCharactersByAccount(activeAccId);
-      setCharacters(chars);
-      const chosen = (preferCharId && chars.find((c) => c.id === preferCharId)) || chars[0] || null;
-      if (chosen) {
-        await selectAndHydrateCharacter(chosen);
-      } else {
-        setCharacter(null);
-        setItems([]);
+      const activeAccId = preferAccountId || currentAccRef.current?.id || accList[0]?.id;
+      if (activeAccId) {
+        const chars = await listCharactersByAccount(activeAccId);
+        setCharacters(chars);
+        const chosen = (preferCharId && chars.find((c) => c.id === preferCharId)) || chars[0] || null;
+        if (chosen) {
+          await selectAndHydrateCharacter(chosen);
+        } else {
+          setCharacter(null);
+          engineRef.current?.updateHeroStats(null);
+          setItems([]);
+        }
       }
-    }
-  }, [currentAccount?.id, selectAndHydrateCharacter]);
+    },
+    [selectAndHydrateCharacter],
+  );
 
+  // Sync engine hero stats snapshot whenever character changes
   useEffect(() => {
-    loadAllFromSqlite();
+    engineRef.current?.updateHeroStats(character);
+  }, [character]);
+
+  // Boot Dexie IndexedDB & CloudSyncManager (Golden Rule timestamp sync)
+  useEffect(() => {
+    let unsubStatus = () => {};
+    let unsubCloudApplied = () => {};
+
+    loadAllFromDexie().then(() => {
+      cloudSyncManager.start();
+      unsubStatus = cloudSyncManager.subscribeStatus((st) => {
+        setSyncStatus(st);
+      });
+      unsubCloudApplied = cloudSyncManager.onCloudDataApplied(() => {
+        loadAllFromDexie(currentAccRef.current?.id, charRef.current?.id);
+      });
+    });
+
     const params = new URLSearchParams(window.location.search);
     if (params.get('sala')) {
       setActiveDrawer('sync');
     }
+
+    return () => {
+      unsubStatus();
+      unsubCloudApplied();
+      cloudSyncManager.stop();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -308,15 +363,20 @@ export default function App() {
             bless: activeChar.bless + reward.blessBonus,
             soul: activeChar.soul + reward.soulBonus,
           };
-          await updateCharacter(updated);
-          setCharacter(updated);
+          const savedChar = await updateCharacter(updated);
+          setCharacter(savedChar);
 
           const rewardItem: MuItem = {
             id: `ev-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            charId: activeChar.id,
+            charId: savedChar.id,
             name: reward.itemName,
             slot: reward.itemName.includes('Báculo') || reward.itemName.includes('Espada') ? 'weapon' : 'armor',
-            category: reward.itemName.includes('Alas') ? 'wings' : reward.itemName.includes('Báculo') || reward.itemName.includes('Espada') ? 'weapon' : 'armor',
+            category:
+              reward.itemName.includes('Alas')
+                ? 'wings'
+                : reward.itemName.includes('Báculo') || reward.itemName.includes('Espada')
+                  ? 'weapon'
+                  : 'armor',
             setName: 'Evento Cooperativo',
             rarity: 'excellent',
             enhanceLevel: 7,
@@ -325,13 +385,13 @@ export default function App() {
             defense: 42,
             magicPower: 68,
             luck: true,
-            excellentOpt: 'Recompensa de Evento Guardada en SQLite',
+            excellentOpt: 'Recompensa de Evento Guardada en IndexedDB',
             isEquipped: false,
             originalOwner: room.hostName,
             sharedFromSession: room.code,
             acquiredAt: new Date().toISOString(),
           };
-          const nextItems = await addItemToCharacter(activeChar.id, rewardItem);
+          const nextItems = await addItemToCharacter(savedChar.id, rewardItem);
           setItems(nextItems);
 
           await recordSharedLedger({
@@ -393,7 +453,9 @@ export default function App() {
         });
         setLedger(await getSharedLedger());
         soundSynth.playTradeSync();
-        setSyncMessage(`Recibiste ${incomingItem.name} +${incomingItem.enhanceLevel} de ${payload.fromPeerName}. Guardado en SQLite.`);
+        setSyncMessage(
+          `Recibiste ${incomingItem.name} +${incomingItem.enhanceLevel} de ${payload.fromPeerName}. Guardado en IndexedDB.`,
+        );
         pushBanner(`Recibido: ${incomingItem.name} +${incomingItem.enhanceLevel}`, '#38bdf8');
       },
       onTradeConfirmed: async (payload) => {
@@ -421,14 +483,16 @@ export default function App() {
         });
         setLedger(await getSharedLedger());
         soundSynth.playTradeSync();
-        setSyncMessage(`Transferido ${payload.item.name} +${payload.item.enhanceLevel} a ${payload.toPeerName}. Guardado en SQLite.`);
+        setSyncMessage(
+          `Transferido ${payload.item.name} +${payload.item.enhanceLevel} a ${payload.toPeerName}. Guardado en IndexedDB.`,
+        );
       },
       onRoomEnded: async (message) => {
         setRoomState(null);
         engineRef.current?.setEventActive(false);
         engineRef.current?.syncRemotePeers([], syncRef.current?.peerId || '');
         setSyncMessage(message);
-        pushBanner('Invitación finalizada · Ítems asegurados en SQLite', '#fbbf24');
+        pushBanner('Invitación finalizada · Ítems asegurados en IndexedDB', '#fbbf24');
       },
       onError: (message) => {
         setSyncMessage(message);
@@ -440,7 +504,7 @@ export default function App() {
     };
   }, [pushBanner]);
 
-  // Mount Three.js WebGL Engine once
+  // Mount Babylon.js Web3D Engine once
   useEffect(() => {
     const mount = canvasMountRef.current;
     if (!mount) return;
@@ -493,8 +557,8 @@ export default function App() {
           zen: c.zen + zen,
           kills: c.kills + 1,
         };
-        setCharacter(updated);
-        await updateCharacter(updated);
+        const saved = await updateCharacter(updated);
+        setCharacter(saved);
       },
       onPickupLoot: async (drop) => {
         const c = charRef.current;
@@ -507,8 +571,8 @@ export default function App() {
           chaos: c.chaos + (drop.kind === 'chaos' ? drop.amount : 0),
           life: c.life + (drop.kind === 'life' ? drop.amount : 0),
         };
-        setCharacter(updated);
-        await updateCharacter(updated);
+        const saved = await updateCharacter(updated);
+        setCharacter(saved);
         pushBanner(
           `+${drop.label}`,
           drop.kind === 'bless'
@@ -543,6 +607,9 @@ export default function App() {
       onFloatingText: (text, color) => {
         pushBanner(text, color);
       },
+      onDamageNumber: (dmg) => {
+        pushDamageNumber(dmg);
+      },
       onNearbyNpcChange: (npc) => {
         setNearbyNpc(npc);
       },
@@ -554,6 +621,9 @@ export default function App() {
       onFpsUpdate: (fps) => {
         setMeasuredFps(fps);
       },
+      onWorldTelemetry: (info) => {
+        setWorldTelemetry(info);
+      },
     };
 
     const engine = new MuWorldEngine(mount, callbacks);
@@ -563,6 +633,7 @@ export default function App() {
     engine.setTargetFps(settingsRef.current.targetFps);
 
     if (charRef.current) {
+      engine.updateHeroStats(charRef.current);
       engine.syncHeroAppearance(
         charRef.current.classType,
         itemsRef.current.filter((i) => i.isEquipped),
@@ -573,7 +644,7 @@ export default function App() {
       engine.dispose();
       engineRef.current = null;
     };
-  }, [pushBanner]);
+  }, [pushBanner, pushDamageNumber]);
 
   const computeBonusStatPower = (c: MuCharacter) =>
     Math.round((c.str + c.ene + c.agi + c.cmd) * 0.45);
@@ -582,6 +653,12 @@ export default function App() {
     (skill: SkillDef) => {
       const c = charRef.current;
       if (!c || screenStageRef.current !== 'playing') return;
+
+      // Safe city blocks offensive skills cleanly without spending MP/AG
+      if (engineRef.current?.isInSafeCity() && !skill.isBuff) {
+        engineRef.current.executeSkill(skill, 1, computeBonusStatPower(c));
+        return;
+      }
 
       const useSkill =
         c.mp >= skill.mpCost && c.ag >= skill.agCost
@@ -612,6 +689,12 @@ export default function App() {
     const c = charRef.current;
     if (!c || screenStageRef.current !== 'playing') return;
     const classSkills = MU_SKILLS[c.classType] || MU_SKILLS.DK;
+
+    if (engineRef.current?.isInSafeCity()) {
+      const def = classSkills.find((s) => s.id === comboConfig.defaultSkillId) || classSkills[0];
+      engineRef.current.executeSkill(def, 1, computeBonusStatPower(c));
+      return;
+    }
 
     if (comboArmed) {
       const s1 = classSkills.find((s) => s.id === comboConfig.comboSkillIds[0]) || classSkills[1] || classSkills[0];
@@ -646,7 +729,11 @@ export default function App() {
   // Global keyboard shortcuts while playing/paused
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA' || document.activeElement?.tagName === 'SELECT') {
+      if (
+        document.activeElement?.tagName === 'INPUT' ||
+        document.activeElement?.tagName === 'TEXTAREA' ||
+        document.activeElement?.tagName === 'SELECT'
+      ) {
         return;
       }
       if (e.code === 'Escape') {
@@ -698,12 +785,14 @@ export default function App() {
     const res = await loginAccount(username, password);
     if (!res.ok) return { ok: false, error: res.error };
     setCurrentAccount(res.account);
+    cloudSyncManager.setActiveAccountId(res.account.id);
     const chars = await listCharactersByAccount(res.account.id);
     setCharacters(chars);
     if (chars[0]) {
       await selectAndHydrateCharacter(chars[0]);
     } else {
       setCharacter(null);
+      engineRef.current?.updateHeroStats(null);
       setItems([]);
     }
     engineRef.current?.setMode('character_select');
@@ -711,17 +800,88 @@ export default function App() {
     return { ok: true };
   };
 
-  const handleRegister = async (username: string, password: string) => {
-    const res = await registerAccount(username, password);
+  const handleRegister = async (input: {
+    username: string;
+    password: string;
+    secretQ1: string;
+    secretA1: string;
+    secretQ2: string;
+    secretA2: string;
+  }) => {
+    const res = await registerAccount(input);
     if (!res.ok) return { ok: false, error: res.error };
     setAccounts(await listAccounts());
     setCurrentAccount(res.account);
+    cloudSyncManager.setActiveAccountId(res.account.id);
     setCharacters([]);
     setCharacter(null);
+    engineRef.current?.updateHeroStats(null);
     setItems([]);
     engineRef.current?.setMode('character_select');
     setScreenStage('character_select');
     return { ok: true };
+  };
+
+  const handleChangePassword = async (
+    username: string,
+    oldPassword: string,
+    newPassword: string,
+  ) => {
+    const res = await changeAccountPassword(username, oldPassword, newPassword);
+    if (res.ok) {
+      setAccounts(await listAccounts());
+    }
+    return res;
+  };
+
+  const handleLookupRecoveryQuestions = async (
+    username: string,
+  ): Promise<
+    | { found: true; secretQ1: string; secretQ2: string; source: 'local' | 'cloud' }
+    | { found: false; error?: string }
+  > => {
+    const local = await getLocalRecoveryQuestions(username);
+    if (local.found) {
+      return { found: true, secretQ1: local.secretQ1, secretQ2: local.secretQ2, source: 'local' };
+    }
+    const cloud = await cloudSyncManager.fetchRecoveryQuestionsFromCloud(username);
+    if (cloud.found) {
+      return { found: true, secretQ1: cloud.secretQ1, secretQ2: cloud.secretQ2, source: 'cloud' };
+    }
+    return { found: false, error: cloud.error };
+  };
+
+  const handleRecoverAccount = async (input: {
+    username: string;
+    answer1: string;
+    answer2: string;
+    newPassword: string;
+  }) => {
+    const local = await getLocalRecoveryQuestions(input.username);
+    if (local.found) {
+      const res = await recoverAccountLocal(
+        input.username,
+        input.answer1,
+        input.answer2,
+        input.newPassword,
+      );
+      if (!res.ok) return { ok: false, error: res.error };
+      setAccounts(await listAccounts());
+      return {
+        ok: true,
+        message: 'Contraseña restablecida localmente en IndexedDB. Ya puedes iniciar sesión.',
+      };
+    }
+
+    const cloudRes = await cloudSyncManager.recoverAccountFromCloud(input);
+    if (!cloudRes.ok) {
+      return { ok: false, error: cloudRes.error };
+    }
+    setAccounts(await listAccounts());
+    return {
+      ok: true,
+      message: `Cuenta recuperada desde la nube (${cloudRes.charactersCount} personaje(s) descargados a IndexedDB).`,
+    };
   };
 
   const handleCreateCharacter = async (name: string, classType: HeroClass) => {
@@ -738,11 +898,12 @@ export default function App() {
     if (window.innerWidth < 1024) {
       await requestLandscapeFullscreen();
     }
+    engineRef.current?.updateHeroStats(character);
     engineRef.current?.syncHeroAppearance(
       character.classType,
       items.filter((i) => i.isEquipped),
     );
-    engineRef.current?.loadMap(character.currentMapId || 'lorencia', true);
+    await engineRef.current?.loadMap(character.currentMapId || 'lorencia', true);
     engineRef.current?.setMode('playing');
     setScreenStage('playing');
   };
@@ -759,11 +920,11 @@ export default function App() {
       zen: character.zen - mapCfg.warpZen,
       currentMapId: mapId,
     };
-    setCharacter(updated);
-    await updateCharacter(updated);
-    engineRef.current?.loadMap(mapId, true);
+    const saved = await updateCharacter(updated);
+    setCharacter(saved);
+    await engineRef.current?.loadMap(mapId, true);
     setActiveDrawer('none');
-    pushBanner(`Teletransportado a ${mapCfg.name}`, '#38bdf8');
+    pushBanner(`Teletransportado a ${mapCfg.name} (${mapCfg.areaKm2} km²)`, '#38bdf8');
   };
 
   const handleUpdateSettings = async (next: GameSettings) => {
@@ -792,8 +953,8 @@ export default function App() {
       sd: character.maxSd,
       ag: character.maxAg,
     };
-    setCharacter(updated);
-    await updateCharacter(updated);
+    const saved = await updateCharacter(updated);
+    setCharacter(saved);
     soundSynth.playTradeSync();
     pushBanner('HP, MP, SD y AG restaurados', '#4ade80');
   };
@@ -807,7 +968,7 @@ export default function App() {
       nextItems.filter((i) => i.isEquipped),
     );
     soundSynth.playForge(true);
-    setForgeMessage('Equipo actualizado y guardado en SQLite.');
+    setForgeMessage('Equipo actualizado y guardado en IndexedDB (Dexie).');
   };
 
   const handleUpgrade = async (itemId: string, jewel: 'bless' | 'soul' | 'life' | 'harmony') => {
@@ -918,8 +1079,12 @@ export default function App() {
           currentAccount={currentAccount}
           characters={characters}
           selectedCharId={character?.id || null}
+          syncStatus={syncStatus}
           onLogin={handleLogin}
           onRegister={handleRegister}
+          onChangePassword={handleChangePassword}
+          onLookupRecoveryQuestions={handleLookupRecoveryQuestions}
+          onRecoverAccount={handleRecoverAccount}
           onSelectCharacter={(id) => {
             const found = characters.find((c) => c.id === id);
             if (found) selectAndHydrateCharacter(found);
@@ -928,6 +1093,7 @@ export default function App() {
           onEnterWorld={handleEnterWorld}
           onLogoutAccount={() => {
             setCurrentAccount(null);
+            cloudSyncManager.setActiveAccountId(null);
             engineRef.current?.setMode('title');
             setScreenStage('login');
           }}
@@ -995,6 +1161,9 @@ export default function App() {
             measuredFps={measuredFps}
             free3dCamera={gameSettings.free3dCamera}
             nearbyNpc={nearbyNpc}
+            worldTelemetry={worldTelemetry}
+            damageNumbers={damageNumbers}
+            syncStatus={syncStatus}
             onJoystickVector={(x, y) => engineRef.current?.setJoystickVector(x, y)}
             onPressAttack={handlePressAttack}
             onToggleComboArmed={() => setComboArmed((v) => !v)}
@@ -1027,7 +1196,7 @@ export default function App() {
               Juego en Pausa
             </h2>
             <p className="text-xs text-slate-400 text-center">
-              Tu progreso, botones y equipamiento están guardados en SQLite.
+              Tu progreso, botones y equipamiento están guardados offline en IndexedDB (Dexie) y sincronizados con la nube.
             </p>
             <button
               onClick={() => setScreenStage('playing')}
@@ -1173,9 +1342,10 @@ export default function App() {
 
       <ApkSyncDrawer
         open={activeDrawer === 'apk'}
+        syncStatus={syncStatus}
         onClose={() => setActiveDrawer('none')}
         onDatabaseImported={async () => {
-          await loadAllFromSqlite();
+          await loadAllFromDexie();
         }}
       />
     </div>

@@ -1,7 +1,19 @@
 import React, { useState } from 'react';
-import { LogOut, Play, Plus, Shield, Sparkles, UserPlus, Users } from 'lucide-react';
+import {
+  Cloud,
+  CloudOff,
+  KeyRound,
+  LogOut,
+  Play,
+  Plus,
+  RefreshCw,
+  Shield,
+  Sparkles,
+  UserPlus,
+  Users,
+} from 'lucide-react';
 import { MU_CLASSES } from '../data/muSkillsAndClasses';
-import type { HeroClass, MuAccount, MuCharacter } from '../types/game';
+import type { HeroClass, MuAccount, MuCharacter, SyncStatusInfo } from '../types/game';
 import { PWAInstallButton } from './PWAInstallButton';
 
 interface ClassicLoginFlowProps {
@@ -10,8 +22,30 @@ interface ClassicLoginFlowProps {
   currentAccount: MuAccount | null;
   characters: MuCharacter[];
   selectedCharId: string | null;
+  syncStatus: SyncStatusInfo;
   onLogin: (username: string, password: string) => Promise<{ ok: boolean; error?: string }>;
-  onRegister: (username: string, password: string) => Promise<{ ok: boolean; error?: string }>;
+  onRegister: (input: {
+    username: string;
+    password: string;
+    secretQ1: string;
+    secretA1: string;
+    secretQ2: string;
+    secretA2: string;
+  }) => Promise<{ ok: boolean; error?: string }>;
+  onChangePassword: (
+    username: string,
+    oldPassword: string,
+    newPassword: string,
+  ) => Promise<{ ok: boolean; error?: string }>;
+  onLookupRecoveryQuestions: (
+    username: string,
+  ) => Promise<{ found: true; secretQ1: string; secretQ2: string; source: 'local' | 'cloud' } | { found: false; error?: string }>;
+  onRecoverAccount: (input: {
+    username: string;
+    answer1: string;
+    answer2: string;
+    newPassword: string;
+  }) => Promise<{ ok: boolean; message?: string; error?: string }>;
   onSelectCharacter: (charId: string) => void;
   onCreateCharacter: (name: string, classType: HeroClass) => Promise<void>;
   onEnterWorld: () => void;
@@ -20,14 +54,32 @@ interface ClassicLoginFlowProps {
   onPreviewClass: (classType: HeroClass) => void;
 }
 
+const PRESET_QUESTIONS_1 = [
+  '¿Nombre de tu primera mascota?',
+  '¿Ciudad donde naciste?',
+  '¿Nombre de la ciudad inicial de MU?',
+  '¿Tu comida favorita de niño?',
+];
+
+const PRESET_QUESTIONS_2 = [
+  '¿Color de tu primer vehículo o joya?',
+  '¿Nombre de tu mejor amigo de infancia?',
+  '¿Color de la joya Jewel of Bless?',
+  '¿Año de nacimiento de un familiar?',
+];
+
 export const ClassicLoginFlow: React.FC<ClassicLoginFlowProps> = ({
   stage,
   accounts,
   currentAccount,
   characters,
   selectedCharId,
+  syncStatus,
   onLogin,
   onRegister,
+  onChangePassword,
+  onLookupRecoveryQuestions,
+  onRecoverAccount,
   onSelectCharacter,
   onCreateCharacter,
   onEnterWorld,
@@ -35,27 +87,136 @@ export const ClassicLoginFlow: React.FC<ClassicLoginFlowProps> = ({
   onOpenApkCenter,
   onPreviewClass,
 }) => {
-  const [authTab, setAuthTab] = useState<'login' | 'register'>('login');
+  const [authTab, setAuthTab] = useState<'login' | 'register' | 'recover'>('login');
+
+  // Login & Change Password state
   const [username, setUsername] = useState(accounts[0]?.username || 'lorencia');
   const [password, setPassword] = useState('123456');
+  const [showChangePwd, setShowChangePwd] = useState(false);
+  const [oldPassword, setOldPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+
+  // Register state (with 2 mandatory Secret Questions)
+  const [regUser, setRegUser] = useState('');
+  const [regPass, setRegPass] = useState('');
+  const [secretQ1, setSecretQ1] = useState(PRESET_QUESTIONS_1[0]);
+  const [secretA1, setSecretA1] = useState('');
+  const [secretQ2, setSecretQ2] = useState(PRESET_QUESTIONS_2[0]);
+  const [secretA2, setSecretA2] = useState('');
+
+  // Recover Account state
+  const [recUser, setRecUser] = useState('');
+  const [recQuestions, setRecQuestions] = useState<{ q1: string; q2: string; source: 'local' | 'cloud' } | null>(null);
+  const [recAns1, setRecAns1] = useState('');
+  const [recAns2, setRecAns2] = useState('');
+  const [recNewPass, setRecNewPass] = useState('');
+
   const [authError, setAuthError] = useState<string | null>(null);
+  const [authSuccess, setAuthSuccess] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // Character creation
   const [creatingChar, setCreatingChar] = useState(false);
   const [newCharName, setNewCharName] = useState('');
   const [newCharClass, setNewCharClass] = useState<HeroClass>('DK');
 
-  const handleAuthSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const clearFeedback = () => {
     setAuthError(null);
+    setAuthSuccess(null);
+  };
+
+  const handleLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    clearFeedback();
     setBusy(true);
     try {
-      const res =
-        authTab === 'login'
-          ? await onLogin(username, password)
-          : await onRegister(username, password);
+      if (showChangePwd) {
+        const res = await onChangePassword(username, oldPassword, newPassword);
+        if (!res.ok) {
+          setAuthError(res.error || 'No se pudo cambiar la contraseña.');
+        } else {
+          setAuthSuccess('Contraseña actualizada en IndexedDB y marcada para sincronización.');
+          setPassword(newPassword);
+          setOldPassword('');
+          setNewPassword('');
+          setShowChangePwd(false);
+        }
+        return;
+      }
+
+      const res = await onLogin(username, password);
       if (!res.ok) {
         setAuthError(res.error || 'Error de acceso.');
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRegisterSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    clearFeedback();
+    setBusy(true);
+    try {
+      const res = await onRegister({
+        username: regUser,
+        password: regPass,
+        secretQ1,
+        secretA1,
+        secretQ2,
+        secretA2,
+      });
+      if (!res.ok) {
+        setAuthError(res.error || 'Error al registrar cuenta.');
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleLookupQuestions = async (e: React.FormEvent) => {
+    e.preventDefault();
+    clearFeedback();
+    if (!recUser.trim()) {
+      setAuthError('Ingresa tu nombre de usuario primero.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await onLookupRecoveryQuestions(recUser);
+      if (!res.found) {
+        setRecQuestions(null);
+        setAuthError(res.error || 'No se encontró esa cuenta en el dispositivo ni en la nube.');
+      } else {
+        setRecQuestions({ q1: res.secretQ1, q2: res.secretQ2, source: res.source });
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRecoverSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    clearFeedback();
+    setBusy(true);
+    try {
+      const res = await onRecoverAccount({
+        username: recUser,
+        answer1: recAns1,
+        answer2: recAns2,
+        newPassword: recNewPass,
+      });
+      if (!res.ok) {
+        setAuthError(res.error || 'No se pudo recuperar la cuenta.');
+      } else {
+        setAuthSuccess(res.message || 'Cuenta recuperada y contraseña restablecida.');
+        setUsername(recUser.trim().toLowerCase());
+        setPassword(recNewPass);
+        setRecQuestions(null);
+        setRecAns1('');
+        setRecAns2('');
+        setRecNewPass('');
+        setAuthTab('login');
       }
     } finally {
       setBusy(false);
@@ -71,11 +232,22 @@ export const ClassicLoginFlow: React.FC<ClassicLoginFlowProps> = ({
   };
 
   return (
-    <div className="absolute inset-0 z-20 flex flex-col justify-between p-4 sm:p-6 bg-gradient-to-b from-[#080b12]/70 via-[#080b12]/35 to-[#080b12]/88 overflow-y-auto mu-scroll">
+    <div className="absolute inset-0 z-20 flex flex-col justify-between p-4 sm:p-6 bg-gradient-to-b from-[#080b12]/75 via-[#080b12]/40 to-[#080b12]/90 overflow-y-auto mu-scroll">
       {/* Top Bar */}
-      <div className="flex items-center justify-between gap-3 shrink-0">
-        <div className="text-xs text-amber-200/90 font-mono-tabular">
-          MU Online Season 6 · Episodio 3 · SQLite Offline
+      <div className="flex items-center justify-between gap-3 shrink-0 flex-wrap">
+        <div className="flex items-center gap-3 text-xs text-amber-200/90 font-mono-tabular">
+          <span>MU Lorencia · Babylon.js 3D · Dexie Offline-First</span>
+          <span className="text-slate-500">·</span>
+          <span className={`inline-flex items-center gap-1 ${syncStatus.isOnline ? 'text-emerald-300' : 'text-amber-300'}`}>
+            {syncStatus.isOnline ? <Cloud className="w-3.5 h-3.5" /> : <CloudOff className="w-3.5 h-3.5" />}
+            {syncStatus.isOnline
+              ? syncStatus.syncing
+                ? 'Sincronizando...'
+                : syncStatus.pendingCount > 0
+                  ? `${syncStatus.pendingCount} pendientes`
+                  : 'Nube Sincronizada'
+              : 'Offline (IndexedDB)'}
+          </span>
         </div>
         <div className="flex items-center gap-2">
           <PWAInstallButton onOpenApkCenter={onOpenApkCenter} />
@@ -91,11 +263,11 @@ export const ClassicLoginFlow: React.FC<ClassicLoginFlowProps> = ({
         </div>
       </div>
 
-      {/* STAGE 1: CLASSIC MU S6 EP3 LOGIN */}
+      {/* STAGE 1: 3-TAB OFFLINE-FIRST AUTHENTICATION */}
       {stage === 'login' && (
-        <div className="my-auto mx-auto w-full max-w-md space-y-4">
+        <div className="my-auto mx-auto w-full max-w-lg space-y-3 py-2">
           <div className="text-center">
-            <svg viewBox="0 0 460 88" className="w-full max-w-[360px] mx-auto h-auto" role="img" aria-label="MU Season 6 Ep 3">
+            <svg viewBox="0 0 460 80" className="w-full max-w-[330px] mx-auto h-auto" role="img" aria-label="MU Lorencia">
               <defs>
                 <linearGradient id="muS6Gold" x1="0%" y1="0%" x2="100%" y2="100%">
                   <stop offset="0%" stopColor="#fef3c7" />
@@ -105,132 +277,372 @@ export const ClassicLoginFlow: React.FC<ClassicLoginFlowProps> = ({
               </defs>
               <text
                 x="230"
-                y="50"
+                y="46"
                 textAnchor="middle"
                 fill="url(#muS6Gold)"
                 fontFamily="Cinzel, Georgia, serif"
                 fontWeight="700"
-                fontSize="42"
+                fontSize="40"
                 letterSpacing="4"
               >
                 MU LORENCIA
               </text>
               <text
                 x="230"
-                y="76"
+                y="70"
                 textAnchor="middle"
                 fill="#cbd5e1"
                 fontFamily="Plus Jakarta Sans, sans-serif"
                 fontWeight="600"
-                fontSize="13"
-                letterSpacing="4"
+                fontSize="12"
+                letterSpacing="3"
               >
-                SEASON 6 · EPISODIO 3
+                6 REINOS 3D · INDEXEDDB &amp; CLOUD SYNC
               </text>
             </svg>
           </div>
 
           <div className="rounded-xl bg-[#0e131f]/95 border-2 border-amber-700/70 shadow-2xl overflow-hidden">
-            {/* Classic Server Banner */}
-            <div className="px-4 py-2.5 bg-[#171d2c] border-b border-amber-700/40 flex items-center justify-between text-xs">
-              <span className="font-semibold text-amber-300">Servidor: Lorencia-Offline-1</span>
-              <span className="font-mono-tabular text-emerald-300">Base SQLite Lista</span>
-            </div>
-
-            {/* Auth Mode Tabs */}
-            <div className="grid grid-cols-2 border-b border-slate-800 bg-[#0b0f18]">
+            {/* 3 Required Tabs */}
+            <div className="grid grid-cols-3 border-b border-slate-800 bg-[#0b0f18]">
               <button
                 type="button"
                 onClick={() => {
                   setAuthTab('login');
-                  setAuthError(null);
+                  clearFeedback();
                 }}
-                className={`min-h-[44px] text-xs font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer ${
+                className={`min-h-[44px] px-2 text-xs font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap ${
                   authTab === 'login'
                     ? 'bg-amber-600/20 text-amber-300 border-b-2 border-amber-500'
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
-                <Shield className="w-3.5 h-3.5" />
-                Ingresar Cuenta
+                <Shield className="w-3.5 h-3.5 shrink-0" />
+                Iniciar Sesión
               </button>
               <button
                 type="button"
                 onClick={() => {
                   setAuthTab('register');
-                  setAuthError(null);
-                  setUsername('');
-                  setPassword('');
+                  clearFeedback();
                 }}
-                className={`min-h-[44px] text-xs font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer ${
+                className={`min-h-[44px] px-2 text-xs font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap ${
                   authTab === 'register'
                     ? 'bg-amber-600/20 text-amber-300 border-b-2 border-amber-500'
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
-                <UserPlus className="w-3.5 h-3.5" />
-                Registrar Primera Vez
+                <UserPlus className="w-3.5 h-3.5 shrink-0" />
+                Registrar Cuenta
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthTab('recover');
+                  clearFeedback();
+                }}
+                className={`min-h-[44px] px-2 text-xs font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                  authTab === 'recover'
+                    ? 'bg-amber-600/20 text-amber-300 border-b-2 border-amber-500'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <KeyRound className="w-3.5 h-3.5 shrink-0" />
+                Recuperar Cuenta
               </button>
             </div>
 
-            <form onSubmit={handleAuthSubmit} className="p-4 space-y-3">
+            <div className="p-4 space-y-3">
               {authError && (
                 <div className="p-2.5 rounded-lg bg-rose-950/80 border border-rose-500/50 text-xs text-rose-200">
                   {authError}
                 </div>
               )}
-
-              <div>
-                <label className="block text-xs text-slate-300 mb-1">ID de Cuenta (Usuario)</label>
-                <input
-                  type="text"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  placeholder="ej. lorencia"
-                  required
-                  className="w-full min-h-[44px] rounded-lg bg-[#080b12] border border-slate-700 px-3 text-sm text-slate-100 focus:outline-none focus:border-amber-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs text-slate-300 mb-1">Contraseña</label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••"
-                  required
-                  className="w-full min-h-[44px] rounded-lg bg-[#080b12] border border-slate-700 px-3 text-sm text-slate-100 focus:outline-none focus:border-amber-500"
-                />
-              </div>
-
-              {accounts.length > 0 && authTab === 'login' && (
-                <div className="flex items-center gap-2 flex-wrap text-[11px] text-slate-400">
-                  <span>Cuentas guardadas:</span>
-                  {accounts.map((acc) => (
-                    <button
-                      key={acc.id}
-                      type="button"
-                      onClick={() => {
-                        setUsername(acc.username);
-                        if (acc.username === 'lorencia') setPassword('123456');
-                      }}
-                      className="text-amber-300 hover:underline font-mono-tabular cursor-pointer"
-                    >
-                      {acc.username}
-                    </button>
-                  ))}
+              {authSuccess && (
+                <div className="p-2.5 rounded-lg bg-emerald-950/80 border border-emerald-500/50 text-xs text-emerald-200">
+                  {authSuccess}
                 </div>
               )}
 
-              <button
-                type="submit"
-                disabled={busy}
-                className="w-full min-h-[46px] rounded-lg bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-sm cursor-pointer"
-              >
-                {authTab === 'login' ? 'Conectar al Servidor' : 'Crear Cuenta y Continuar'}
-              </button>
-            </form>
+              {/* TAB 1: INICIAR SESIÓN (+ Cambiar Contraseña) */}
+              {authTab === 'login' && (
+                <form onSubmit={handleLoginSubmit} className="space-y-3">
+                  <div>
+                    <label className="block text-xs text-slate-300 mb-1">ID de Cuenta (Usuario)</label>
+                    <input
+                      type="text"
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value)}
+                      placeholder="ej. lorencia"
+                      required
+                      className="w-full min-h-[44px] rounded-lg bg-[#080b12] border border-slate-700 px-3 text-sm text-slate-100 focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+
+                  {!showChangePwd ? (
+                    <div>
+                      <label className="block text-xs text-slate-300 mb-1">Contraseña</label>
+                      <input
+                        type="password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        placeholder="••••••"
+                        required
+                        className="w-full min-h-[44px] rounded-lg bg-[#080b12] border border-slate-700 px-3 text-sm text-slate-100 focus:outline-none focus:border-amber-500"
+                      />
+                    </div>
+                  ) : (
+                    <div className="space-y-2.5 p-3 rounded-lg bg-[#090d16] border border-amber-700/40">
+                      <div className="text-xs font-semibold text-amber-300">
+                        Cambiar Contraseña (validando clave anterior)
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-slate-300 mb-1">Contraseña Actual</label>
+                        <input
+                          type="password"
+                          value={oldPassword}
+                          onChange={(e) => setOldPassword(e.target.value)}
+                          required
+                          className="w-full min-h-[40px] rounded-lg bg-[#080b12] border border-slate-700 px-3 text-sm text-slate-100"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-slate-300 mb-1">Nueva Contraseña</label>
+                        <input
+                          type="password"
+                          value={newPassword}
+                          onChange={(e) => setNewPassword(e.target.value)}
+                          required
+                          minLength={4}
+                          className="w-full min-h-[40px] rounded-lg bg-[#080b12] border border-slate-700 px-3 text-sm text-slate-100"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {accounts.length > 0 && !showChangePwd && (
+                    <div className="flex items-center gap-2 flex-wrap text-[11px] text-slate-400">
+                      <span>Cuentas en IndexedDB:</span>
+                      {accounts.map((acc) => (
+                        <button
+                          key={acc.id}
+                          type="button"
+                          onClick={() => {
+                            setUsername(acc.username);
+                            if (acc.username === 'lorencia') setPassword('123456');
+                          }}
+                          className="text-amber-300 hover:underline font-mono-tabular cursor-pointer"
+                        >
+                          {acc.username}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowChangePwd((v) => !v);
+                        clearFeedback();
+                      }}
+                      className="text-xs text-sky-300 hover:underline cursor-pointer"
+                    >
+                      {showChangePwd ? 'Volver a Iniciar Sesión' : 'Cambiar Contraseña'}
+                    </button>
+                    {!showChangePwd && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAuthTab('recover');
+                          clearFeedback();
+                        }}
+                        className="text-xs text-slate-400 hover:text-amber-300 cursor-pointer"
+                      >
+                        ¿Olvidaste tu clave?
+                      </button>
+                    )}
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={busy}
+                    className="w-full min-h-[46px] rounded-lg bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-sm cursor-pointer"
+                  >
+                    {showChangePwd ? 'Guardar Nueva Contraseña' : 'Conectar al Servidor (Offline / Sync)'}
+                  </button>
+                </form>
+              )}
+
+              {/* TAB 2: REGISTRAR CUENTA (2 Preguntas Secretas Obligatorias) */}
+              {authTab === 'register' && (
+                <form onSubmit={handleRegisterSubmit} className="space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div>
+                      <label className="block text-xs text-slate-300 mb-1">Usuario *</label>
+                      <input
+                        type="text"
+                        value={regUser}
+                        onChange={(e) => setRegUser(e.target.value)}
+                        placeholder="Nuevo usuario"
+                        required
+                        minLength={3}
+                        className="w-full min-h-[42px] rounded-lg bg-[#080b12] border border-slate-700 px-3 text-sm text-slate-100"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-300 mb-1">Contraseña *</label>
+                      <input
+                        type="password"
+                        value={regPass}
+                        onChange={(e) => setRegPass(e.target.value)}
+                        placeholder="Mínimo 4 caracteres"
+                        required
+                        minLength={4}
+                        className="w-full min-h-[42px] rounded-lg bg-[#080b12] border border-slate-700 px-3 text-sm text-slate-100"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="p-3 rounded-lg bg-[#090d16] border border-slate-800 space-y-2">
+                    <div className="text-[11px] font-semibold text-amber-300">
+                      Pregunta Secreta 1 (Obligatoria)
+                    </div>
+                    <select
+                      value={secretQ1}
+                      onChange={(e) => setSecretQ1(e.target.value)}
+                      className="w-full min-h-[38px] rounded-lg bg-[#080b12] border border-slate-700 px-2.5 text-xs text-slate-100"
+                    >
+                      {PRESET_QUESTIONS_1.map((q) => (
+                        <option key={q} value={q}>
+                          {q}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      type="text"
+                      value={secretA1}
+                      onChange={(e) => setSecretA1(e.target.value)}
+                      placeholder="Tu respuesta secreta 1"
+                      required
+                      className="w-full min-h-[40px] rounded-lg bg-[#080b12] border border-slate-700 px-3 text-sm text-slate-100"
+                    />
+                  </div>
+
+                  <div className="p-3 rounded-lg bg-[#090d16] border border-slate-800 space-y-2">
+                    <div className="text-[11px] font-semibold text-amber-300">
+                      Pregunta Secreta 2 (Obligatoria)
+                    </div>
+                    <select
+                      value={secretQ2}
+                      onChange={(e) => setSecretQ2(e.target.value)}
+                      className="w-full min-h-[38px] rounded-lg bg-[#080b12] border border-slate-700 px-2.5 text-xs text-slate-100"
+                    >
+                      {PRESET_QUESTIONS_2.map((q) => (
+                        <option key={q} value={q}>
+                          {q}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      type="text"
+                      value={secretA2}
+                      onChange={(e) => setSecretA2(e.target.value)}
+                      placeholder="Tu respuesta secreta 2"
+                      required
+                      className="w-full min-h-[40px] rounded-lg bg-[#080b12] border border-slate-700 px-3 text-sm text-slate-100"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={busy}
+                    className="w-full min-h-[46px] rounded-lg bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-sm cursor-pointer"
+                  >
+                    Crear Cuenta en IndexedDB y Entrar
+                  </button>
+                </form>
+              )}
+
+              {/* TAB 3: RECUPERAR CUENTA (Local + Descarga desde Nube) */}
+              {authTab === 'recover' && (
+                <div className="space-y-3">
+                  <form onSubmit={handleLookupQuestions} className="flex gap-2 items-end">
+                    <div className="flex-1">
+                      <label className="block text-xs text-slate-300 mb-1">Nombre de Usuario a Recuperar</label>
+                      <input
+                        type="text"
+                        value={recUser}
+                        onChange={(e) => {
+                          setRecUser(e.target.value);
+                          setRecQuestions(null);
+                        }}
+                        placeholder="ej. lorencia"
+                        required
+                        className="w-full min-h-[42px] rounded-lg bg-[#080b12] border border-slate-700 px-3 text-sm text-slate-100"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={busy}
+                      className="min-h-[42px] px-4 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs font-semibold text-amber-200 inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      Buscar Preguntas
+                    </button>
+                  </form>
+
+                  {recQuestions && (
+                    <form onSubmit={handleRecoverSubmit} className="space-y-2.5 p-3 rounded-lg bg-[#090d16] border border-sky-500/40">
+                      <div className="text-[11px] font-mono-tabular text-sky-300">
+                        Origen: {recQuestions.source === 'cloud' ? 'Respaldo en la Nube (descargará tus personajes)' : 'Base Local IndexedDB'}
+                      </div>
+                      <div>
+                        <label className="block text-xs text-amber-200 mb-1">1. {recQuestions.q1}</label>
+                        <input
+                          type="text"
+                          value={recAns1}
+                          onChange={(e) => setRecAns1(e.target.value)}
+                          placeholder="Respuesta secreta 1"
+                          required
+                          className="w-full min-h-[40px] rounded-lg bg-[#080b12] border border-slate-700 px-3 text-sm text-slate-100"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-amber-200 mb-1">2. {recQuestions.q2}</label>
+                        <input
+                          type="text"
+                          value={recAns2}
+                          onChange={(e) => setRecAns2(e.target.value)}
+                          placeholder="Respuesta secreta 2"
+                          required
+                          className="w-full min-h-[40px] rounded-lg bg-[#080b12] border border-slate-700 px-3 text-sm text-slate-100"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-slate-300 mb-1">Nueva Contraseña</label>
+                        <input
+                          type="password"
+                          value={recNewPass}
+                          onChange={(e) => setRecNewPass(e.target.value)}
+                          placeholder="Mínimo 4 caracteres"
+                          required
+                          minLength={4}
+                          className="w-full min-h-[40px] rounded-lg bg-[#080b12] border border-slate-700 px-3 text-sm text-slate-100"
+                        />
+                      </div>
+                      <button
+                        type="submit"
+                        disabled={busy}
+                        className="w-full min-h-[44px] rounded-lg bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold text-sm cursor-pointer"
+                      >
+                        Verificar Respuestas y Restablecer Clave
+                      </button>
+                    </form>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -238,8 +650,7 @@ export const ClassicLoginFlow: React.FC<ClassicLoginFlowProps> = ({
       {/* STAGE 2: CLASSIC MU CHARACTER SELECT & CREATE */}
       {stage === 'character_select' && (
         <div className="my-auto flex flex-col lg:flex-row items-stretch lg:items-end justify-between gap-4 max-w-6xl w-full mx-auto">
-          {/* Left: Character Slots */}
-          <div className="w-full lg:w-[400px] rounded-xl bg-[#0e131f]/95 border-2 border-amber-700/60 p-4 space-y-3 shadow-2xl">
+          <div className="w-full lg:w-[410px] rounded-xl bg-[#0e131f]/95 border-2 border-amber-700/60 p-4 space-y-3 shadow-2xl">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Users className="w-4 h-4 text-amber-400" />
@@ -284,7 +695,7 @@ export const ClassicLoginFlow: React.FC<ClassicLoginFlowProps> = ({
                         <div>
                           <div className="text-sm font-bold text-slate-100">{ch.name}</div>
                           <div className="text-xs text-slate-400 font-mono-tabular">
-                            {clsMeta?.name || ch.classType} · Nv.{ch.level} · Resets {ch.resets}
+                            {clsMeta?.name || ch.classType} · Nv.{ch.level} · {ch.isSynced ? 'Sync OK' : 'Local'}
                           </div>
                         </div>
                         <span className="text-xs font-mono-tabular text-amber-300">
@@ -348,7 +759,6 @@ export const ClassicLoginFlow: React.FC<ClassicLoginFlowProps> = ({
             )}
           </div>
 
-          {/* Right: Enter World CTA */}
           {!creatingChar && selectedCharId && (
             <div className="w-full lg:w-auto flex flex-col items-stretch lg:items-end gap-2">
               <button
@@ -356,11 +766,11 @@ export const ClassicLoginFlow: React.FC<ClassicLoginFlowProps> = ({
                 className="min-h-[54px] px-8 rounded-xl bg-amber-600 hover:bg-amber-500 text-slate-950 font-display font-bold text-base inline-flex items-center justify-center gap-2.5 shadow-2xl cursor-pointer"
               >
                 <Play className="w-5 h-5 fill-current" />
-                ENTRAR AL JUEGO (CONECTAR)
+                ENTRAR AL JUEGO (BABYLON 3D)
               </button>
               <div className="text-xs text-slate-300 font-mono-tabular flex items-center gap-1.5">
                 <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                5 Razas · Cámara 3ra Persona y Modo 3D · Controles PUBG
+                6 Mapas (1.0–1.6 km²) · Capitales Seguras · Controles PUBG
               </div>
             </div>
           )}
@@ -368,7 +778,7 @@ export const ClassicLoginFlow: React.FC<ClassicLoginFlowProps> = ({
       )}
 
       <div className="text-[11px] text-slate-400 font-mono-tabular text-center pt-2 shrink-0">
-        Orientación recomendada: Horizontal (Landscape) · Datos guardados automáticamente en SQLite
+        Orientación recomendada: Horizontal (Landscape) · Progreso guardado offline en Dexie IndexedDB y sincronizado por timestamp
       </div>
     </div>
   );

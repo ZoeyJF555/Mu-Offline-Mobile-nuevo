@@ -2,19 +2,10 @@ export type HeroClass = 'DK' | 'DW' | 'ELF' | 'DL' | 'MG';
 
 export type MapId =
   | 'lorencia'
-  | 'dungeon'
-  | 'devias'
   | 'noria'
-  | 'losttower'
-  | 'stadium'
+  | 'devias'
   | 'atlans'
   | 'tarkan'
-  | 'icarus'
-  | 'aida'
-  | 'kanturu1'
-  | 'kanturu2'
-  | 'elbeland'
-  | 'raklion'
   | 'vulcanus';
 
 export type WeatherKind =
@@ -89,13 +80,42 @@ export type EventType =
 export interface MuAccount {
   id: string;
   username: string;
+  passwordHash: string;
+  secretQ1: string;
+  secretA1: string;
+  secretQ2: string;
+  secretA2: string;
+  updatedAt: number;
+  isSynced: boolean;
   createdAt: string;
+}
+
+export interface MuItem {
+  id: string;
+  charId: string;
+  name: string;
+  slot: ItemSlot;
+  category: ItemCategory;
+  setName: string;
+  rarity: ItemRarity;
+  enhanceLevel: number;
+  minDmg: number;
+  maxDmg: number;
+  defense: number;
+  magicPower: number;
+  luck: boolean;
+  excellentOpt: string;
+  isEquipped: boolean;
+  originalOwner: string;
+  sharedFromSession: string | null;
+  acquiredAt: string;
 }
 
 export interface MuCharacter {
   id: string;
   accountId: string;
   name: string;
+  class: HeroClass;
   classType: HeroClass;
   level: number;
   xp: number;
@@ -124,28 +144,10 @@ export interface MuCharacter {
   maxAg: number;
   kills: number;
   resets: number;
-  updatedAt: string;
-}
-
-export interface MuItem {
-  id: string;
-  charId: string;
-  name: string;
-  slot: ItemSlot;
-  category: ItemCategory;
-  setName: string;
-  rarity: ItemRarity;
-  enhanceLevel: number;
-  minDmg: number;
-  maxDmg: number;
-  defense: number;
-  magicPower: number;
-  luck: boolean;
-  excellentOpt: string;
-  isEquipped: boolean;
-  originalOwner: string;
-  sharedFromSession: string | null;
-  acquiredAt: string;
+  equipment: MuItem[];
+  inventory: MuItem[];
+  updatedAt: number;
+  isSynced: boolean;
 }
 
 export interface SkillDef {
@@ -341,6 +343,11 @@ export interface MuMapConfig {
   worldIndex: number;
   name: string;
   subtitle: string;
+  sizeMeters: number; // e.g., 1000..1264 => 1.00 km² .. 1.60 km²
+  areaKm2: number;
+  cityRadius: number; // Safe capital zone radius in meters (e.g., 95m)
+  targetMonsterCount: number; // <= 50,000 monsters outside capital city
+  floraModel: string;
   minLevel: number;
   warpZen: number;
   weather: WeatherKind;
@@ -354,6 +361,7 @@ export interface MuMapConfig {
   ev: number;
   whiteBalance: [number, number, number];
   groundTintHex: number;
+  cityGroundTintHex: number;
   ambientLightHex: number;
   sunLightHex: number;
   npcs: NpcDef[];
@@ -376,4 +384,21 @@ export interface ShopItemDef {
   zenCost: number;
   classFilter?: HeroClass[];
   vendorRoles: NpcRole[];
+}
+
+export interface FloatingDamageNumber {
+  id: number;
+  text: string;
+  color: string;
+  xPct: number;
+  yPct: number;
+  isCritical?: boolean;
+}
+
+export interface SyncStatusInfo {
+  isOnline: boolean;
+  syncing: boolean;
+  pendingCount: number;
+  lastSyncedAt: number | null;
+  lastMessage: string | null;
 }

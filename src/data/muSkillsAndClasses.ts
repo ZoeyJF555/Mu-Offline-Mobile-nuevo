@@ -590,7 +590,7 @@ export const DEFAULT_BUTTON_LAYOUTS: Record<HudButtonId, ButtonLayoutItem> = {
   skillTray: { id: 'skillTray', label: 'Ventana Ataques', xPct: 81, yPct: 57, scale: 0.96 },
   potion: { id: 'potion', label: 'Poción', xPct: 91, yPct: 42, scale: 0.92 },
   loot: { id: 'loot', label: 'Recoger (E)', xPct: 77, yPct: 68, scale: 0.92 },
-  mapWarp: { id: 'mapWarp', label: '15 Mapas (M)', xPct: 51, yPct: 9, scale: 0.96 },
+  mapWarp: { id: 'mapWarp', label: '6 Mapas (M)', xPct: 51, yPct: 9, scale: 0.96 },
   stats: { id: 'stats', label: 'Stats (C)', xPct: 62, yPct: 9, scale: 0.96 },
   sync: { id: 'sync', label: 'Wi-Fi / BT', xPct: 73, yPct: 9, scale: 0.96 },
   inventory: { id: 'inventory', label: 'Inventario', xPct: 84, yPct: 9, scale: 0.96 },

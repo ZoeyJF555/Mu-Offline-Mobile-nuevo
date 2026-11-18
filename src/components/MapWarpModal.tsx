@@ -1,5 +1,5 @@
 import React from 'react';
-import { Compass, MapPin, Skull, Sparkles, X } from 'lucide-react';
+import { Compass, MapPin, Shield, Skull, Sparkles, X } from 'lucide-react';
 import { MU_MAPS } from '../data/muWorldData';
 import type { MapId, MuCharacter } from '../types/game';
 
@@ -28,10 +28,10 @@ export const MapWarpModal: React.FC<MapWarpModalProps> = ({
             <Compass className="w-5 h-5 text-amber-400" />
             <div>
               <h2 className="font-display text-sm sm:text-base font-bold text-amber-300">
-                Ventana de Teletransporte (M) · 15 Mapas MU Online
+                Ventana de Teletransporte (M) · 6 Reinos MU Online (1.00–1.60 km²)
               </h2>
               <p className="text-[11px] text-slate-400 font-mono-tabular">
-                Nivel actual: {character.level} · Zen disponible: {character.zen.toLocaleString()}
+                Nivel actual: {character.level} · Zen disponible: {character.zen.toLocaleString()} · Cada mapa posee capital segura y hasta 45,000 monstruos fuera de ciudad
               </p>
             </div>
           </div>
@@ -44,7 +44,7 @@ export const MapWarpModal: React.FC<MapWarpModalProps> = ({
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto mu-scroll p-3 sm:p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+        <div className="flex-1 overflow-y-auto mu-scroll p-3 sm:p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {MU_MAPS.map((m) => {
             const isCurrent = m.id === currentMapId;
             const boss = m.monsters.find((mob) => mob.isBoss);
@@ -55,7 +55,7 @@ export const MapWarpModal: React.FC<MapWarpModalProps> = ({
                 key={m.id}
                 onClick={() => !isCurrent && onWarpToMap(m.id)}
                 disabled={isCurrent}
-                className={`p-3 rounded-xl border text-left transition-colors flex flex-col justify-between gap-2 ${
+                className={`p-3.5 rounded-xl border text-left transition-colors flex flex-col justify-between gap-2.5 ${
                   isCurrent
                     ? 'bg-amber-950/40 border-amber-500 text-amber-200 cursor-default'
                     : canAfford
@@ -76,13 +76,23 @@ export const MapWarpModal: React.FC<MapWarpModalProps> = ({
                   </span>
                 </div>
 
+                <div className="flex items-center justify-between text-[11px] font-mono-tabular text-slate-300 bg-[#0b1019] rounded-lg px-2.5 py-1.5 border border-slate-800/80">
+                  <span className="inline-flex items-center gap-1 text-emerald-300">
+                    <Shield className="w-3 h-3" />
+                    Capital {m.cityRadius}m
+                  </span>
+                  <span className="text-amber-200">
+                    {m.areaKm2.toFixed(2)} km² · {m.targetMonsterCount.toLocaleString()} mobs
+                  </span>
+                </div>
+
                 <div className="flex items-center justify-between text-[11px] font-mono-tabular pt-1 border-t border-slate-800/80">
                   <span className="text-sky-300 inline-flex items-center gap-1">
                     <Sparkles className="w-3 h-3" />
-                    {m.weather === 'none' ? 'Arena' : m.weather}
+                    {m.npcs.length} NPCs · {m.weather}
                   </span>
                   {boss && (
-                    <span className="text-rose-300 inline-flex items-center gap-1 truncate max-w-[120px]">
+                    <span className="text-rose-300 inline-flex items-center gap-1 truncate max-w-[130px]">
                       <Skull className="w-3 h-3 shrink-0" />
                       {boss.name}
                     </span>

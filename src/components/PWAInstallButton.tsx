@@ -134,7 +134,7 @@ export const OfflineIndicator: React.FC = () => {
   return (
     <div className="fixed top-3 right-3 z-40 flex items-center gap-2 rounded-lg bg-[#1c1610] border border-amber-500/50 px-3 py-1.5 text-xs font-medium text-amber-200 shadow-lg">
       <WifiOff className="w-3.5 h-3.5 text-amber-400" />
-      <span>Modo Offline · SQLite Local Activo</span>
+      <span>Modo Offline · IndexedDB (Dexie) Activo</span>
     </div>
   );
 };
