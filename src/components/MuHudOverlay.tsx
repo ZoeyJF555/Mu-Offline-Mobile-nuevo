@@ -3,25 +3,30 @@ import {
   Backpack,
   Bot,
   Check,
+  Compass,
   Flame,
   Hand,
   Heart,
+  MessageSquare,
   RotateCcw,
   Settings,
   SlidersHorizontal,
   Smartphone,
   Sword,
+  User,
   Wifi,
   X,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
 import { DEFAULT_BUTTON_LAYOUTS, MU_SKILLS } from '../data/muSkillsAndClasses';
+import { getMapById } from '../data/muWorldData';
 import type {
   ButtonLayoutItem,
   CharacterComboConfig,
   HudButtonId,
   MuCharacter,
+  NpcDef,
   SkillDef,
 } from '../types/game';
 import { PubgJoystick } from './PubgJoystick';
@@ -34,6 +39,7 @@ interface MuHudOverlayProps {
   editMode: boolean;
   measuredFps: number;
   free3dCamera: boolean;
+  nearbyNpc: NpcDef | null;
   onJoystickVector: (x: number, y: number) => void;
   onPressAttack: () => void;
   onToggleComboArmed: () => void;
@@ -41,7 +47,10 @@ interface MuHudOverlayProps {
   onUpdateComboConfig: (next: CharacterComboConfig) => void;
   onHealPotion: () => void;
   onPickupLoot: () => void;
+  onTalkNpc: (npc: NpcDef) => void;
   onOpenInventory: () => void;
+  onOpenMapWarp: () => void;
+  onOpenStats: () => void;
   onOpenSync: () => void;
   onOpenOracle: () => void;
   onOpenApk: () => void;
@@ -58,6 +67,7 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
   editMode,
   measuredFps,
   free3dCamera,
+  nearbyNpc,
   onJoystickVector,
   onPressAttack,
   onToggleComboArmed,
@@ -65,7 +75,10 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
   onUpdateComboConfig,
   onHealPotion,
   onPickupLoot,
+  onTalkNpc,
   onOpenInventory,
+  onOpenMapWarp,
+  onOpenStats,
   onOpenSync,
   onOpenOracle,
   onOpenApk,
@@ -87,6 +100,7 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
   const classSkills = MU_SKILLS[character.classType] || MU_SKILLS.DK;
   const defaultSkill =
     classSkills.find((s) => s.id === comboConfig.defaultSkillId) || classSkills[0];
+  const mapCfg = getMapById(character.currentMapId);
 
   const hpPct = Math.max(0, Math.min(100, Math.round((character.hp / character.maxHp) * 100)));
   const mpPct = Math.max(0, Math.min(100, Math.round((character.mp / character.maxMp) * 100)));
@@ -98,7 +112,7 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
     if (!editMode) return;
     e.stopPropagation();
     setSelectedEditId(id);
-    const current = buttonLayouts[id];
+    const current = buttonLayouts[id] || DEFAULT_BUTTON_LAYOUTS[id];
     dragState.current = {
       id,
       pointerId: e.pointerId,
@@ -122,7 +136,7 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
 
     onUpdateButtonLayouts({
       ...buttonLayouts,
-      [id]: { ...buttonLayouts[id], xPct: nextX, yPct: nextY },
+      [id]: { ...(buttonLayouts[id] || DEFAULT_BUTTON_LAYOUTS[id]), xPct: nextX, yPct: nextY },
     });
   };
 
@@ -134,7 +148,7 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
 
   const adjustSelectedScale = (delta: number) => {
     if (!selectedEditId) return;
-    const cur = buttonLayouts[selectedEditId];
+    const cur = buttonLayouts[selectedEditId] || DEFAULT_BUTTON_LAYOUTS[selectedEditId];
     const nextScale = Math.max(0.65, Math.min(1.65, Number((cur.scale + delta).toFixed(2))));
     onUpdateButtonLayouts({
       ...buttonLayouts,
@@ -143,7 +157,7 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
   };
 
   const wrapButton = (id: HudButtonId, children: React.ReactNode) => {
-    const layout = buttonLayouts[id];
+    const layout = buttonLayouts[id] || DEFAULT_BUTTON_LAYOUTS[id];
     const isSelected = editMode && selectedEditId === id;
     return (
       <div
@@ -180,16 +194,17 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
 
   return (
     <>
-      {/* TOP-LEFT: Compact Character & FPS Readout */}
+      {/* TOP-LEFT: Compact Character, Current Map & FPS Readout */}
       <div className="pointer-events-none fixed top-2.5 left-3 z-20 rounded-lg bg-[#0d121c]/90 border border-amber-700/50 px-3 py-1.5 shadow-lg">
         <div className="flex items-center gap-2 text-xs">
           <span className="font-display font-bold text-amber-300">{character.name}</span>
           <span className="font-mono-tabular text-slate-300">
             {character.classType} Nv.{character.level}
           </span>
+          <span className="font-mono-tabular text-sky-300">· {mapCfg.name}</span>
           <span className="font-mono-tabular text-emerald-300">{measuredFps} FPS</span>
           {free3dCamera && (
-            <span className="font-mono-tabular text-sky-300">· 3D Libre</span>
+            <span className="font-mono-tabular text-purple-300">· 3D Libre</span>
           )}
         </div>
       </div>
@@ -214,12 +229,25 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
         </div>
       )}
 
+      {/* NEARBY NPC INTERACT BUTTON */}
+      {nearbyNpc && !editMode && (
+        <div className="fixed top-24 left-1/2 -translate-x-1/2 z-20">
+          <button
+            onClick={() => onTalkNpc(nearbyNpc)}
+            className="min-h-[42px] px-4 rounded-xl bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-xs inline-flex items-center gap-2 shadow-2xl border border-amber-200 cursor-pointer"
+          >
+            <MessageSquare className="w-4 h-4" />
+            Hablar con {nearbyNpc.name}
+          </button>
+        </div>
+      )}
+
       {/* BUTTON EDITOR FLOATING CONTROL BAR */}
       {editMode && (
         <div className="fixed top-3 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 flex-wrap justify-center rounded-xl bg-[#0e1420] border-2 border-amber-500 px-3.5 py-2 shadow-2xl max-w-[95vw]">
           <span className="text-xs font-bold text-amber-300 whitespace-nowrap">
             {selectedEditId
-              ? `Botón: ${buttonLayouts[selectedEditId].label} (${Math.round(buttonLayouts[selectedEditId].scale * 100)}%)`
+              ? `Botón: ${(buttonLayouts[selectedEditId] || DEFAULT_BUTTON_LAYOUTS[selectedEditId]).label} (${Math.round((buttonLayouts[selectedEditId] || DEFAULT_BUTTON_LAYOUTS[selectedEditId]).scale * 100)}%)`
               : 'Toca un botón para mover o escalar'}
           </span>
           <button
@@ -257,10 +285,37 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
 
       {/* DRAGGABLE & SCALABLE HUD BUTTONS */}
       {wrapButton(
+        'mapWarp',
+        <button
+          onClick={() => !editMode && onOpenMapWarp()}
+          className="min-h-[42px] px-2.5 rounded-lg bg-[#0f1522]/92 border border-emerald-600/50 hover:border-emerald-400 text-emerald-200 text-xs font-semibold inline-flex items-center gap-1.5 shadow-lg cursor-pointer whitespace-nowrap"
+        >
+          <Compass className="w-4 h-4 text-emerald-400" />
+          15 Mapas
+        </button>,
+      )}
+
+      {wrapButton(
+        'stats',
+        <button
+          onClick={() => !editMode && onOpenStats()}
+          className="relative min-h-[42px] px-2.5 rounded-lg bg-[#0f1522]/92 border border-purple-500/50 hover:border-purple-400 text-purple-200 text-xs font-semibold inline-flex items-center gap-1.5 shadow-lg cursor-pointer whitespace-nowrap"
+        >
+          <User className="w-4 h-4 text-purple-300" />
+          Stats
+          {character.unspentPoints > 0 && (
+            <span className="px-1.5 py-0.2 rounded bg-amber-500 text-slate-950 text-[10px] font-bold">
+              +{character.unspentPoints}
+            </span>
+          )}
+        </button>,
+      )}
+
+      {wrapButton(
         'sync',
         <button
           onClick={() => !editMode && onOpenSync()}
-          className="min-h-[42px] px-3 rounded-lg bg-[#0f1522]/92 border border-sky-600/50 hover:border-sky-400 text-sky-200 text-xs font-semibold inline-flex items-center gap-1.5 shadow-lg cursor-pointer whitespace-nowrap"
+          className="min-h-[42px] px-2.5 rounded-lg bg-[#0f1522]/92 border border-sky-600/50 hover:border-sky-400 text-sky-200 text-xs font-semibold inline-flex items-center gap-1.5 shadow-lg cursor-pointer whitespace-nowrap"
         >
           <Wifi className="w-4 h-4 text-sky-400" />
           Wi-Fi / BT
@@ -271,7 +326,7 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
         'inventory',
         <button
           onClick={() => !editMode && onOpenInventory()}
-          className="min-h-[42px] px-3 rounded-lg bg-[#0f1522]/92 border border-amber-600/60 hover:border-amber-400 text-amber-200 text-xs font-semibold inline-flex items-center gap-1.5 shadow-lg cursor-pointer whitespace-nowrap"
+          className="min-h-[42px] px-2.5 rounded-lg bg-[#0f1522]/92 border border-amber-600/60 hover:border-amber-400 text-amber-200 text-xs font-semibold inline-flex items-center gap-1.5 shadow-lg cursor-pointer whitespace-nowrap"
         >
           <Backpack className="w-4 h-4 text-amber-400" />
           Inventario
@@ -320,7 +375,7 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
         </button>,
       )}
 
-      {/* MU Online Skill Selector Mini-Windows */}
+      {/* MU Online 6-Skill Selector Mini-Windows */}
       {wrapButton(
         'skillTray',
         <div className="flex items-center gap-1 rounded-lg bg-[#0b1019]/92 border border-amber-700/60 p-1 shadow-xl">
@@ -333,13 +388,13 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
                 onClick={() => !editMode && onCastSkill(sk)}
                 title={`${sk.name} (MP ${sk.mpCost})`}
                 style={{ borderColor: isDefault ? '#f59e0b' : 'rgba(71, 85, 105, 0.7)' }}
-                className="relative w-11 h-11 rounded bg-[#151c2c] hover:bg-[#1f2940] border flex flex-col items-center justify-center text-center cursor-pointer active:scale-95"
+                className="relative w-10 h-10 rounded bg-[#151c2c] hover:bg-[#1f2940] border flex flex-col items-center justify-center text-center cursor-pointer active:scale-95"
               >
                 <span
                   style={{ backgroundColor: sk.badgeColor }}
-                  className="w-2.5 h-2.5 rounded-sm mb-0.5"
+                  className="w-2 h-2 rounded-sm mb-0.5"
                 />
-                <span className="text-[9px] font-bold text-slate-100 leading-none truncate max-w-[38px]">
+                <span className="text-[8px] font-bold text-slate-100 leading-none truncate max-w-[34px]">
                   {sk.shortName}
                 </span>
                 {comboIdx >= 0 && (
@@ -353,7 +408,7 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
           <button
             onClick={() => !editMode && setShowComboPicker((v) => !v)}
             title="Configurar ataque por defecto y Combo x3"
-            className="w-8 h-11 rounded bg-[#1b2234] hover:bg-slate-700 border border-slate-600 text-amber-300 flex items-center justify-center cursor-pointer"
+            className="w-8 h-10 rounded bg-[#1b2234] hover:bg-slate-700 border border-slate-600 text-amber-300 flex items-center justify-center cursor-pointer"
           >
             <SlidersHorizontal className="w-3.5 h-3.5" />
           </button>
@@ -398,7 +453,6 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
 
       {/* AUTHENTIC MU ONLINE BOTTOM HP/MP GLOBES + SD/AG/XP BAR */}
       <div className="pointer-events-none fixed bottom-0 left-1/2 -translate-x-1/2 z-10 flex items-end gap-1 sm:gap-2 pb-1">
-        {/* Left Red HP Globe */}
         <div className="relative w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-[#130b0d] border-2 border-amber-700/90 overflow-hidden shadow-2xl flex items-center justify-center">
           <div
             className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-rose-800 via-rose-600 to-red-500 transition-all"
@@ -409,10 +463,8 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
           </span>
         </div>
 
-        {/* Center MU Ornate SD / AG / XP / Zen Strip */}
         <div className="w-44 sm:w-64 rounded-t-lg bg-[#0d111a]/95 border border-b-0 border-amber-700/70 px-2.5 py-1.5 space-y-1 shadow-xl">
           <div className="grid grid-cols-2 gap-1.5">
-            {/* SD Bar (Yellow) */}
             <div>
               <div className="flex justify-between text-[9px] font-mono-tabular text-amber-200">
                 <span>SD</span>
@@ -422,7 +474,6 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
                 <div className="h-full bg-amber-400" style={{ width: `${sdPct}%` }} />
               </div>
             </div>
-            {/* AG Bar (Purple) */}
             <div>
               <div className="flex justify-between text-[9px] font-mono-tabular text-purple-200">
                 <span>AG</span>
@@ -434,7 +485,6 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
             </div>
           </div>
 
-          {/* XP Segments */}
           <div className="h-1.5 w-full rounded bg-slate-900 border border-slate-700 overflow-hidden">
             <div className="h-full bg-amber-500 transition-all" style={{ width: `${xpPct}%` }} />
           </div>
@@ -446,7 +496,6 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
           </div>
         </div>
 
-        {/* Right Blue MP Globe */}
         <div className="relative w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-[#09101a] border-2 border-amber-700/90 overflow-hidden shadow-2xl flex items-center justify-center">
           <div
             className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-blue-900 via-blue-600 to-sky-400 transition-all"
@@ -461,7 +510,7 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
       {/* SMALL MU ONLINE SKILL & COMBO CONFIGURATOR POPOVER */}
       {showComboPicker && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/75 p-3">
-          <div className="w-full max-w-md rounded-xl bg-[#0e131f] border-2 border-amber-700/80 p-4 space-y-3 shadow-2xl">
+          <div className="w-full max-w-md max-h-[90vh] overflow-y-auto mu-scroll rounded-xl bg-[#0e131f] border-2 border-amber-700/80 p-4 space-y-3 shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-800 pb-2">
               <h3 className="font-display text-sm font-bold text-amber-300">
                 Ventana de Ataques y Combo x3 ({character.classType})

@@ -1,10 +1,143 @@
+import type { AmbientBedKind, SkillVfxKind } from '../types/game';
+
+interface MusicMotif {
+  bpm: number;
+  notes: number[]; // MIDI note numbers, 0 = rest
+  bass: number[];
+  leadWave: OscillatorType;
+  padWave: OscillatorType;
+}
+
+const MOTIFS: Record<string, MusicMotif> = {
+  login: {
+    bpm: 78,
+    notes: [57, 60, 64, 69, 67, 64, 60, 62, 57, 60, 64, 71, 69, 64, 60, 0],
+    bass: [45, 0, 48, 0, 43, 0, 45, 0, 45, 0, 48, 0, 40, 0, 45, 0],
+    leadWave: 'triangle',
+    padWave: 'sine',
+  },
+  lorencia: {
+    bpm: 92,
+    notes: [62, 65, 69, 74, 72, 69, 65, 67, 62, 65, 69, 72, 70, 69, 65, 64],
+    bass: [38, 0, 45, 0, 41, 0, 45, 0, 38, 0, 43, 0, 45, 0, 38, 0],
+    leadWave: 'triangle',
+    padWave: 'sine',
+  },
+  dungeon: {
+    bpm: 72,
+    notes: [52, 0, 55, 54, 52, 0, 48, 51, 52, 0, 59, 58, 55, 0, 52, 0],
+    bass: [28, 0, 28, 0, 31, 0, 29, 0, 28, 0, 36, 0, 35, 0, 28, 0],
+    leadWave: 'sawtooth',
+    padWave: 'triangle',
+  },
+  devias: {
+    bpm: 84,
+    notes: [67, 71, 74, 79, 76, 74, 71, 69, 67, 71, 74, 78, 76, 74, 71, 0],
+    bass: [43, 0, 50, 0, 48, 0, 47, 0, 43, 0, 50, 0, 45, 0, 43, 0],
+    leadWave: 'sine',
+    padWave: 'sine',
+  },
+  noria: {
+    bpm: 96,
+    notes: [64, 68, 71, 76, 73, 71, 68, 69, 64, 68, 73, 76, 75, 73, 71, 68],
+    bass: [40, 0, 47, 0, 44, 0, 45, 0, 40, 0, 49, 0, 47, 0, 40, 0],
+    leadWave: 'sine',
+    padWave: 'triangle',
+  },
+  losttower: {
+    bpm: 102,
+    notes: [57, 60, 63, 64, 63, 60, 57, 56, 57, 64, 68, 69, 68, 64, 60, 56],
+    bass: [33, 33, 36, 36, 35, 35, 32, 32, 33, 33, 40, 40, 39, 39, 32, 32],
+    leadWave: 'sawtooth',
+    padWave: 'triangle',
+  },
+  stadium: {
+    bpm: 112,
+    notes: [60, 60, 67, 65, 63, 60, 63, 65, 67, 70, 72, 70, 67, 65, 63, 67],
+    bass: [36, 0, 36, 43, 39, 0, 41, 0, 43, 0, 48, 0, 43, 41, 39, 36],
+    leadWave: 'square',
+    padWave: 'sawtooth',
+  },
+  atlans: {
+    bpm: 76,
+    notes: [60, 64, 67, 71, 72, 71, 67, 64, 62, 65, 69, 72, 71, 67, 64, 0],
+    bass: [36, 0, 43, 0, 40, 0, 43, 0, 38, 0, 45, 0, 43, 0, 36, 0],
+    leadWave: 'sine',
+    padWave: 'sine',
+  },
+  tarkan: {
+    bpm: 98,
+    notes: [62, 63, 67, 68, 67, 63, 62, 60, 62, 67, 70, 72, 70, 68, 67, 63],
+    bass: [38, 0, 38, 45, 38, 0, 43, 0, 38, 0, 46, 0, 45, 0, 38, 0],
+    leadWave: 'triangle',
+    padWave: 'sawtooth',
+  },
+  icarus: {
+    bpm: 86,
+    notes: [69, 72, 76, 81, 79, 76, 74, 72, 69, 72, 76, 79, 81, 79, 76, 0],
+    bass: [45, 0, 52, 0, 48, 0, 50, 0, 45, 0, 52, 0, 53, 0, 45, 0],
+    leadWave: 'sine',
+    padWave: 'triangle',
+  },
+  aida: {
+    bpm: 88,
+    notes: [64, 67, 71, 74, 72, 71, 69, 67, 64, 69, 72, 76, 74, 72, 71, 67],
+    bass: [40, 0, 47, 0, 45, 0, 43, 0, 40, 0, 48, 0, 47, 0, 40, 0],
+    leadWave: 'triangle',
+    padWave: 'sine',
+  },
+  kanturu: {
+    bpm: 108,
+    notes: [59, 64, 66, 71, 69, 66, 64, 62, 59, 64, 67, 71, 74, 71, 67, 66],
+    bass: [35, 35, 42, 42, 40, 40, 38, 38, 35, 35, 43, 43, 47, 47, 42, 35],
+    leadWave: 'sawtooth',
+    padWave: 'triangle',
+  },
+  elbeland: {
+    bpm: 94,
+    notes: [65, 69, 72, 77, 76, 72, 69, 70, 65, 69, 74, 77, 76, 74, 72, 69],
+    bass: [41, 0, 48, 0, 45, 0, 46, 0, 41, 0, 50, 0, 48, 0, 41, 0],
+    leadWave: 'sine',
+    padWave: 'triangle',
+  },
+  raklion: {
+    bpm: 80,
+    notes: [61, 64, 68, 73, 71, 68, 66, 64, 61, 64, 68, 71, 73, 71, 68, 0],
+    bass: [37, 0, 44, 0, 42, 0, 40, 0, 37, 0, 44, 0, 45, 0, 37, 0],
+    leadWave: 'sine',
+    padWave: 'sine',
+  },
+  vulcanus: {
+    bpm: 118,
+    notes: [56, 59, 63, 64, 68, 64, 63, 59, 56, 64, 68, 71, 68, 64, 63, 59],
+    bass: [32, 32, 32, 39, 36, 36, 35, 35, 32, 32, 40, 40, 39, 39, 35, 32],
+    leadWave: 'sawtooth',
+    padWave: 'square',
+  },
+};
+
+function midiToFreq(midi: number): number {
+  return 440 * Math.pow(2, (midi - 69) / 12);
+}
+
 class MuSoundSynth {
   private ctx: AudioContext | null = null;
   public muted = false;
   public volume = 0.75;
+  public musicEnabled = true;
+  public musicVolume = 0.45;
 
-  private ensureContext(): AudioContext | null {
-    if (this.muted || this.volume <= 0.01 || typeof window === 'undefined') return null;
+  private activeTheme = 'login';
+  private activeBed: AmbientBedKind = 'none';
+  private seqTimer: number | null = null;
+  private stepIdx = 0;
+
+  private bedSource: AudioBufferSourceNode | null = null;
+  private bedGain: GainNode | null = null;
+
+  private ensureContext(allowWhenSfxMuted = false): AudioContext | null {
+    if (!allowWhenSfxMuted && (this.muted || this.volume <= 0.01)) return null;
+    if (typeof window === 'undefined') return null;
     if (!this.ctx) {
       const AudioCtx =
         window.AudioContext ||
@@ -19,24 +152,200 @@ class MuSoundSynth {
     return this.ctx;
   }
 
-  private g(val: number) {
-    return Math.max(0.001, val * this.volume);
+  public unlockAudio() {
+    this.ensureContext(true);
+    if (this.musicEnabled && !this.seqTimer) {
+      this.startSequencer();
+    }
   }
 
-  playSlash() {
+  private g(val: number) {
+    return Math.max(0.0005, val * this.volume);
+  }
+
+  private mg(val: number) {
+    return Math.max(0.0005, val * this.musicVolume);
+  }
+
+  public setMusicConfig(enabled: boolean, volume: number) {
+    this.musicEnabled = enabled;
+    this.musicVolume = Math.max(0, Math.min(1, volume));
+    if (!enabled || this.musicVolume <= 0.01) {
+      this.stopMusic();
+    } else if (!this.seqTimer) {
+      this.startSequencer();
+    }
+    if (this.bedGain && this.ctx) {
+      this.bedGain.gain.setTargetAtTime(
+        enabled ? this.mg(0.035) : 0.0001,
+        this.ctx.currentTime,
+        0.15,
+      );
+    }
+  }
+
+  public playMapMusic(theme: string, bed: AmbientBedKind = 'none') {
+    this.activeTheme = MOTIFS[theme] ? theme : 'lorencia';
+    this.activeBed = bed;
+    this.stepIdx = 0;
+    if (this.musicEnabled) {
+      this.startSequencer();
+      this.startAmbientBed(bed);
+    }
+  }
+
+  public stopMusic() {
+    if (this.seqTimer !== null) {
+      window.clearInterval(this.seqTimer);
+      this.seqTimer = null;
+    }
+    this.stopAmbientBed();
+  }
+
+  private startSequencer() {
+    if (this.seqTimer !== null) {
+      window.clearInterval(this.seqTimer);
+      this.seqTimer = null;
+    }
+    if (!this.musicEnabled || this.musicVolume <= 0.01) return;
+    const motif = MOTIFS[this.activeTheme] || MOTIFS.lorencia;
+    const stepMs = Math.round((60 / motif.bpm / 2) * 1000);
+
+    this.seqTimer = window.setInterval(() => {
+      if (!this.musicEnabled || this.musicVolume <= 0.01) return;
+      const ctx = this.ctx;
+      if (!ctx || ctx.state !== 'running') return;
+
+      const curMotif = MOTIFS[this.activeTheme] || MOTIFS.lorencia;
+      const idx = this.stepIdx % curMotif.notes.length;
+      this.stepIdx++;
+
+      const now = ctx.currentTime;
+      const leadMidi = curMotif.notes[idx];
+      if (leadMidi > 0) {
+        const osc = ctx.createOscillator();
+        const filter = ctx.createBiquadFilter();
+        const gain = ctx.createGain();
+        osc.type = curMotif.leadWave;
+        osc.frequency.setValueAtTime(midiToFreq(leadMidi), now);
+
+        filter.type = 'lowpass';
+        filter.frequency.setValueAtTime(1600, now);
+
+        gain.gain.setValueAtTime(0.0005, now);
+        gain.gain.linearRampToValueAtTime(this.mg(0.055), now + 0.04);
+        gain.gain.exponentialRampToValueAtTime(0.0005, now + (stepMs / 1000) * 1.4);
+
+        osc.connect(filter).connect(gain).connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + (stepMs / 1000) * 1.45);
+      }
+
+      const bassMidi = curMotif.bass[idx];
+      if (bassMidi > 0) {
+        const oscB = ctx.createOscillator();
+        const gainB = ctx.createGain();
+        oscB.type = curMotif.padWave;
+        oscB.frequency.setValueAtTime(midiToFreq(bassMidi), now);
+        gainB.gain.setValueAtTime(0.0005, now);
+        gainB.gain.linearRampToValueAtTime(this.mg(0.065), now + 0.03);
+        gainB.gain.exponentialRampToValueAtTime(0.0005, now + (stepMs / 1000) * 1.9);
+        oscB.connect(gainB).connect(ctx.destination);
+        oscB.start(now);
+        oscB.stop(now + (stepMs / 1000) * 1.95);
+      }
+    }, stepMs);
+  }
+
+  private stopAmbientBed() {
+    try {
+      this.bedSource?.stop();
+    } catch {
+      // ignore
+    }
+    this.bedSource = null;
+    this.bedGain = null;
+  }
+
+  private startAmbientBed(bed: AmbientBedKind) {
+    this.stopAmbientBed();
+    if (bed === 'none' || !this.musicEnabled) return;
+    const ctx = this.ctx;
+    if (!ctx || ctx.state !== 'running') return;
+
+    const sampleRate = ctx.sampleRate;
+    const len = sampleRate * 2;
+    const buffer = ctx.createBuffer(1, len, sampleRate);
+    const data = buffer.getChannelData(0);
+    let lastOut = 0;
+    for (let i = 0; i < len; i++) {
+      const white = Math.random() * 2 - 1;
+      lastOut = (lastOut + 0.03 * white) / 1.03;
+      data[i] = lastOut * 3.2;
+    }
+
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.loop = true;
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = bed === 'water' ? 'bandpass' : 'lowpass';
+    filter.frequency.value =
+      bed === 'water' ? 420 : bed === 'wind' ? 560 : bed === 'dungeon' ? 220 : bed === 'desert' ? 680 : 350;
+
+    const gain = ctx.createGain();
+    gain.gain.value = this.mg(0.032);
+
+    src.connect(filter).connect(gain).connect(ctx.destination);
+    src.start();
+    this.bedSource = src;
+    this.bedGain = gain;
+  }
+
+  playSkillSfx(vfx: SkillVfxKind) {
+    if (vfx === 'slash' || vfx === 'twisting' || vfx === 'death_stab' || vfx === 'power_slash') {
+      this.playSlash(vfx === 'twisting');
+    } else if (vfx === 'buff') {
+      this.playTradeSync();
+    } else if (vfx === 'arrow' || vfx === 'triple_shot' || vfx === 'ice_arrow') {
+      this.playBowShot();
+    } else if (vfx === 'nova' || vfx === 'hellfire' || vfx === 'gigantic_storm' || vfx === 'fire_scream') {
+      this.playHeavyImpact();
+    } else {
+      this.playMagic();
+    }
+  }
+
+  playSlash(heavy = false) {
     const ctx = this.ensureContext();
     if (!ctx) return;
     const now = ctx.currentTime;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.type = 'sawtooth';
-    osc.frequency.setValueAtTime(340, now);
-    osc.frequency.exponentialRampToValueAtTime(95, now + 0.14);
+    osc.frequency.setValueAtTime(heavy ? 420 : 340, now);
+    osc.frequency.exponentialRampToValueAtTime(85, now + 0.15);
     gain.gain.setValueAtTime(this.g(0.14), now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
     osc.connect(gain).connect(ctx.destination);
     osc.start(now);
-    osc.stop(now + 0.16);
+    osc.stop(now + 0.17);
+  }
+
+  playBowShot() {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(780, now);
+    osc.frequency.exponentialRampToValueAtTime(240, now + 0.11);
+    gain.gain.setValueAtTime(this.g(0.12), now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.13);
   }
 
   playMagic() {
@@ -53,6 +362,40 @@ class MuSoundSynth {
     osc.connect(gain).connect(ctx.destination);
     osc.start(now);
     osc.stop(now + 0.26);
+  }
+
+  playHeavyImpact() {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    [160, 320, 640].forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = i === 0 ? 'sine' : 'sawtooth';
+      osc.frequency.setValueAtTime(freq, now);
+      osc.frequency.exponentialRampToValueAtTime(55, now + 0.28);
+      gain.gain.setValueAtTime(this.g(0.12), now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.31);
+    });
+  }
+
+  playMonsterHit() {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(190, now);
+    osc.frequency.exponentialRampToValueAtTime(75, now + 0.08);
+    gain.gain.setValueAtTime(this.g(0.08), now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.1);
   }
 
   playComboBurst() {
@@ -87,6 +430,39 @@ class MuSoundSynth {
       osc.connect(gain).connect(ctx.destination);
       osc.start(now + i * 0.055);
       osc.stop(now + i * 0.055 + 0.3);
+    });
+  }
+
+  playWarp() {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(280, now);
+    osc.frequency.exponentialRampToValueAtTime(1120, now + 0.32);
+    gain.gain.setValueAtTime(this.g(0.12), now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.34);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.35);
+  }
+
+  playLevelUp() {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    [523.25, 659.25, 783.99, 1046.5, 1318.5].forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, now + i * 0.065);
+      gain.gain.setValueAtTime(this.g(0.13), now + i * 0.065);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.065 + 0.35);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(now + i * 0.065);
+      osc.stop(now + i * 0.065 + 0.36);
     });
   }
 

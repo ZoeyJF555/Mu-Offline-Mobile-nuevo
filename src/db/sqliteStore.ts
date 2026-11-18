@@ -5,6 +5,7 @@ import {
   getDefaultComboConfig,
   getStarterItemsForMuClass,
 } from '../data/muSkillsAndClasses';
+import { MU_CHAOS_WINGS_RECIPES } from '../data/muWorldData';
 import type {
   ButtonLayoutItem,
   CharacterComboConfig,
@@ -15,10 +16,12 @@ import type {
   HeroClass,
   HudButtonId,
   ItemSlot,
+  MapId,
   MuAccount,
   MuCharacter,
   MuItem,
   SharedLedgerEntry,
+  ShopItemDef,
   TransportMode,
 } from '../types/game';
 
@@ -80,7 +83,6 @@ async function writeDbBytesToIdb(bytes: Uint8Array): Promise<void> {
 }
 
 function hashPassword(pwd: string): string {
-  // Deterministic lightweight hash for local offline SQLite auth
   let h = 2166136261;
   for (let i = 0; i < pwd.length; i++) {
     h ^= pwd.charCodeAt(i);
@@ -119,15 +121,20 @@ function createSchema(db: Database) {
       level INTEGER NOT NULL DEFAULT 1,
       xp INTEGER NOT NULL DEFAULT 0,
       xp_to_next INTEGER NOT NULL DEFAULT 120,
+      unspent_points INTEGER NOT NULL DEFAULT 15,
+      current_map_id TEXT NOT NULL DEFAULT 'lorencia',
       str INTEGER NOT NULL DEFAULT 28,
       agi INTEGER NOT NULL DEFAULT 20,
       vit INTEGER NOT NULL DEFAULT 25,
       ene INTEGER NOT NULL DEFAULT 15,
       cmd INTEGER NOT NULL DEFAULT 0,
-      zen INTEGER NOT NULL DEFAULT 15000,
-      bless INTEGER NOT NULL DEFAULT 3,
-      soul INTEGER NOT NULL DEFAULT 3,
-      chaos INTEGER NOT NULL DEFAULT 1,
+      zen INTEGER NOT NULL DEFAULT 30000,
+      bless INTEGER NOT NULL DEFAULT 6,
+      soul INTEGER NOT NULL DEFAULT 6,
+      chaos INTEGER NOT NULL DEFAULT 2,
+      life INTEGER NOT NULL DEFAULT 2,
+      creation INTEGER NOT NULL DEFAULT 1,
+      harmony INTEGER NOT NULL DEFAULT 1,
       hp INTEGER NOT NULL DEFAULT 220,
       max_hp INTEGER NOT NULL DEFAULT 220,
       mp INTEGER NOT NULL DEFAULT 90,
@@ -197,13 +204,17 @@ function createSchema(db: Database) {
     );
   `);
 
-  // Safe migrations for databases created in Step 1
   ensureColumn(db, 'characters', 'account_id', "TEXT NOT NULL DEFAULT 'acc-local'");
   ensureColumn(db, 'characters', 'cmd', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'characters', 'sd', 'INTEGER NOT NULL DEFAULT 220');
   ensureColumn(db, 'characters', 'max_sd', 'INTEGER NOT NULL DEFAULT 220');
   ensureColumn(db, 'characters', 'ag', 'INTEGER NOT NULL DEFAULT 100');
   ensureColumn(db, 'characters', 'max_ag', 'INTEGER NOT NULL DEFAULT 100');
+  ensureColumn(db, 'characters', 'unspent_points', 'INTEGER NOT NULL DEFAULT 15');
+  ensureColumn(db, 'characters', 'current_map_id', "TEXT NOT NULL DEFAULT 'lorencia'");
+  ensureColumn(db, 'characters', 'life', 'INTEGER NOT NULL DEFAULT 2');
+  ensureColumn(db, 'characters', 'creation', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumn(db, 'characters', 'harmony', 'INTEGER NOT NULL DEFAULT 1');
 }
 
 export async function initSqlite(): Promise<Database> {
@@ -220,7 +231,6 @@ export async function initSqlite(): Promise<Database> {
     const db = existingBytes ? new SQL.Database(existingBytes) : new SQL.Database();
     createSchema(db);
 
-    // Ensure default local account exists if empty
     const accRes = db.exec('SELECT COUNT(*) FROM accounts');
     if (Number(accRes[0]?.values[0]?.[0] ?? 0) === 0) {
       db.run(
@@ -326,9 +336,10 @@ function seedCharacterInternal(
 
   db.run(
     `INSERT INTO characters (
-      id, account_id, name, class_type, level, xp, xp_to_next, str, agi, vit, ene, cmd,
-      zen, bless, soul, chaos, hp, max_hp, mp, max_mp, sd, max_sd, ag, max_ag, kills, resets, updated_at
-    ) VALUES (?, ?, ?, ?, 15, 40, 220, ?, ?, ?, ?, ?, 30000, 6, 6, 2, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
+      id, account_id, name, class_type, level, xp, xp_to_next, unspent_points, current_map_id,
+      str, agi, vit, ene, cmd, zen, bless, soul, chaos, life, creation, harmony,
+      hp, max_hp, mp, max_mp, sd, max_sd, ag, max_ag, kills, resets, updated_at
+    ) VALUES (?, ?, ?, ?, 15, 40, 220, 20, 'lorencia', ?, ?, ?, ?, ?, 45000, 6, 6, 2, 2, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
     [
       id,
       accountId,
@@ -399,6 +410,8 @@ function mapCharacterRow(cols: string[], row: unknown[]): MuCharacter {
     level: Number(obj.level),
     xp: Number(obj.xp),
     xpToNext: Number(obj.xp_to_next),
+    unspentPoints: Number(obj.unspent_points ?? 15),
+    currentMapId: (String(obj.current_map_id || 'lorencia') as MapId),
     str: Number(obj.str),
     agi: Number(obj.agi),
     vit: Number(obj.vit),
@@ -408,6 +421,9 @@ function mapCharacterRow(cols: string[], row: unknown[]): MuCharacter {
     bless: Number(obj.bless),
     soul: Number(obj.soul),
     chaos: Number(obj.chaos),
+    life: Number(obj.life ?? 2),
+    creation: Number(obj.creation ?? 1),
+    harmony: Number(obj.harmony ?? 1),
     hp: Number(obj.hp),
     maxHp: Number(obj.max_hp),
     mp: Number(obj.mp),
@@ -481,15 +497,19 @@ export async function updateCharacter(char: MuCharacter): Promise<void> {
   const now = new Date().toISOString();
   db.run(
     `UPDATE characters SET
-      name = ?, level = ?, xp = ?, xp_to_next = ?, str = ?, agi = ?, vit = ?, ene = ?, cmd = ?,
-      zen = ?, bless = ?, soul = ?, chaos = ?, hp = ?, max_hp = ?, mp = ?, max_mp = ?,
-      sd = ?, max_sd = ?, ag = ?, max_ag = ?, kills = ?, resets = ?, updated_at = ?
+      name = ?, level = ?, xp = ?, xp_to_next = ?, unspent_points = ?, current_map_id = ?,
+      str = ?, agi = ?, vit = ?, ene = ?, cmd = ?,
+      zen = ?, bless = ?, soul = ?, chaos = ?, life = ?, creation = ?, harmony = ?,
+      hp = ?, max_hp = ?, mp = ?, max_mp = ?, sd = ?, max_sd = ?, ag = ?, max_ag = ?,
+      kills = ?, resets = ?, updated_at = ?
     WHERE id = ?`,
     [
       char.name,
       char.level,
       char.xp,
       char.xpToNext,
+      char.unspentPoints,
+      char.currentMapId,
       char.str,
       char.agi,
       char.vit,
@@ -499,6 +519,9 @@ export async function updateCharacter(char: MuCharacter): Promise<void> {
       char.bless,
       char.soul,
       char.chaos,
+      char.life,
+      char.creation,
+      char.harmony,
       char.hp,
       char.maxHp,
       char.mp,
@@ -514,6 +537,28 @@ export async function updateCharacter(char: MuCharacter): Promise<void> {
     ],
   );
   await persistDb();
+}
+
+export async function allocateStatPoint(
+  char: MuCharacter,
+  stat: 'str' | 'agi' | 'vit' | 'ene' | 'cmd',
+  amount = 1,
+): Promise<{ ok: boolean; character: MuCharacter; message?: string }> {
+  const pts = Math.min(amount, char.unspentPoints);
+  if (pts <= 0) {
+    return { ok: false, character: char, message: 'No tienes puntos libres. Sube de nivel cazando monstruos.' };
+  }
+  const updated: MuCharacter = {
+    ...char,
+    unspentPoints: char.unspentPoints - pts,
+    [stat]: char[stat] + pts,
+    maxHp: stat === 'vit' ? char.maxHp + pts * 6 : char.maxHp,
+    hp: stat === 'vit' ? char.hp + pts * 6 : char.hp,
+    maxMp: stat === 'ene' ? char.maxMp + pts * 5 : char.maxMp,
+    mp: stat === 'ene' ? char.mp + pts * 5 : char.mp,
+  };
+  await updateCharacter(updated);
+  return { ok: true, character: updated };
 }
 
 export async function getItemsForCharacter(charId: string): Promise<MuItem[]> {
@@ -540,7 +585,7 @@ export async function equipItem(charId: string, itemId: string): Promise<MuItem[
 export async function upgradeItemWithJewel(
   char: MuCharacter,
   itemId: string,
-  jewelType: 'bless' | 'soul',
+  jewelType: 'bless' | 'soul' | 'life' | 'harmony',
 ): Promise<{ success: boolean; message: string; character: MuCharacter; items: MuItem[] }> {
   const db = await initSqlite();
   const items = await getItemsForCharacter(char.id);
@@ -556,7 +601,7 @@ export async function upgradeItemWithJewel(
     if (item.enhanceLevel >= 6) {
       return {
         success: false,
-        message: 'Jewel of Bless mejora hasta +6. Usa Jewel of Soul para +7 a +13.',
+        message: 'Jewel of Bless mejora hasta +6. Usa Soul (+7 a +13) o Harmony (+14 a +15).',
         character: char,
         items,
       };
@@ -568,8 +613,8 @@ export async function upgradeItemWithJewel(
       'UPDATE items SET enhance_level = ?, min_dmg = min_dmg + ?, max_dmg = max_dmg + ?, defense = defense + ?, magic_power = magic_power + ? WHERE id = ?',
       [
         nextLevel,
-        item.category === 'weapon' ? 4 : 0,
-        item.category === 'weapon' ? 6 : 0,
+        item.category === 'weapon' || item.category === 'jewelry' ? 4 : 0,
+        item.category === 'weapon' || item.category === 'jewelry' ? 6 : 0,
         item.category !== 'weapon' ? 4 : 0,
         item.magicPower > 0 ? 5 : 0,
         item.id,
@@ -584,14 +629,78 @@ export async function upgradeItemWithJewel(
     };
   }
 
+  if (jewelType === 'life') {
+    if (char.life <= 0) {
+      return { success: false, message: 'No tienes Jewel of Life suficientes.', character: char, items };
+    }
+    const updatedChar = { ...char, life: char.life - 1 };
+    await updateCharacter(updatedChar);
+    const nextOpt = item.excellentOpt.includes('Adicional +16')
+      ? item.excellentOpt
+      : `${item.excellentOpt ? `${item.excellentOpt} · ` : ''}Opción Adicional +16`;
+    db.run(
+      'UPDATE items SET min_dmg = min_dmg + ?, max_dmg = max_dmg + ?, defense = defense + ?, magic_power = magic_power + ?, excellent_opt = ? WHERE id = ?',
+      [
+        item.category === 'weapon' ? 5 : 0,
+        item.category === 'weapon' ? 7 : 0,
+        item.category !== 'weapon' ? 6 : 0,
+        item.magicPower > 0 ? 6 : 0,
+        nextOpt,
+        item.id,
+      ],
+    );
+    await persistDb();
+    return {
+      success: true,
+      message: `¡Jewel of Life aplicado! ${item.name} recibió Opción Adicional.`,
+      character: updatedChar,
+      items: await getItemsForCharacter(char.id),
+    };
+  }
+
+  if (jewelType === 'harmony') {
+    if (char.harmony <= 0) {
+      return { success: false, message: 'No tienes Jewel of Harmony suficientes.', character: char, items };
+    }
+    if (item.enhanceLevel < 13) {
+      return { success: false, message: 'Sube el ítem a +13 primero con Soul para refinar con Harmony (+14/+15).', character: char, items };
+    }
+    if (item.enhanceLevel >= 15) {
+      return { success: false, message: `${item.name} ya está en el nivel dorado máximo +15.`, character: char, items };
+    }
+    const nextLevel = item.enhanceLevel + 1;
+    const updatedChar = { ...char, harmony: char.harmony - 1 };
+    await updateCharacter(updatedChar);
+    db.run(
+      'UPDATE items SET enhance_level = ?, min_dmg = min_dmg + ?, max_dmg = max_dmg + ?, defense = defense + ?, magic_power = magic_power + ?, excellent_opt = ? WHERE id = ?',
+      [
+        nextLevel,
+        item.category === 'weapon' ? 10 : 0,
+        item.category === 'weapon' ? 14 : 0,
+        item.category !== 'weapon' ? 9 : 0,
+        item.magicPower > 0 ? 11 : 0,
+        item.excellentOpt.includes('Harmony') ? item.excellentOpt : `${item.excellentOpt ? `${item.excellentOpt} · ` : ''}Harmony SD Ignorar +5%`,
+        item.id,
+      ],
+    );
+    await persistDb();
+    return {
+      success: true,
+      message: `¡Brillo Supremo! ${item.name} refinado a +${nextLevel} con Harmony.`,
+      character: updatedChar,
+      items: await getItemsForCharacter(char.id),
+    };
+  }
+
+  // Jewel of Soul (+7 to +13)
   if (char.soul <= 0) {
     return { success: false, message: 'No tienes Jewel of Soul suficientes.', character: char, items };
   }
   if (item.enhanceLevel >= 13) {
-    return { success: false, message: `${item.name} ya alcanzó el nivel máximo +13.`, character: char, items };
+    return { success: false, message: `${item.name} ya alcanzó +13. Usa Harmony para +14/+15.`, character: char, items };
   }
 
-  const chance = item.luck ? 0.8 : 0.6;
+  const chance = item.luck ? 0.82 : 0.62;
   const rolled = Math.random() < chance;
   const updatedChar = { ...char, soul: char.soul - 1 };
   await updateCharacter(updatedChar);
@@ -602,8 +711,8 @@ export async function upgradeItemWithJewel(
       'UPDATE items SET enhance_level = ?, min_dmg = min_dmg + ?, max_dmg = max_dmg + ?, defense = defense + ?, magic_power = magic_power + ? WHERE id = ?',
       [
         nextLevel,
-        item.category === 'weapon' ? 6 : 0,
-        item.category === 'weapon' ? 8 : 0,
+        item.category === 'weapon' || item.category === 'jewelry' ? 6 : 0,
+        item.category === 'weapon' || item.category === 'jewelry' ? 8 : 0,
         item.category !== 'weapon' ? 5 : 0,
         item.magicPower > 0 ? 7 : 0,
         item.id,
@@ -629,6 +738,152 @@ export async function upgradeItemWithJewel(
   };
 }
 
+export async function buyShopItem(
+  char: MuCharacter,
+  shopItem: ShopItemDef,
+): Promise<{ ok: boolean; message: string; character: MuCharacter; items: MuItem[] }> {
+  const items = await getItemsForCharacter(char.id);
+  if (char.zen < shopItem.zenCost) {
+    return {
+      ok: false,
+      message: `Necesitas ${shopItem.zenCost.toLocaleString()} Zen para comprar ${shopItem.name}.`,
+      character: char,
+      items,
+    };
+  }
+  const updatedChar: MuCharacter = { ...char, zen: char.zen - shopItem.zenCost };
+  await updateCharacter(updatedChar);
+
+  const newItem: MuItem = {
+    id: `buy-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    charId: char.id,
+    name: shopItem.name,
+    slot: shopItem.slot,
+    category: shopItem.category,
+    setName: shopItem.setName,
+    rarity: shopItem.rarity,
+    enhanceLevel: shopItem.enhanceLevel,
+    minDmg: shopItem.minDmg,
+    maxDmg: shopItem.maxDmg,
+    defense: shopItem.defense,
+    magicPower: shopItem.magicPower,
+    luck: true,
+    excellentOpt: shopItem.excellentOpt,
+    isEquipped: false,
+    originalOwner: char.name,
+    sharedFromSession: null,
+    acquiredAt: new Date().toISOString(),
+  };
+
+  const nextItems = await addItemToCharacter(char.id, newItem);
+  return {
+    ok: true,
+    message: `Compraste ${shopItem.name} +${shopItem.enhanceLevel}. Guardado en mochila SQLite.`,
+    character: updatedChar,
+    items: nextItems,
+  };
+}
+
+export async function buyJewelFromNpc(
+  char: MuCharacter,
+  jewel: 'bless' | 'soul' | 'chaos' | 'life' | 'harmony',
+  zenCost: number,
+): Promise<{ ok: boolean; message: string; character: MuCharacter }> {
+  if (char.zen < zenCost) {
+    return { ok: false, message: `Necesitas ${zenCost.toLocaleString()} Zen.`, character: char };
+  }
+  const updated: MuCharacter = {
+    ...char,
+    zen: char.zen - zenCost,
+    [jewel]: char[jewel] + 1,
+  };
+  await updateCharacter(updated);
+  return { ok: true, message: `+1 Jewel of ${jewel.toUpperCase()} añadido.`, character: updated };
+}
+
+export async function sellInventoryItem(
+  char: MuCharacter,
+  itemId: string,
+): Promise<{ ok: boolean; message: string; character: MuCharacter; items: MuItem[] }> {
+  const items = await getItemsForCharacter(char.id);
+  const target = items.find((i) => i.id === itemId);
+  if (!target) return { ok: false, message: 'Ítem no encontrado.', character: char, items };
+  if (target.isEquipped) {
+    return { ok: false, message: 'Desequipa primero el ítem o equipa otro antes de vender.', character: char, items };
+  }
+  const sellValue = 1200 + target.enhanceLevel * 450 + (target.rarity === 'ancient' ? 5000 : target.rarity === 'excellent' ? 2500 : 0);
+  const updatedChar: MuCharacter = { ...char, zen: char.zen + sellValue };
+  await updateCharacter(updatedChar);
+  const nextItems = await removeItemFromCharacter(char.id, itemId);
+  return {
+    ok: true,
+    message: `Vendiste ${target.name} por +${sellValue.toLocaleString()} Zen.`,
+    character: updatedChar,
+    items: nextItems,
+  };
+}
+
+export async function executeChaosMixWing(
+  char: MuCharacter,
+  tier: 2 | 3,
+): Promise<{ ok: boolean; message: string; character: MuCharacter; items: MuItem[] }> {
+  const recipe = MU_CHAOS_WINGS_RECIPES.find((r) => r.tier === tier)!;
+  const items = await getItemsForCharacter(char.id);
+
+  if (
+    char.bless < recipe.blessCost ||
+    char.soul < recipe.soulCost ||
+    char.chaos < recipe.chaosCost ||
+    char.zen < recipe.zenCost
+  ) {
+    return {
+      ok: false,
+      message: `Faltan recursos: ${recipe.blessCost} Bless, ${recipe.soulCost} Soul, ${recipe.chaosCost} Chaos, ${recipe.zenCost.toLocaleString()} Zen.`,
+      character: char,
+      items,
+    };
+  }
+
+  const wingFullName = recipe.wingNames[char.classType];
+  const updatedChar: MuCharacter = {
+    ...char,
+    bless: char.bless - recipe.blessCost,
+    soul: char.soul - recipe.soulCost,
+    chaos: char.chaos - recipe.chaosCost,
+    zen: char.zen - recipe.zenCost,
+  };
+  await updateCharacter(updatedChar);
+
+  const forgedWing: MuItem = {
+    id: `wing-mix-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    charId: char.id,
+    name: wingFullName.replace(/\s*\+\d+$/, ''),
+    slot: 'wings',
+    category: 'wings',
+    setName: tier === 3 ? 'Lv3 Wings S6' : 'Lv2 Wings S6',
+    rarity: tier === 3 ? 'ancient' : 'excellent',
+    enhanceLevel: tier === 3 ? 13 : 9,
+    minDmg: tier === 3 ? 48 : 30,
+    maxDmg: tier === 3 ? 58 : 34,
+    defense: tier === 3 ? 65 : 42,
+    magicPower: char.classType === 'DW' || char.classType === 'MG' ? (tier === 3 ? 64 : 38) : 0,
+    luck: true,
+    excellentOpt: tier === 3 ? 'Ignora Defensa 5% · Absorbe 45% Daño · Recupera HP 5%' : 'Ignora Defensa 3% · Absorbe 32% Daño',
+    isEquipped: false,
+    originalOwner: char.name,
+    sharedFromSession: null,
+    acquiredAt: new Date().toISOString(),
+  };
+
+  const nextItems = await addItemToCharacter(char.id, forgedWing);
+  return {
+    ok: true,
+    message: `¡Chaos Mix exitoso! Forjaste ${forgedWing.name} +${forgedWing.enhanceLevel}.`,
+    character: updatedChar,
+    items: nextItems,
+  };
+}
+
 export async function addItemToCharacter(charId: string, item: MuItem): Promise<MuItem[]> {
   const db = await initSqlite();
   insertItemInternal(db, { ...item, charId });
@@ -648,6 +903,8 @@ const DEFAULT_SETTINGS: GameSettings = {
   brightness: 1.08,
   volume: 0.75,
   muted: false,
+  musicEnabled: true,
+  musicVolume: 0.45,
   free3dCamera: false,
   targetFps: 60,
 };

@@ -1,5 +1,65 @@
 export type HeroClass = 'DK' | 'DW' | 'ELF' | 'DL' | 'MG';
 
+export type MapId =
+  | 'lorencia'
+  | 'dungeon'
+  | 'devias'
+  | 'noria'
+  | 'losttower'
+  | 'stadium'
+  | 'atlans'
+  | 'tarkan'
+  | 'icarus'
+  | 'aida'
+  | 'kanturu1'
+  | 'kanturu2'
+  | 'elbeland'
+  | 'raklion'
+  | 'vulcanus';
+
+export type WeatherKind =
+  | 'none'
+  | 'leaves'
+  | 'petals'
+  | 'snowfall'
+  | 'snow'
+  | 'rain'
+  | 'underwater'
+  | 'embers'
+  | 'sandDust'
+  | 'dungeonDust'
+  | 'skyClouds';
+
+export type AmbientBedKind =
+  | 'none'
+  | 'wind'
+  | 'water'
+  | 'desert'
+  | 'dungeon'
+  | 'heaven'
+  | 'tower';
+
+export type SkillVfxKind =
+  | 'slash'
+  | 'twisting'
+  | 'death_stab'
+  | 'rageful_blow'
+  | 'bolt'
+  | 'evil_spirit'
+  | 'ice_storm'
+  | 'nova'
+  | 'hellfire'
+  | 'arrow'
+  | 'triple_shot'
+  | 'ice_arrow'
+  | 'fire_burst'
+  | 'fire_scream'
+  | 'earthshake'
+  | 'raven'
+  | 'power_slash'
+  | 'gigantic_storm'
+  | 'buff';
+
 export type ItemSlot =
   | 'weapon'
   | 'shield'
@@ -8,9 +68,13 @@ export type ItemSlot =
   | 'pants'
   | 'gloves'
   | 'boots'
-  | 'wings';
+  | 'wings'
+  | 'pendant'
+  | 'ring1'
+  | 'ring2'
+  | 'pet';
 
-export type ItemCategory = 'weapon' | 'armor' | 'wings';
+export type ItemCategory = 'weapon' | 'armor' | 'wings' | 'jewelry' | 'pet';
 
 export type ItemRarity = 'normal' | 'excellent' | 'ancient';
 
@@ -36,6 +100,8 @@ export interface MuCharacter {
   level: number;
   xp: number;
   xpToNext: number;
+  unspentPoints: number;
+  currentMapId: MapId;
   str: number;
   agi: number;
   vit: number;
@@ -45,6 +111,9 @@ export interface MuCharacter {
   bless: number;
   soul: number;
   chaos: number;
+  life: number;
+  creation: number;
+  harmony: number;
   hp: number;
   maxHp: number;
   mp: number;
@@ -81,6 +150,7 @@ export interface MuItem {
 
 export interface SkillDef {
   id: string;
+  openMuSkillId: number;
   classType: HeroClass;
   name: string;
   shortName: string;
@@ -91,6 +161,7 @@ export interface SkillDef {
   range: number;
   isAoe: boolean;
   isBuff?: boolean;
+  vfx: SkillVfxKind;
   colorHex: number;
   badgeColor: string;
 }
@@ -108,6 +179,8 @@ export type HudButtonId =
   | 'potion'
   | 'loot'
   | 'inventory'
+  | 'mapWarp'
+  | 'stats'
   | 'sync'
   | 'settings';
 
@@ -120,9 +193,11 @@ export interface ButtonLayoutItem {
 }
 
 export interface GameSettings {
-  brightness: number; // 0.6 to 1.5
-  volume: number; // 0 to 1
-  muted: boolean;
+  brightness: number; // 0.6 to 1.6
+  volume: number; // SFX 0 to 1
+  muted: boolean; // SFX mute
+  musicEnabled: boolean;
+  musicVolume: number; // 0 to 1
   free3dCamera: boolean;
   targetFps: 30 | 45 | 60;
 }
@@ -197,4 +272,108 @@ export interface BuildAnalysisResult {
   statAdvice: string;
   eventReadiness: string;
   recommendations: string[];
+}
+
+export type MonsterArchetype =
+  | 'dragon'
+  | 'hound'
+  | 'bull'
+  | 'skeleton'
+  | 'gorgon'
+  | 'yeti'
+  | 'ice_queen'
+  | 'goblin'
+  | 'golem'
+  | 'shadow'
+  | 'balrog'
+  | 'hydra'
+  | 'mutant'
+  | 'phoenix'
+  | 'mech'
+  | 'selupan'
+  | 'lava_giant'
+  | 'boss';
+
+export interface MapMonsterDef {
+  name: string;
+  archetype: MonsterArchetype;
+  level: number;
+  hp: number;
+  damage: number;
+  xp: number;
+  zen: number;
+  x: number;
+  z: number;
+  isBoss?: boolean;
+}
+
+export type NpcRole = 'blacksmith' | 'potions' | 'wizard' | 'elf' | 'chaos_goblin' | 'guard';
+
+export interface NpcDef {
+  id: string;
+  name: string;
+  title: string;
+  role: NpcRole;
+  x: number;
+  z: number;
+  robeColor: number;
+  accentColor: number;
+}
+
+export type GroundTheme =
+  | 'cobble'
+  | 'dungeon'
+  | 'snow'
+  | 'grass'
+  | 'tower'
+  | 'arena'
+  | 'underwater'
+  | 'sand'
+  | 'cloud'
+  | 'aida'
+  | 'kanturu'
+  | 'elbeland'
+  | 'raklion'
+  | 'vulcanus';
+
+export interface MuMapConfig {
+  id: MapId;
+  worldIndex: number;
+  name: string;
+  subtitle: string;
+  minLevel: number;
+  warpZen: number;
+  weather: WeatherKind;
+  ambientBed: AmbientBedKind;
+  musicTheme: string;
+  groundTheme: GroundTheme;
+  skyTopHex: number;
+  skyHorizonHex: number;
+  fogHex: number;
+  fogDensity: number;
+  ev: number;
+  whiteBalance: [number, number, number];
+  groundTintHex: number;
+  ambientLightHex: number;
+  sunLightHex: number;
+  npcs: NpcDef[];
+  monsters: MapMonsterDef[];
+}
+
+export interface ShopItemDef {
+  id: string;
+  name: string;
+  slot: ItemSlot;
+  category: ItemCategory;
+  setName: string;
+  rarity: ItemRarity;
+  enhanceLevel: number;
+  minDmg: number;
+  maxDmg: number;
+  defense: number;
+  magicPower: number;
+  excellentOpt: string;
+  zenCost: number;
+  classFilter?: HeroClass[];
+  vendorRoles: NpcRole[];
 }

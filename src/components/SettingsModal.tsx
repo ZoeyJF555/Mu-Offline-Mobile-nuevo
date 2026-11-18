@@ -3,6 +3,7 @@ import {
   Box,
   Maximize2,
   Move,
+  Music,
   Sliders,
   Sun,
   Volume2,
@@ -53,7 +54,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto mu-scroll p-4 space-y-4">
+        <div className="flex-1 overflow-y-auto mu-scroll p-4 space-y-3.5">
           {/* Brightness */}
           <div className="p-3.5 rounded-lg bg-[#141a28] border border-slate-800 space-y-2">
             <div className="flex items-center justify-between text-xs">
@@ -78,7 +79,45 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             />
           </div>
 
-          {/* Sound Volume & Mute */}
+          {/* Music Volume & Toggle */}
+          <div className="p-3.5 rounded-lg bg-[#141a28] border border-slate-800 space-y-2">
+            <div className="flex items-center justify-between text-xs">
+              <span className="inline-flex items-center gap-2 font-semibold text-slate-100">
+                <Music className="w-4 h-4 text-amber-300" />
+                Música de Mapas y Ambiente
+              </span>
+              <div className="flex items-center gap-2">
+                <span className="font-mono-tabular text-amber-300">
+                  {settings.musicEnabled ? `${Math.round(settings.musicVolume * 100)}%` : 'Apagada'}
+                </span>
+                <button
+                  onClick={() =>
+                    onUpdateSettings({ ...settings, musicEnabled: !settings.musicEnabled })
+                  }
+                  className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-[11px] text-slate-200 cursor-pointer"
+                >
+                  {settings.musicEnabled ? 'Apagar' : 'Encender'}
+                </button>
+              </div>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={settings.musicVolume}
+              onChange={(e) =>
+                onUpdateSettings({
+                  ...settings,
+                  musicVolume: Number(e.target.value),
+                  musicEnabled: true,
+                })
+              }
+              className="w-full accent-amber-400 cursor-pointer"
+            />
+          </div>
+
+          {/* SFX Volume & Mute */}
           <div className="p-3.5 rounded-lg bg-[#141a28] border border-slate-800 space-y-2">
             <div className="flex items-center justify-between text-xs">
               <span className="inline-flex items-center gap-2 font-semibold text-slate-100">
@@ -87,7 +126,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 ) : (
                   <Volume2 className="w-4 h-4 text-sky-400" />
                 )}
-                Sonidos y Efectos
+                Sonidos de Combate y Poderes
               </span>
               <div className="flex items-center gap-2">
                 <span className="font-mono-tabular text-sky-300">

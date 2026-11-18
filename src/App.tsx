@@ -5,10 +5,15 @@ import {
   MU_SKILLS,
   getDefaultComboConfig,
 } from './data/muSkillsAndClasses';
+import { getMapById } from './data/muWorldData';
 import {
   addItemToCharacter,
+  allocateStatPoint,
+  buyJewelFromNpc,
+  buyShopItem,
   createCharacterForAccount,
   equipItem,
+  executeChaosMixWing,
   getChatHistory,
   getEventSessions,
   getItemsForCharacter,
@@ -27,6 +32,7 @@ import {
   saveChatMessage,
   saveComboConfig,
   saveGameSettings,
+  sellInventoryItem,
   updateCharacter,
   upgradeItemWithJewel,
   upsertEventSession,
@@ -35,9 +41,12 @@ import { MuWorldEngine, type EngineCallbacks } from './game/MuWorldEngine';
 import { soundSynth } from './game/soundSynth';
 import { LocalSyncManager } from './services/syncManager';
 import { ApkSyncDrawer } from './components/ApkSyncDrawer';
+import { CharacterStatsModal } from './components/CharacterStatsModal';
 import { ClassicLoginFlow } from './components/ClassicLoginFlow';
+import { MapWarpModal } from './components/MapWarpModal';
 import { MuHudOverlay } from './components/MuHudOverlay';
 import { MuInventoryModal } from './components/MuInventoryModal';
+import { NpcShopModal } from './components/NpcShopModal';
 import { OracleChatDrawer } from './components/OracleChatDrawer';
 import { OfflineIndicator } from './components/PWAInstallButton';
 import { SettingsModal } from './components/SettingsModal';
@@ -50,12 +59,15 @@ import type {
   GameSettings,
   HeroClass,
   HudButtonId,
+  MapId,
   MuAccount,
   MuCharacter,
   MuItem,
+  NpcDef,
   RoomPeer,
   RoomState,
   SharedLedgerEntry,
+  ShopItemDef,
   SkillDef,
 } from './types/game';
 
@@ -69,6 +81,8 @@ const INITIAL_SETTINGS: GameSettings = {
   brightness: 1.08,
   volume: 0.75,
   muted: false,
+  musicEnabled: true,
+  musicVolume: 0.45,
   free3dCamera: false,
   targetFps: 60,
 };
@@ -98,7 +112,12 @@ export default function App() {
     () => typeof window !== 'undefined' && window.innerHeight > window.innerWidth && window.innerWidth < 900,
   );
 
-  const [activeDrawer, setActiveDrawer] = useState<'none' | 'inventory' | 'sync' | 'oracle' | 'apk' | 'settings'>('none');
+  const [activeDrawer, setActiveDrawer] = useState<
+    'none' | 'inventory' | 'sync' | 'oracle' | 'apk' | 'settings' | 'mapWarp' | 'stats' | 'npc'
+  >('none');
+  const [nearbyNpc, setNearbyNpc] = useState<NpcDef | null>(null);
+  const [activeNpc, setActiveNpc] = useState<NpcDef | null>(null);
+  const [npcStatusMessage, setNpcStatusMessage] = useState<string | null>(null);
   const [forgeMessage, setForgeMessage] = useState<string | null>(null);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [wsConnected, setWsConnected] = useState(false);
@@ -106,7 +125,6 @@ export default function App() {
   const [btDeviceName, setBtDeviceName] = useState<string | null>(null);
   const [banners, setBanners] = useState<FloatingBanner[]>([]);
 
-  // Refs for stable access inside WebGL loop and WebSocket handlers
   const charRef = useRef<MuCharacter | null>(null);
   const itemsRef = useRef<MuItem[]>([]);
   const roomRef = useRef<RoomState | null>(null);
@@ -136,7 +154,7 @@ export default function App() {
         await orient.lock('landscape');
       }
     } catch {
-      // Browsers on desktop or iOS Safari may ignore orientation lock without error
+      // Ignore browser orientation lock restrictions
     }
   }, []);
 
@@ -146,6 +164,19 @@ export default function App() {
     };
     window.addEventListener('resize', checkOrient);
     return () => window.removeEventListener('resize', checkOrient);
+  }, []);
+
+  // Unlock Web Audio on first gesture so background music starts smoothly
+  useEffect(() => {
+    const unlock = () => {
+      soundSynth.unlockAudio();
+    };
+    window.addEventListener('pointerdown', unlock, { once: true });
+    window.addEventListener('keydown', unlock, { once: true });
+    return () => {
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('keydown', unlock);
+    };
   }, []);
 
   const selectAndHydrateCharacter = useCallback(async (charObj: MuCharacter) => {
@@ -194,7 +225,6 @@ export default function App() {
     }
   }, [currentAccount?.id, selectAndHydrateCharacter]);
 
-  // Initial SQLite hydration
   useEffect(() => {
     loadAllFromSqlite();
     const params = new URLSearchParams(window.location.search);
@@ -204,10 +234,10 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Sync gameSettings to engine & soundSynth
   useEffect(() => {
     soundSynth.volume = gameSettings.volume;
     soundSynth.muted = gameSettings.muted;
+    soundSynth.setMusicConfig(gameSettings.musicEnabled, gameSettings.musicVolume);
     engineRef.current?.setBrightness(gameSettings.brightness);
     engineRef.current?.setFree3dMode(gameSettings.free3dCamera);
     engineRef.current?.setTargetFps(gameSettings.targetFps);
@@ -231,7 +261,6 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [screenStage]);
 
-  // Initialize WebSocket / Bluetooth SyncManager
   useEffect(() => {
     const manager = new LocalSyncManager({
       onConnectionChange: (connected) => setWsConnected(connected),
@@ -427,41 +456,24 @@ export default function App() {
         let nextMaxMp = c.maxMp;
         let nextMaxSd = c.maxSd;
         let nextMaxAg = c.maxAg;
-        let str = c.str;
-        let agi = c.agi;
-        let vit = c.vit;
-        let ene = c.ene;
-        let cmd = c.cmd;
+        let unspentPoints = c.unspentPoints;
+        let leveledUp = false;
 
         while (nextXp >= nextXpToNext) {
           nextXp -= nextXpToNext;
           nextLevel += 1;
           nextXpToNext = Math.round(nextXpToNext * 1.25);
-          nextMaxHp += 26;
-          nextMaxMp += 16;
-          nextMaxSd += 20;
+          nextMaxHp += 28;
+          nextMaxMp += 18;
+          nextMaxSd += 22;
           nextMaxAg += 5;
+          unspentPoints += c.classType === 'MG' || c.classType === 'DL' ? 7 : 5;
+          leveledUp = true;
+          pushBanner(`¡Subiste a Nivel ${nextLevel}! (+Puntos de Stats)`, '#fbbf24');
+        }
 
-          if (c.classType === 'DK') {
-            str += 3;
-            vit += 2;
-          } else if (c.classType === 'DW') {
-            ene += 4;
-            agi += 1;
-          } else if (c.classType === 'ELF') {
-            agi += 4;
-            ene += 1;
-          } else if (c.classType === 'DL') {
-            cmd += 2;
-            str += 2;
-            ene += 1;
-          } else {
-            // MG receives 7 stat pts per level feel
-            str += 3;
-            ene += 3;
-            agi += 1;
-          }
-          pushBanner(`¡Subiste a Nivel ${nextLevel}!`, '#fbbf24');
+        if (leveledUp) {
+          soundSynth.playLevelUp();
         }
 
         const updated: MuCharacter = {
@@ -469,19 +481,15 @@ export default function App() {
           level: nextLevel,
           xp: nextXp,
           xpToNext: nextXpToNext,
+          unspentPoints,
           maxHp: nextMaxHp,
-          hp: nextMaxHp,
+          hp: leveledUp ? nextMaxHp : c.hp,
           maxMp: nextMaxMp,
-          mp: nextMaxMp,
+          mp: leveledUp ? nextMaxMp : c.mp,
           maxSd: nextMaxSd,
-          sd: nextMaxSd,
+          sd: leveledUp ? nextMaxSd : c.sd,
           maxAg: nextMaxAg,
-          ag: nextMaxAg,
-          str,
-          agi,
-          vit,
-          ene,
-          cmd,
+          ag: leveledUp ? nextMaxAg : c.ag,
           zen: c.zen + zen,
           kills: c.kills + 1,
         };
@@ -496,12 +504,20 @@ export default function App() {
           zen: c.zen + (drop.kind === 'zen' ? drop.amount : 0),
           bless: c.bless + (drop.kind === 'bless' ? drop.amount : 0),
           soul: c.soul + (drop.kind === 'soul' ? drop.amount : 0),
+          chaos: c.chaos + (drop.kind === 'chaos' ? drop.amount : 0),
+          life: c.life + (drop.kind === 'life' ? drop.amount : 0),
         };
         setCharacter(updated);
         await updateCharacter(updated);
         pushBanner(
           `+${drop.label}`,
-          drop.kind === 'bless' ? '#f87171' : drop.kind === 'soul' ? '#60a5fa' : '#fbbf24',
+          drop.kind === 'bless'
+            ? '#f87171'
+            : drop.kind === 'soul'
+              ? '#60a5fa'
+              : drop.kind === 'life'
+                ? '#c084fc'
+                : '#fbbf24',
         );
       },
       onPlayerDamaged: (amount) => {
@@ -512,7 +528,7 @@ export default function App() {
           return {
             ...prev,
             sd: Math.max(0, prev.sd - sdAbsorb),
-            hp: Math.max(15, prev.hp - hpDamage),
+            hp: Math.max(20, prev.hp - hpDamage),
           };
         });
       },
@@ -526,6 +542,14 @@ export default function App() {
       },
       onFloatingText: (text, color) => {
         pushBanner(text, color);
+      },
+      onNearbyNpcChange: (npc) => {
+        setNearbyNpc(npc);
+      },
+      onOpenNpc: (npc) => {
+        setActiveNpc(npc);
+        setNpcStatusMessage(null);
+        setActiveDrawer('npc');
       },
       onFpsUpdate: (fps) => {
         setMeasuredFps(fps);
@@ -551,7 +575,9 @@ export default function App() {
     };
   }, [pushBanner]);
 
-  // Combat Execution: Default Attack vs Combo x3 Chain + Single Skill
+  const computeBonusStatPower = (c: MuCharacter) =>
+    Math.round((c.str + c.ene + c.agi + c.cmd) * 0.45);
+
   const handleCastSkill = useCallback(
     (skill: SkillDef) => {
       const c = charRef.current;
@@ -572,12 +598,12 @@ export default function App() {
           ...prev,
           mp: Math.max(0, prev.mp - useSkill.mpCost),
           ag: Math.max(0, prev.ag - useSkill.agCost),
-          hp: useSkill.isBuff ? Math.min(prev.maxHp, prev.hp + 45) : prev.hp,
-          sd: useSkill.isBuff ? Math.min(prev.maxSd, prev.sd + 35) : prev.sd,
+          hp: useSkill.isBuff ? Math.min(prev.maxHp, prev.hp + 55) : prev.hp,
+          sd: useSkill.isBuff ? Math.min(prev.maxSd, prev.sd + 45) : prev.sd,
         };
       });
 
-      engineRef.current?.executeSkill(useSkill);
+      engineRef.current?.executeSkill(useSkill, 1, computeBonusStatPower(c));
     },
     [pushBanner],
   );
@@ -595,7 +621,7 @@ export default function App() {
       const totalAg = Math.round((s1.agCost + s2.agCost + s3.agCost) * 0.65);
 
       if (c.mp < totalMp || c.ag < totalAg) {
-        pushBanner('MP/AG insuficiente para Combo · Ejecutando ataque base', '#fbbf24');
+        pushBanner('MP/AG insuficiente para Combo · Ataque base', '#fbbf24');
         const def = classSkills.find((s) => s.id === comboConfig.defaultSkillId) || classSkills[0];
         handleCastSkill(def);
         return;
@@ -610,7 +636,7 @@ export default function App() {
             }
           : prev,
       );
-      engineRef.current?.executeComboChain([s1, s2, s3]);
+      engineRef.current?.executeComboChain([s1, s2, s3], computeBonusStatPower(c));
     } else {
       const def = classSkills.find((s) => s.id === comboConfig.defaultSkillId) || classSkills[0];
       handleCastSkill(def);
@@ -652,8 +678,14 @@ export default function App() {
         handleCastSkill(skills[2]);
       } else if (e.code === 'Digit4' && skills[3]) {
         handleCastSkill(skills[3]);
+      } else if (e.code === 'Digit5' && skills[4]) {
+        handleCastSkill(skills[4]);
+      } else if (e.code === 'Digit6' && skills[5]) {
+        handleCastSkill(skills[5]);
+      } else if (e.code === 'KeyM') {
+        setActiveDrawer('mapWarp');
       } else if (e.code === 'KeyC') {
-        setComboArmed((v) => !v);
+        setActiveDrawer('stats');
       } else if (e.code === 'KeyV' || e.code === 'KeyI') {
         setActiveDrawer('inventory');
       }
@@ -710,8 +742,28 @@ export default function App() {
       character.classType,
       items.filter((i) => i.isEquipped),
     );
+    engineRef.current?.loadMap(character.currentMapId || 'lorencia', true);
     engineRef.current?.setMode('playing');
     setScreenStage('playing');
+  };
+
+  const handleWarpToMap = async (mapId: MapId) => {
+    if (!character) return;
+    const mapCfg = getMapById(mapId);
+    if (character.zen < mapCfg.warpZen) {
+      pushBanner(`Necesitas ${mapCfg.warpZen.toLocaleString()} Zen para viajar a ${mapCfg.name}`, '#f87171');
+      return;
+    }
+    const updated: MuCharacter = {
+      ...character,
+      zen: character.zen - mapCfg.warpZen,
+      currentMapId: mapId,
+    };
+    setCharacter(updated);
+    await updateCharacter(updated);
+    engineRef.current?.loadMap(mapId, true);
+    setActiveDrawer('none');
+    pushBanner(`Teletransportado a ${mapCfg.name}`, '#38bdf8');
   };
 
   const handleUpdateSettings = async (next: GameSettings) => {
@@ -758,7 +810,7 @@ export default function App() {
     setForgeMessage('Equipo actualizado y guardado en SQLite.');
   };
 
-  const handleUpgrade = async (itemId: string, jewel: 'bless' | 'soul') => {
+  const handleUpgrade = async (itemId: string, jewel: 'bless' | 'soul' | 'life' | 'harmony') => {
     if (!character) return;
     const result = await upgradeItemWithJewel(character, itemId, jewel);
     setCharacter(result.character);
@@ -769,6 +821,52 @@ export default function App() {
       result.character.classType,
       result.items.filter((i) => i.isEquipped),
     );
+  };
+
+  const handleAllocateStat = async (stat: 'str' | 'agi' | 'vit' | 'ene' | 'cmd', amount: number) => {
+    if (!character) return;
+    const res = await allocateStatPoint(character, stat, amount);
+    if (res.ok) {
+      setCharacter(res.character);
+      soundSynth.playTradeSync();
+    } else if (res.message) {
+      pushBanner(res.message, '#f87171');
+    }
+  };
+
+  const handleBuyShopItem = async (shopItem: ShopItemDef) => {
+    if (!character) return;
+    const res = await buyShopItem(character, shopItem);
+    setCharacter(res.character);
+    setItems(res.items);
+    setNpcStatusMessage(res.message);
+    soundSynth.playForge(res.ok);
+  };
+
+  const handleBuyJewel = async (jewel: 'bless' | 'soul' | 'chaos' | 'life' | 'harmony', cost: number) => {
+    if (!character) return;
+    const res = await buyJewelFromNpc(character, jewel, cost);
+    setCharacter(res.character);
+    setNpcStatusMessage(res.message);
+    soundSynth.playJewelDrop();
+  };
+
+  const handleSellItem = async (itemId: string) => {
+    if (!character) return;
+    const res = await sellInventoryItem(character, itemId);
+    setCharacter(res.character);
+    setItems(res.items);
+    setNpcStatusMessage(res.message);
+    soundSynth.playTradeSync();
+  };
+
+  const handleChaosMixWing = async (tier: 2 | 3) => {
+    if (!character) return;
+    const res = await executeChaosMixWing(character, tier);
+    setCharacter(res.character);
+    setItems(res.items);
+    setNpcStatusMessage(res.message);
+    soundSynth.playForge(res.ok);
   };
 
   const buildPeerSnapshot = (): RoomPeer => {
@@ -794,12 +892,10 @@ export default function App() {
 
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-[#0c1018]">
-      {/* Isolated Three.js 3D Canvas */}
       <div ref={canvasMountRef} className="absolute inset-0 w-full h-full" />
 
       <OfflineIndicator />
 
-      {/* Subtle Portrait Hint Banner on Mobile -> One-tap Horizontal Fullscreen */}
       {isPortraitMobile && (
         <div className="fixed top-2 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 rounded-lg bg-[#161c2a] border border-amber-500/70 px-3 py-1.5 shadow-xl max-w-[94vw]">
           <span className="text-[11px] text-amber-200 whitespace-nowrap">
@@ -815,7 +911,6 @@ export default function App() {
         </div>
       )}
 
-      {/* STAGE 1 & 2: CLASSIC MU ONLINE S6 EP3 LOGIN & CHARACTER SELECT */}
       {(screenStage === 'login' || screenStage === 'character_select') && (
         <ClassicLoginFlow
           stage={screenStage}
@@ -841,10 +936,8 @@ export default function App() {
         />
       )}
 
-      {/* STAGE 3: PLAYING HUD (PUBG Stick + Combo x3 + Skill Tray + MU HP/MP Globes + Custom Layout) */}
       {(screenStage === 'playing' || screenStage === 'paused') && character && (
         <>
-          {/* Room & Event Status Banners */}
           {roomState && (
             <div className="pointer-events-none fixed top-2.5 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-1.5">
               <div className="rounded-lg bg-[#0e131d]/92 border border-sky-500/40 px-3 py-1 text-xs font-mono-tabular text-sky-200 flex items-center gap-2">
@@ -901,6 +994,7 @@ export default function App() {
             editMode={editMode}
             measuredFps={measuredFps}
             free3dCamera={gameSettings.free3dCamera}
+            nearbyNpc={nearbyNpc}
             onJoystickVector={(x, y) => engineRef.current?.setJoystickVector(x, y)}
             onPressAttack={handlePressAttack}
             onToggleComboArmed={() => setComboArmed((v) => !v)}
@@ -908,7 +1002,14 @@ export default function App() {
             onUpdateComboConfig={handleUpdateComboConfig}
             onHealPotion={handleHealPotion}
             onPickupLoot={() => engineRef.current?.pickupNearestLoot()}
+            onTalkNpc={(npc) => {
+              setActiveNpc(npc);
+              setNpcStatusMessage(null);
+              setActiveDrawer('npc');
+            }}
             onOpenInventory={() => setActiveDrawer('inventory')}
+            onOpenMapWarp={() => setActiveDrawer('mapWarp')}
+            onOpenStats={() => setActiveDrawer('stats')}
             onOpenSync={() => setActiveDrawer('sync')}
             onOpenOracle={() => setActiveDrawer('oracle')}
             onOpenApk={() => setActiveDrawer('apk')}
@@ -919,7 +1020,6 @@ export default function App() {
         </>
       )}
 
-      {/* PAUSE MODAL */}
       {screenStage === 'paused' && activeDrawer === 'none' && (
         <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/75 p-4">
           <div className="w-full max-w-sm rounded-2xl bg-[#111622] border-2 border-amber-700/70 p-6 space-y-3 shadow-2xl">
@@ -939,7 +1039,7 @@ export default function App() {
               onClick={() => setActiveDrawer('settings')}
               className="w-full min-h-[44px] rounded-lg bg-[#192233] hover:bg-slate-700 text-slate-100 font-semibold text-sm cursor-pointer"
             >
-              Ajustes (Brillo, Sonido, 3D, Botones)
+              Ajustes (Brillo, Música, Sonido, 3D)
             </button>
             <button
               onClick={() => {
@@ -954,7 +1054,6 @@ export default function App() {
         </div>
       )}
 
-      {/* FEATURE MODALS & DRAWERS */}
       {character && (
         <>
           <MuInventoryModal
@@ -968,6 +1067,38 @@ export default function App() {
             onEquip={handleEquip}
             onUpgrade={handleUpgrade}
             forgeMessage={forgeMessage}
+          />
+
+          <MapWarpModal
+            open={activeDrawer === 'mapWarp'}
+            character={character}
+            currentMapId={character.currentMapId}
+            onClose={() => setActiveDrawer('none')}
+            onWarpToMap={handleWarpToMap}
+          />
+
+          <CharacterStatsModal
+            open={activeDrawer === 'stats'}
+            character={character}
+            items={items}
+            onClose={() => setActiveDrawer('none')}
+            onAllocateStat={handleAllocateStat}
+          />
+
+          <NpcShopModal
+            open={activeDrawer === 'npc'}
+            npc={activeNpc}
+            character={character}
+            items={items}
+            statusMessage={npcStatusMessage}
+            onClose={() => {
+              setActiveDrawer('none');
+              setNpcStatusMessage(null);
+            }}
+            onBuyItem={handleBuyShopItem}
+            onBuyJewel={handleBuyJewel}
+            onSellItem={handleSellItem}
+            onChaosMixWing={handleChaosMixWing}
           />
 
           <SyncLinkDrawer
