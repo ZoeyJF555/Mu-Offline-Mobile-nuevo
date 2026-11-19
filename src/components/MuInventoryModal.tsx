@@ -8,6 +8,7 @@ interface MuInventoryModalProps {
   character: MuCharacter;
   items: MuItem[];
   onClose: () => void;
+  onRepair: () => void;
   onEquip: (itemId: string) => void;
   onUpgrade: (itemId: string, jewel: 'bless' | 'soul' | 'life' | 'harmony') => void;
   forgeMessage: string | null;
@@ -34,6 +35,7 @@ export const MuInventoryModal: React.FC<MuInventoryModalProps> = ({
   items,
   onClose,
   onEquip,
+  onRepair,
   onUpgrade,
   forgeMessage,
 }) => {
@@ -212,7 +214,7 @@ export const MuInventoryModal: React.FC<MuInventoryModalProps> = ({
                   {selectedItem.minDmg > 0 && <span>Daño: {selectedItem.minDmg}~{selectedItem.maxDmg} · </span>}
                   {selectedItem.magicPower > 0 && <span>Magia: +{selectedItem.magicPower} · </span>}
                   {selectedItem.defense > 0 && <span>Defensa: {selectedItem.defense} · </span>}
-                  <span>Set: {selectedItem.setName}</span>
+                  <span>Set: {selectedItem.setName} · Estado: {selectedItem.durability ?? 100}%</span>
                 </div>
 
                 <div className="text-xs text-emerald-300">
@@ -225,13 +227,14 @@ export const MuInventoryModal: React.FC<MuInventoryModalProps> = ({
                   {selectedItem.sharedFromSession ? ` · Compartido en sala ${selectedItem.sharedFromSession}` : ''}
                 </div>
 
+                <button onClick={onRepair} className="min-h-[40px] rounded bg-emerald-900 px-3 text-sm">Reparar equipo · 1 Zen por punto</button>
                 <div className="flex items-center gap-1.5 pt-1 flex-wrap">
-                  {!selectedItem.isEquipped && (
+                  {(
                     <button
                       onClick={() => onEquip(selectedItem.id)}
                       className="min-h-[40px] px-3.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-xs cursor-pointer"
                     >
-                      Equipar
+                      {selectedItem.isEquipped ? 'Retirar' : 'Equipar'}
                     </button>
                   )}
                   <button

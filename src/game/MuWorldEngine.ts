@@ -10,6 +10,7 @@ import {
   Matrix,
   Mesh,
   MeshBuilder,
+  NullEngine,
   PointLight,
   Quaternion,
   Scene,
@@ -17,7 +18,7 @@ import {
   TransformNode,
   Vector3,
 } from '@babylonjs/core';
-import { getItemVisualSpec, getMapById } from '../data/muWorldData';
+import { getMapById } from '../data/muWorldData';
 import type {
   EventType,
   FloatingDamageNumber,
@@ -33,6 +34,8 @@ import type {
   SkillDef,
   WeatherKind,
 } from '../types/game';
+import { FlyffContent } from './FlyffContent';
+import { getStarterItemsForMuClass } from '../data/muSkillsAndClasses';
 import { MuAssetManager } from './MuAssetManager';
 import { soundSynth } from './soundSynth';
 
@@ -100,6 +103,7 @@ interface ActiveMonsterSlot {
 }
 
 export interface EngineCallbacks {
+  onEquipmentWear?: (slot: string, durability: number) => void;
   onKillMonster: (xp: number, zen: number, isBoss: boolean) => void;
   onPickupLoot: (drop: { kind: LootDrop['kind']; label: string; amount: number }) => void;
   onPlayerDamaged: (amount: number) => void;
@@ -140,14 +144,6 @@ const ARCHETYPE_TO_GLB: Record<MonsterArchetype, string> = {
   selupan: 'mon_hydra.glb',
   lava_giant: 'mon_balrog.glb',
   boss: 'mon_balrog.glb',
-};
-
-const CLASS_TO_GLB: Record<HeroClass, string> = {
-  DK: 'hero_dk.glb',
-  DW: 'hero_dw.glb',
-  ELF: 'hero_elf.glb',
-  DL: 'hero_dl.glb',
-  MG: 'hero_mg.glb',
 };
 
 const CELL_SIZE = 40; // 40m spatial grid cell for O(1) lookup over 50,000 monsters
@@ -260,6 +256,8 @@ export class MuWorldEngine {
   private camera: ArcRotateCamera;
   private assetManager: MuAssetManager;
 
+  private flyff: FlyffContent;
+  private heroSex: 'male' | 'female' = 'male';
   private callbacks: EngineCallbacks;
   private mode: EngineCameraMode = 'title';
   private currentMap: MuMapConfig = getMapById('lorencia');
@@ -293,7 +291,10 @@ export class MuWorldEngine {
   private lootDrops: LootDrop[] = [];
   private projectiles: ProjectileFx[] = [];
   private transientFx: TransientFx[] = [];
-  private remotePeers = new Map<string, { root: TransformNode; targetX: number; targetZ: number; rotY: number }>();
+  private remotePeers = new Map<string, { root: TransformNode; content: FlyffContent; targetX: number; targetZ: number; rotY: number; action: RoomPeer['action'] }>();
+  private loadingMap = false;
+  private accessoryGeneration = 0;
+  private heroAccessories: TransformNode[] = [];
 
   // --- Up to 50,000 Monster Spatial Simulation ---
   private totalMonsters = 0;
@@ -344,7 +345,7 @@ export class MuWorldEngine {
     bonusStatPower: number;
   } = { steps: null, nextIndex: 0, timer: 0, bonusStatPower: 0 };
 
-  constructor(container: HTMLElement, callbacks: EngineCallbacks) {
+  constructor(container: HTMLElement, callbacks: EngineCallbacks, options: { headless?: boolean } = {}) {
     this.container = container;
     this.callbacks = callbacks;
 
@@ -355,7 +356,7 @@ export class MuWorldEngine {
     this.canvas.style.outline = 'none';
     this.container.appendChild(this.canvas);
 
-    this.engine = new Engine(this.canvas, true, {
+    this.engine = import.meta.env.DEV && options.headless ? new NullEngine() : new Engine(this.canvas, true, {
       preserveDrawingBuffer: false,
       stencil: true,
       antialias: true,
@@ -367,6 +368,12 @@ export class MuWorldEngine {
     this.scene.fogMode = Scene.FOGMODE_EXP2;
 
     this.assetManager = new MuAssetManager(this.scene);
+    this.flyff = new FlyffContent(this.scene);
+    this.flyff.onError = error => { console.error(error); this.callbacks.onFloatingText('No se pudo cargar un recurso del juego. Reintenta la conexión.', '#f87171'); };
+    this.flyff.onWear = (slot, durability) => {
+      this.heroEquippedItems = this.heroEquippedItems.map(i => i.slot === slot && i.isEquipped ? {...i,durability} : i);
+      this.callbacks.onEquipmentWear?.(slot, durability);
+    };
 
     this.camera = new ArcRotateCamera(
       'muCamera',
@@ -378,7 +385,7 @@ export class MuWorldEngine {
     );
     this.camera.lowerBetaLimit = 0.28;
     this.camera.upperBetaLimit = 1.42;
-    this.camera.lowerRadiusLimit = 8;
+    this.camera.lowerRadiusLimit = 2.5;
     this.camera.upperRadiusLimit = 44;
     this.camera.wheelPrecision = 20;
 
@@ -400,7 +407,7 @@ export class MuWorldEngine {
     this.heroLight.range = 16;
 
     this.bindInputListeners();
-    this.preloadAssetsAndStart();
+    this.preloadAssetsAndStart().catch(this.flyff.onError);
   }
 
   private async preloadAssetsAndStart() {
@@ -427,7 +434,7 @@ export class MuWorldEngine {
       'fountain_plaza.glb',
     ]);
     await this.rebuildHeroModel();
-    await this.loadMap('lorencia', true);
+    if (this.loadSeq === 0) await this.loadMap('lorencia', true);
 
     this.engine.runRenderLoop(() => {
       if (this.disposed) return;
@@ -455,7 +462,10 @@ export class MuWorldEngine {
   };
 
   private handleKeyDown = (e: KeyboardEvent) => {
+    const target = e.target as HTMLElement | null;
+    if (target?.isContentEditable || ['INPUT','TEXTAREA','SELECT'].includes(target?.tagName ?? '')) return;
     this.keys.add(e.code);
+    if (e.code === 'KeyJ' && this.mode === 'playing') { e.preventDefault(); this.jump(); }
     if (e.code === 'KeyE' && this.mode === 'playing') {
       this.pickupNearestLoot();
     }
@@ -464,6 +474,10 @@ export class MuWorldEngine {
   private handleKeyUp = (e: KeyboardEvent) => {
     this.keys.delete(e.code);
   };
+
+  jump() { if (this.mode === 'playing') this.flyff.jump(); }
+  unlockAudio() { return this.flyff.unlockAudio(); }
+  setAudio(volume: number, muted: boolean) { this.flyff.setAudio(volume, muted); }
 
   setMode(mode: EngineCameraMode) {
     this.mode = mode;
@@ -507,10 +521,11 @@ export class MuWorldEngine {
   }
 
   isInSafeCity(x = this.heroX, z = this.heroZ): boolean {
-    return Math.hypot(x, z) < this.currentMap.cityRadius;
+    return this.currentMap.assetWorld ? this.flyff.safe(x, z) : Math.hypot(x, z) < this.currentMap.cityRadius;
   }
 
   private getTerrainHeight(x: number, z: number): number {
+    if (this.currentMap.assetWorld) return this.flyff.height(x, z);
     const dist = Math.hypot(x, z);
     if (dist <= this.currentMap.cityRadius + 10) return 0;
     const blend = Math.min(1, (dist - (this.currentMap.cityRadius + 10)) / 35);
@@ -520,84 +535,43 @@ export class MuWorldEngine {
     return wave * blend;
   }
 
-  async syncHeroAppearance(classType: HeroClass, equippedItems: MuItem[]) {
-    this.heroClass = classType;
+  async syncHeroAppearance(classType: HeroClass, equippedItems: MuItem[], sex?: 'male' | 'female') {
+    this.heroClass = classType;this.heroSex = sex ?? this.heroStatsSnapshot?.sex ?? 'male';
     this.heroEquippedItems = equippedItems;
-    await this.rebuildHeroModel();
+    try { await this.rebuildHeroModel(); } catch(error) { this.flyff.onError(error); throw error; }
   }
 
   private async rebuildHeroModel() {
-    if (this.heroModelRoot) {
-      this.heroModelRoot.dispose();
-      this.heroModelRoot = null;
-    }
-    this.heroWeaponNode = null;
-    this.heroWingsNode = null;
-
-    const eqArmor = this.heroEquippedItems.find((i) => i.slot === 'armor');
-    const eqWeapon = this.heroEquippedItems.find((i) => i.slot === 'weapon');
-    const eqShield = this.heroEquippedItems.find((i) => i.slot === 'shield');
-    const eqWings = this.heroEquippedItems.find((i) => i.slot === 'wings');
-
-    const armorSpec = getItemVisualSpec(eqArmor);
-    const weaponSpec = getItemVisualSpec(eqWeapon);
-    const wingsSpec = getItemVisualSpec(eqWings);
-
-    const modelFile = CLASS_TO_GLB[this.heroClass] || 'hero_dk.glb';
-    const { root } = await this.assetManager.instantiateModel(modelFile, `hero_${Date.now()}`, this.heroRoot, {
-      scale: 1.05,
-      emissiveHex: armorSpec.emissiveIntensity > 0.2 ? armorSpec.emissiveHex : undefined,
-      emissiveIntensity: armorSpec.emissiveIntensity * 0.35,
-    });
-    this.heroModelRoot = root;
-
-    // Weapon .glb
-    const weaponFile =
-      this.heroClass === 'DW'
-        ? 'weapon_staff.glb'
-        : this.heroClass === 'ELF'
-          ? 'weapon_bow.glb'
-          : this.heroClass === 'DL'
-            ? 'weapon_scepter.glb'
-            : 'weapon_sword.glb';
-
-    const wInst = await this.assetManager.instantiateModel(weaponFile, `hero_wpn_${Date.now()}`, root, {
-      scale: 0.95,
-      emissiveHex: weaponSpec.emissiveHex,
-      emissiveIntensity: weaponSpec.emissiveIntensity * 0.6,
-    });
-    wInst.root.position = new Vector3(0.46, 1.18, 0.22);
-    wInst.root.rotation = new Vector3(0.45, 0, -0.15);
-    this.heroWeaponNode = wInst.root;
-
-    // Shield .glb
-    if (eqShield) {
-      const sInst = await this.assetManager.instantiateModel('shield_dragon.glb', `hero_shd_${Date.now()}`, root, {
-        scale: 0.95,
-      });
-      sInst.root.position = new Vector3(-0.48, 1.18, 0.16);
-      sInst.root.rotation = new Vector3(0, 0.5, 0);
-    }
-
-    // Wings .glb
-    if (eqWings) {
-      const wgInst = await this.assetManager.instantiateModel('wings_angel.glb', `hero_wng_${Date.now()}`, root, {
-        scale: 1.05,
-        emissiveHex: wingsSpec.emissiveHex,
-        emissiveIntensity: wingsSpec.emissiveIntensity * 0.55,
-      });
-      wgInst.root.position = new Vector3(0, 1.48, -0.28);
-      this.heroWingsNode = wgInst.root;
+    await this.flyff.character(this.heroClass, this.heroSex, this.heroEquippedItems, this.heroRoot);
+    if (this.disposed) return;
+    this.heroModelRoot = this.flyff.actor?.root ?? null;
+    const generation = ++this.accessoryGeneration, actor = this.flyff.actor;
+    this.heroAccessories.forEach(n => n.dispose()); this.heroAccessories = [];
+    if (!actor) return;
+    for (const [slot, file, socket, scale] of [['wings','wings_angel.glb','Bip02 Spine2',.6]] as const) {
+      if (!this.heroEquippedItems.some(i => i.slot === slot && i.isEquipped && (i.durability ?? 100) > 0)) continue;
+      const parent = actor.outfit.transformNodes.find(n => n.name === socket);
+      if (!parent) continue;
+      const accessory = await this.assetManager.instantiateModel(file, `hero_${slot}`, parent, {scale});
+      if (generation !== this.accessoryGeneration || this.disposed || actor !== this.flyff.actor) { accessory.root.dispose(); return; }
+      this.heroAccessories.push(accessory.root);
     }
   }
 
   async loadMap(mapId: MapId, resetHeroPosition = true) {
     const mySeq = ++this.loadSeq;
+    this.loadingMap = true;
+    this.keys.clear();this.joystickVec = {x:0,y:0};
+    try {
     const mapCfg = getMapById(mapId);
     this.currentMap = mapCfg;
+    this.flyff.clearWorld();
+    this.totalMonsters = 0;
 
     soundSynth.playMapMusic(mapCfg.musicTheme, mapCfg.ambientBed);
 
+    for (const peer of this.remotePeers.values()) { peer.content.dispose(); peer.root.dispose(); }
+    this.remotePeers.clear();
     // Clear previous map nodes
     this.disposeChildren(this.worldRoot);
     this.disposeChildren(this.cityRoot);
@@ -631,6 +605,26 @@ export class MuWorldEngine {
     this.hemiLight.groundColor = fogColor.scale(0.6);
     this.sunLight.diffuse = sunColor;
     this.setBrightness(this.userBrightness);
+
+    if (mapCfg.assetWorld && mapCfg.spawn) {
+      await this.flyff.loadWorld(mapCfg.spawn.x, mapCfg.spawn.z);
+      if (mySeq !== this.loadSeq || this.disposed) return;
+      if (resetHeroPosition) {
+        this.heroX = mapCfg.spawn.x; this.heroZ = mapCfg.spawn.z;
+        this.heroRoot.position.set(this.heroX, this.getTerrainHeight(this.heroX, this.heroZ), this.heroZ);
+      }
+      for (const npcDef of mapCfg.npcs) {
+        const inst = await this.assetManager.instantiateModel(npcDef.role === 'chaos_goblin' ? 'npc_goblin.glb' : 'npc_merchant.glb', `npc_${npcDef.id}`, this.cityRoot);
+        if (mySeq !== this.loadSeq) { inst.root.dispose(); return; }
+        inst.root.position.set(npcDef.x, this.getTerrainHeight(npcDef.x, npcDef.z), npcDef.z);
+        const plate = createNameplatePlane(this.scene, npcDef.name, '#fde68a', 3.4);
+        plate.parent = inst.root; plate.position.y = 2.75;
+        this.activeNpcs.push({ def: npcDef, root: inst.root });
+      }
+      await this.populateMonsters(mapCfg, mySeq);
+      if(mySeq === this.loadSeq) this.initWeatherParticles(mapCfg.weather);
+      return;
+    }
 
     // 1. Huge 1.00 - 1.60 km² Terrain Ground
     const groundSize = mapCfg.sizeMeters;
@@ -683,6 +677,7 @@ export class MuWorldEngine {
 
     if (mySeq !== this.loadSeq) return;
     this.initWeatherParticles(mapCfg.weather);
+    } finally { if (mySeq === this.loadSeq) this.loadingMap = false; }
   }
 
   private async buildCapitalCity(mapCfg: MuMapConfig, seq: number) {
@@ -929,7 +924,7 @@ export class MuWorldEngine {
         for (let attempt = 0; attempt < 6; attempt++) {
           x = (rand() * 2 - 1) * half;
           z = (rand() * 2 - 1) * half;
-          if (Math.hypot(x, z) >= minSafeDist) break;
+          if (!this.isInSafeCity(x, z) && Math.hypot(x, z) >= minSafeDist) break;
         }
         if (Math.hypot(x, z) < minSafeDist) {
           const ang = rand() * Math.PI * 2;
@@ -938,6 +933,10 @@ export class MuWorldEngine {
         }
       }
 
+      if (mapCfg.assetWorld && this.isInSafeCity(x, z)) {
+        // Rejection sampling guarantees all three cities stay free of monsters.
+        for (let attempt = 0; attempt < 100 && this.isInSafeCity(x, z); attempt++) { x=(rand()*2-1)*half;z=(rand()*2-1)*half; }
+      }
       const defIdx = i % defs.length;
       const def = defs[defIdx];
       this.monX[i] = x;
@@ -1047,7 +1046,7 @@ export class MuWorldEngine {
   private computeHeroDamage(skill: SkillDef, bonusStatPower: number) {
     const c = this.heroStatsSnapshot;
     const eqDmg = this.heroEquippedItems
-      .filter((i) => i.isEquipped)
+      .filter((i) => i.isEquipped && (i.durability ?? 100) > 0)
       .reduce((acc, i) => acc + i.minDmg + i.maxDmg + i.magicPower, 0);
 
     const str = c?.str ?? 32;
@@ -1078,7 +1077,7 @@ export class MuWorldEngine {
   }
 
   executeSkill(skill: SkillDef, _comboMultiplier = 1, bonusStatPower = 0) {
-    if (this.mode !== 'playing') return;
+    if (this.mode !== 'playing' || this.loadingMap) return;
 
     // STRICT SAFE CITY RULE: No attacks or skills inside the capital city!
     if (this.isInSafeCity()) {
@@ -1092,10 +1091,10 @@ export class MuWorldEngine {
 
     this.heroAction = 'skill';
     this.attackSwingTimer = 0.38;
-    soundSynth.playSkillSfx(skill.vfx);
+    this.flyff.cast(skill);
 
     const { damage, isCritical, isExcellent } = this.computeHeroDamage(skill, bonusStatPower);
-    this.spawnSkillVfx(skill);
+    // Native effects are driven by the same accepted game skill. Damage remains authoritative here.
 
     if (skill.isBuff) {
       this.callbacks.onFloatingText(`+${skill.shortName} Activo`, '#4ade80');
@@ -1209,6 +1208,7 @@ export class MuWorldEngine {
   private damageMonsterAt(idx: number, damage: number, isCritical: boolean, isExcellent: boolean) {
     if (this.monAlive[idx] !== 1) return;
     this.monHp[idx] = Math.max(0, this.monHp[idx] - damage);
+    this.flyff.impact(this.monX[idx], this.monZ[idx]);
 
     // Emit floating 3D -> 2D projected damage number
     const mx = this.monX[idx];
@@ -1340,32 +1340,25 @@ export class MuWorldEngine {
   }
 
   async syncRemotePeers(peers: RoomPeer[], localPeerId: string) {
-    const activeIds = new Set<string>();
-    for (const p of peers) {
-      if (p.peerId === localPeerId) continue;
-      activeIds.add(p.peerId);
-      const existing = this.remotePeers.get(p.peerId);
-      if (existing) {
-        existing.targetX = p.x;
-        existing.targetZ = p.z;
-        existing.rotY = p.rotY;
-      } else {
-        const file = CLASS_TO_GLB[p.classType] || 'hero_dk.glb';
-        const inst = await this.assetManager.instantiateModel(file, `peer_${p.peerId}`, this.worldRoot, {
-          scale: 1.05,
-        });
-        inst.root.position = new Vector3(p.x, this.getTerrainHeight(p.x, p.z), p.z);
-        const plate = createNameplatePlane(this.scene, p.name, '#38bdf8', 2.8);
-        plate.parent = inst.root;
-        plate.position = new Vector3(0, 2.55, 0);
-        this.remotePeers.set(p.peerId, { root: inst.root, targetX: p.x, targetZ: p.z, rotY: p.rotY });
-      }
+    const visible = peers.filter(p => p.peerId !== localPeerId && (!p.currentMapId || p.currentMapId === this.currentMap.id));
+    const ids = new Set(visible.map(p => p.peerId));
+    for (const [id, entry] of this.remotePeers) if (!ids.has(id)) {
+      entry.content.dispose(); entry.root.dispose(); this.remotePeers.delete(id);
     }
-    for (const [peerId, entry] of this.remotePeers.entries()) {
-      if (!activeIds.has(peerId)) {
-        entry.root.dispose();
-        this.remotePeers.delete(peerId);
+    for (const p of visible) {
+      let entry = this.remotePeers.get(p.peerId);
+      if (!entry) {
+        const root = new TransformNode(`peer_${p.peerId}`, this.scene);root.parent = this.worldRoot;
+        root.position.set(p.x, this.getTerrainHeight(p.x,p.z),p.z);
+        const content = new FlyffContent(this.scene);content.onError = this.flyff.onError;
+        entry = {root,content,targetX:p.x,targetZ:p.z,rotY:p.rotY,action:p.action};
+        this.remotePeers.set(p.peerId,entry);
+        const plate = createNameplatePlane(this.scene,p.name,'#38bdf8',2.8);plate.parent=root;plate.position.y=2.1;
       }
+      entry.targetX=p.x;entry.targetZ=p.z;entry.rotY=p.rotY;
+      const oldAction=entry.action;entry.action=p.action;
+      await entry.content.character(p.classType,p.sex??'male',p.equipment??getStarterItemsForMuClass(p.peerId,p.name,p.classType),entry.root);
+      if (entry.content.actor && oldAction !== p.action && ['attack','skill'].includes(p.action)) entry.content.actor.play(p.action==='attack'?'attack':'cast_release',false);
     }
   }
 
@@ -1398,7 +1391,7 @@ export class MuWorldEngine {
     }
 
     // Hero movement
-    if (this.mode === 'playing') {
+    if (this.mode === 'playing' && !this.loadingMap) {
       let mx = this.joystickVec.x;
       let mz = -this.joystickVec.y;
       if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) mz += 1;
@@ -1412,17 +1405,19 @@ export class MuWorldEngine {
         const nz = mz / Math.max(1, mag);
         const speed = 13.5;
         const limit = this.currentMap.sizeMeters / 2 - 14;
-        this.heroX = Math.max(-limit, Math.min(limit, this.heroX + nx * speed * dt));
-        this.heroZ = Math.max(-limit, Math.min(limit, this.heroZ + nz * speed * dt));
+        const nextX = Math.max(-limit, Math.min(limit, this.heroX + nx * speed * dt));
+        const nextZ = Math.max(-limit, Math.min(limit, this.heroZ + nz * speed * dt));
+        if (this.flyff.canMove(nextX, this.heroZ, this.heroX, this.heroZ, this.heroRoot.position.y + (this.flyff.actor?.root.position.y ?? 0))) this.heroX = nextX;
+        if (this.flyff.canMove(this.heroX, nextZ, this.heroX, this.heroZ, this.heroRoot.position.y + (this.flyff.actor?.root.position.y ?? 0))) this.heroZ = nextZ;
         this.heroRotY = Math.atan2(nx, nz);
         if (this.attackSwingTimer <= 0) this.heroAction = 'move';
       } else if (this.attackSwingTimer <= 0) {
         this.heroAction = 'idle';
       }
 
-      const hy = this.getTerrainHeight(this.heroX, this.heroZ);
+      const hy = this.currentMap.assetWorld ? this.flyff.walkHeight(this.heroX,this.heroZ,this.heroRoot.position.y,dt) : this.getTerrainHeight(this.heroX, this.heroZ);
       this.heroRoot.position.set(this.heroX, hy, this.heroZ);
-      if (this.heroModelRoot) {
+      if (this.heroModelRoot && !this.flyff.actor) {
         this.heroModelRoot.rotation.y = this.heroRotY;
         if (this.heroAction === 'move') {
           this.heroModelRoot.position.y = Math.abs(Math.sin(now * 0.014)) * 0.11;
@@ -1477,11 +1472,13 @@ export class MuWorldEngine {
     } else {
       // Login / Character select cinematic orbit around Lorencia plaza
       const orbit = now * 0.00025;
-      this.camera.target = new Vector3(0, 1.5, 4);
+      this.camera.target = new Vector3(this.heroX, this.getTerrainHeight(this.heroX,this.heroZ)+1.05, this.heroZ);
       this.camera.alpha = orbit;
       this.camera.beta = 1.1;
-      this.camera.radius = 15;
+      this.camera.radius = this.mode === 'character_select' ? 4 : 15;
     }
+
+    this.flyff.update(dt, this.heroX, this.heroZ, this.heroAction === 'move', this.heroRotY);
 
     // Update Friendly Medieval Bots (soldiers, mages, elves, BKs patrolling the capital)
     for (const bot of this.friendlyBots) {
@@ -1516,6 +1513,7 @@ export class MuWorldEngine {
       peer.root.position.z += (peer.targetZ - peer.root.position.z) * 0.18;
       peer.root.position.y = this.getTerrainHeight(peer.root.position.x, peer.root.position.z);
       peer.root.rotation.y = peer.rotY;
+      peer.content.update(dt,peer.root.position.x,peer.root.position.z,peer.action==='move',0);
     }
 
     // Update Nearby Monsters (Spatial Grid + ThinInstances + Active Combat)
@@ -1579,7 +1577,7 @@ export class MuWorldEngine {
         if (wy > 20) wy = 1;
         this.weatherPositions[i * 3 + 1] = wy;
 
-        const mat = Matrix.Translation(this.heroX + wx, wy, this.heroZ + wz);
+        const mat = Matrix.Translation(this.heroX + wx, this.getTerrainHeight(this.heroX,this.heroZ) + wy, this.heroZ + wz);
         mat.copyToArray(this.weatherMatrices, i * 16);
       }
       this.weatherMesh.thinInstanceBufferUpdated('matrix');
@@ -1635,7 +1633,7 @@ export class MuWorldEngine {
         const moveX = mx + (dx / distToHero) * 3.8 * dt;
         const moveZ = mz + (dz / distToHero) * 3.8 * dt;
         // STRICT CITY BARRIER: Monsters CANNOT enter the capital city!
-        if (Math.hypot(moveX, moveZ) >= minBarrierR) {
+        if ((this.currentMap.assetWorld ? !this.isInSafeCity(moveX, moveZ) : Math.hypot(moveX, moveZ) >= minBarrierR) && this.flyff.canMove(moveX, moveZ, mx, mz)) {
           mx = moveX;
           mz = moveZ;
           this.monX[idx] = mx;
@@ -1650,7 +1648,9 @@ export class MuWorldEngine {
       // Monster attacks hero when within melee range outside the safe city
       if (this.mode === 'playing' && !heroInCity && distToHero <= 2.6) {
         if (Math.random() < dt * 0.75) {
-          this.callbacks.onPlayerDamaged(Math.max(4, Math.round(this.monDmg[idx] * 0.85)));
+          const damage = Math.max(4, Math.round(this.monDmg[idx] * 0.85));
+          this.flyff.hurt(damage);
+          this.callbacks.onPlayerDamaged(damage);
         }
       }
 
@@ -1690,6 +1690,10 @@ export class MuWorldEngine {
 
   dispose() {
     this.disposed = true;
+    this.loadSeq++;
+    this.flyff.dispose();
+    for (const peer of this.remotePeers.values()) peer.content.dispose();
+    this.remotePeers.clear();
     window.removeEventListener('resize', this.handleResize);
     window.removeEventListener('keydown', this.handleKeyDown);
     window.removeEventListener('keyup', this.handleKeyUp);

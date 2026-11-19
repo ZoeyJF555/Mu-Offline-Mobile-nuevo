@@ -61,6 +61,7 @@ interface MuHudOverlayProps {
   syncStatus: SyncStatusInfo;
   onJoystickVector: (x: number, y: number) => void;
   onPressAttack: () => void;
+  onJump: () => void;
   onToggleComboArmed: () => void;
   onCastSkill: (skill: SkillDef) => void;
   onUpdateComboConfig: (next: CharacterComboConfig) => void;
@@ -92,6 +93,7 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
   syncStatus,
   onJoystickVector,
   onPressAttack,
+  onJump,
   onToggleComboArmed,
   onCastSkill,
   onUpdateComboConfig,
@@ -236,6 +238,7 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
         ))}
       </div>
 
+      <button onClick={onJump} aria-label="Saltar (J)" className="pointer-events-auto fixed bottom-28 right-3 z-30 min-h-[44px] px-4 rounded-full bg-slate-900/90 border border-amber-500 text-amber-200">Saltar · J</button>
       {/* TOP-LEFT: Compact Character, Safe Zone / Hunting Zone, Coords & FPS */}
       <div className="pointer-events-none fixed top-2.5 left-3 z-20 rounded-lg bg-[#0d121c]/90 border border-amber-700/50 px-3 py-1.5 shadow-lg space-y-0.5">
         <div className="flex items-center gap-2 text-xs flex-wrap">
@@ -356,7 +359,7 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
           className="min-h-[42px] px-2.5 rounded-lg bg-[#0f1522]/92 border border-emerald-600/50 hover:border-emerald-400 text-emerald-200 text-xs font-semibold inline-flex items-center gap-1.5 shadow-lg cursor-pointer whitespace-nowrap"
         >
           <Compass className="w-4 h-4 text-emerald-400" />
-          6 Mapas
+          Mapas / Madrigal
         </button>,
       )}
 

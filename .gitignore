@@ -7,3 +7,7 @@ coverage/
 .env*
 !.env.example
 .mu-cloud-sync-store.json
+
+# Local Python conversion cache
+__pycache__/
+*.py[cod]

@@ -108,7 +108,11 @@ export class MuAssetManager {
   async getThinInstanceMaster(fileName: string, keySuffix = 'master'): Promise<Mesh | null> {
     const cacheKey = `${fileName}:${keySuffix}`;
     const existing = this.templateMeshCache.get(cacheKey);
-    if (existing) return existing;
+    if (existing) {
+      const cached = await existing;
+      if (cached && !cached.isDisposed()) return cached;
+      this.templateMeshCache.delete(cacheKey);
+    }
 
     const promise = (async () => {
       try {

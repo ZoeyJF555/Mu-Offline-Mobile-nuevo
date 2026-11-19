@@ -13,6 +13,7 @@ import type {
   EventSessionRecord,
   GameSettings,
   HeroClass,
+  CharacterSex,
   HudButtonId,
   MuAccount,
   MuCharacter,
@@ -112,6 +113,7 @@ async function seedCharacterInternal(
   accountId: string,
   name: string,
   classType: HeroClass,
+  sex: CharacterSex = 'male',
 ): Promise<MuCharacter> {
   const cls = MU_CLASSES.find((c) => c.id === classType) || MU_CLASSES[0];
   const charId = `chr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
@@ -126,11 +128,12 @@ async function seedCharacterInternal(
     name,
     class: classType,
     classType,
+    sex,
     level: 1,
     xp: 0,
     xpToNext: 120,
     unspentPoints: 15,
-    currentMapId: 'lorencia',
+    currentMapId: 'flaris',
     str: cls.baseStats.str,
     agi: cls.baseStats.agi,
     vit: cls.baseStats.vit,
@@ -327,12 +330,14 @@ export async function createCharacterForAccount(
   accountId: string,
   name: string,
   classType: HeroClass,
+  sex: CharacterSex = 'male',
 ): Promise<MuCharacter> {
   await initDexie();
   const charObj = await seedCharacterInternal(
     accountId,
     name.trim().slice(0, 16) || 'GuerreroMU',
     classType,
+    sex,
   );
   notifyMutated();
   return charObj;
@@ -346,9 +351,14 @@ export async function updateCharacter(char: MuCharacter): Promise<MuCharacter> {
     updatedAt: Date.now(),
     isSynced: false,
   };
-  await db.Characters.put(stamped);
-  notifyMutated();
-  return stamped;
+  // Item mutations own the inventory arrays. Stat saves may contain older snapshots.
+  return db.transaction('rw', db.Characters, async () => {
+    const latest = await db.Characters.get(char.id);
+    if (latest) { stamped.equipment = latest.equipment; stamped.inventory = latest.inventory; }
+    await db.Characters.put(stamped);
+    notifyMutated();
+    return stamped;
+  });
 }
 
 export async function getItemsForCharacter(charId: string): Promise<MuItem[]> {
@@ -360,18 +370,17 @@ export async function getItemsForCharacter(charId: string): Promise<MuItem[]> {
 
 export async function saveItemsForCharacter(charId: string, items: MuItem[]): Promise<MuItem[]> {
   await initDexie();
-  const char = await db.Characters.get(charId);
-  if (!char) return items;
-  const { equipment, inventory } = splitCharItems(items);
-  await db.Characters.put({
-    ...char,
-    equipment,
-    inventory,
-    updatedAt: Date.now(),
-    isSynced: false,
+  const saved = await db.transaction('rw', db.Characters, async () => {
+    const char = await db.Characters.get(charId);
+    if (!char) return items;
+    // Wear/repair own durability; equip/trade/upgrade snapshots must preserve it.
+    const latest = new Map(combineCharItems(char).map(i => [i.id, i]));
+    const merged = items.map(i => ({ ...i, durability: latest.get(i.id)?.durability ?? i.durability }));
+    const { equipment, inventory } = splitCharItems(merged);
+    await db.Characters.put({ ...char, equipment, inventory, updatedAt: Date.now(), isSynced: false });
+    return combineCharItems({ ...char, equipment, inventory });
   });
-  notifyMutated();
-  return combineCharItems({ ...char, equipment, inventory });
+  notifyMutated(); return saved;
 }
 
 export async function addItemToCharacter(charId: string, item: MuItem): Promise<MuItem[]> {
@@ -388,12 +397,36 @@ export async function removeItemFromCharacter(charId: string, itemId: string): P
   );
 }
 
+export async function wearEquipment(charId: string, slot: string, durability: number, itemId?: string): Promise<void> {
+  await initDexie();
+  await db.transaction('rw', db.Characters, async () => {
+    await db.Characters.where('id').equals(charId).modify(c => {
+      c.equipment = c.equipment.map(i => i.slot === slot && (!itemId || i.id === itemId) ? { ...i, durability: Math.min(i.durability ?? 100, durability) } : i);
+      c.updatedAt = Date.now(); c.isSynced = false;
+    });
+  });
+  notifyMutated();
+}
+
+export async function repairEquipment(charId: string): Promise<MuCharacter> {
+  await initDexie();
+  const char = await db.transaction('rw', db.Characters, async () => {
+    const c = await db.Characters.get(charId);
+    if (!c) throw new Error('Personaje no encontrado');
+    const cost = c.equipment.reduce((sum, i) => sum + (100 - (i.durability ?? 100)), 0);
+    if (c.zen < cost) throw new Error(`Necesitas ${cost} Zen para reparar el equipo`);
+    const updated = { ...c, zen: c.zen - cost, equipment: c.equipment.map(i => ({...i, durability:100})), updatedAt: Date.now(), isSynced:false };
+    await db.Characters.put(updated);return updated;
+  });
+  notifyMutated(); return char;
+}
+
 export async function equipItem(charId: string, itemId: string): Promise<MuItem[]> {
   const current = await getItemsForCharacter(charId);
   const target = current.find((i) => i.id === itemId);
   if (!target) return current;
   const next = current.map((i) => {
-    if (i.id === itemId) return { ...i, isEquipped: true };
+    if (i.id === itemId) return { ...i, isEquipped: !target.isEquipped };
     if (i.slot === target.slot && i.isEquipped) return { ...i, isEquipped: false };
     return i;
   });

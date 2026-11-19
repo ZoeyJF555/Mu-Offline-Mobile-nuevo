@@ -3,6 +3,7 @@ import { Bluetooth, RotateCw, ShieldAlert, Wifi } from 'lucide-react';
 import {
   DEFAULT_BUTTON_LAYOUTS,
   MU_SKILLS,
+  getStarterItemsForMuClass,
   getDefaultComboConfig,
 } from './data/muSkillsAndClasses';
 import { getMapById } from './data/muWorldData';
@@ -35,6 +36,8 @@ import {
   saveChatMessage,
   saveComboConfig,
   saveGameSettings,
+  wearEquipment,
+  repairEquipment,
   sellInventoryItem,
   updateCharacter,
   upgradeItemWithJewel,
@@ -94,6 +97,9 @@ const INITIAL_SETTINGS: GameSettings = {
 };
 
 export default function App() {
+  const worldLoadRef = useRef(false);
+  const [worldLoading,setWorldLoading] = useState(false);
+  const [engineError, setEngineError] = useState<string | null>(null);
   const canvasMountRef = useRef<HTMLDivElement | null>(null);
   const engineRef = useRef<MuWorldEngine | null>(null);
   const syncRef = useRef<LocalSyncManager | null>(null);
@@ -196,6 +202,7 @@ export default function App() {
   useEffect(() => {
     const unlock = () => {
       soundSynth.unlockAudio();
+      void engineRef.current?.unlockAudio();
     };
     window.addEventListener('pointerdown', unlock, { once: true });
     window.addEventListener('keydown', unlock, { once: true });
@@ -217,7 +224,8 @@ export default function App() {
     engineRef.current?.syncHeroAppearance(
       charObj.classType,
       charItems.filter((i) => i.isEquipped),
-    );
+      charObj.sex,
+    ).catch(console.error);
   }, []);
 
   const loadAllFromDexie = useCallback(
@@ -292,6 +300,7 @@ export default function App() {
   useEffect(() => {
     soundSynth.volume = gameSettings.volume;
     soundSynth.muted = gameSettings.muted;
+    engineRef.current?.setAudio(gameSettings.volume, gameSettings.muted);
     soundSynth.setMusicConfig(gameSettings.musicEnabled, gameSettings.musicVolume);
     engineRef.current?.setBrightness(gameSettings.brightness);
     engineRef.current?.setFree3dMode(gameSettings.free3dCamera);
@@ -323,7 +332,7 @@ export default function App() {
         setRoomState(room);
         engineRef.current?.setEventActive(room.activeEvent, room.eventType);
         if (syncRef.current) {
-          engineRef.current?.syncRemotePeers(room.peers, syncRef.current.peerId);
+          engineRef.current?.syncRemotePeers(room.peers, syncRef.current.peerId).catch(console.error);
         }
         upsertEventSession({
           id: `sess-${room.code}`,
@@ -343,7 +352,7 @@ export default function App() {
           if (!prev) return prev;
           const peers = prev.peers.map((p) => (p.peerId === peer.peerId ? peer : p));
           if (syncRef.current) {
-            engineRef.current?.syncRemotePeers(peers, syncRef.current.peerId);
+            engineRef.current?.syncRemotePeers(peers, syncRef.current.peerId).catch(console.error);
           }
           return { ...prev, peers };
         });
@@ -466,7 +475,8 @@ export default function App() {
         engineRef.current?.syncHeroAppearance(
           activeChar.classType,
           nextItems.filter((i) => i.isEquipped),
-        );
+          activeChar.sex,
+        ).catch(console.error);
 
         await recordSharedLedger({
           id: payload.tradeId,
@@ -510,6 +520,13 @@ export default function App() {
     if (!mount) return;
 
     const callbacks: EngineCallbacks = {
+      onEquipmentWear: (slot, durability) => {
+        const char = charRef.current; if (!char) return;
+        const next = itemsRef.current.map(i => i.isEquipped && i.slot === slot ? { ...i, durability } : i);
+        itemsRef.current = next; setItems(next);
+        setCharacter(prev => prev?.id === char.id ? { ...prev, equipment: next.filter(i=>i.isEquipped), inventory: next.filter(i=>!i.isEquipped) } : prev);
+        void wearEquipment(char.id, slot, durability, next.find(i => i.isEquipped && i.slot === slot)?.id).catch(error => pushBanner(String(error), '#f87171'));
+      },
       onKillMonster: async (xp, zen) => {
         const c = charRef.current;
         if (!c) return;
@@ -598,7 +615,7 @@ export default function App() {
       },
       onHeroMoveSync: (x, z, rotY, action) => {
         if (roomRef.current && syncRef.current) {
-          syncRef.current.sendPeerUpdate({ x, z, rotY, action });
+          syncRef.current.sendPeerUpdate({ x, z, rotY, action, currentMapId: charRef.current?.currentMapId, sex: charRef.current?.sex, equipment: itemsRef.current.filter(i => i.isEquipped) });
         }
       },
       onBossHitInEvent: (damage) => {
@@ -626,9 +643,13 @@ export default function App() {
       },
     };
 
-    const engine = new MuWorldEngine(mount, callbacks);
+    let engine: MuWorldEngine;
+    try { engine = new MuWorldEngine(mount, callbacks, { headless: import.meta.env.DEV && new URLSearchParams(location.search).has('headless') }); }
+    catch (error) { console.error(error);setEngineError('No hay aceleración WebGL disponible en este navegador. Abre el juego en un navegador con WebGL para ver el mundo 3D.');return; }
+    if (import.meta.env.DEV) (window as any).__muEngine = engine;
     engineRef.current = engine;
     engine.setBrightness(settingsRef.current.brightness);
+    engine.setAudio(settingsRef.current.volume, settingsRef.current.muted);
     engine.setFree3dMode(settingsRef.current.free3dCamera);
     engine.setTargetFps(settingsRef.current.targetFps);
 
@@ -637,12 +658,14 @@ export default function App() {
       engine.syncHeroAppearance(
         charRef.current.classType,
         itemsRef.current.filter((i) => i.isEquipped),
-      );
+        charRef.current.sex,
+      ).catch(console.error);
     }
 
     return () => {
       engine.dispose();
       engineRef.current = null;
+      if (import.meta.env.DEV) delete (window as any).__muEngine;
     };
   }, [pushBanner, pushDamageNumber]);
 
@@ -884,9 +907,9 @@ export default function App() {
     };
   };
 
-  const handleCreateCharacter = async (name: string, classType: HeroClass) => {
+  const handleCreateCharacter = async (name: string, classType: HeroClass, sex: 'male' | 'female') => {
     if (!currentAccount) return;
-    const created = await createCharacterForAccount(currentAccount.id, name, classType);
+    const created = await createCharacterForAccount(currentAccount.id, name, classType, sex);
     const chars = await listCharactersByAccount(currentAccount.id);
     setCharacters(chars);
     await selectAndHydrateCharacter(created);
@@ -894,37 +917,40 @@ export default function App() {
   };
 
   const handleEnterWorld = async () => {
-    if (!character) return;
-    if (window.innerWidth < 1024) {
-      await requestLandscapeFullscreen();
-    }
-    engineRef.current?.updateHeroStats(character);
-    engineRef.current?.syncHeroAppearance(
-      character.classType,
-      items.filter((i) => i.isEquipped),
-    );
-    await engineRef.current?.loadMap(character.currentMapId || 'lorencia', true);
-    engineRef.current?.setMode('playing');
-    setScreenStage('playing');
+    const engine = engineRef.current;
+    if (!character || !engine || worldLoadRef.current) return;
+    worldLoadRef.current = true; setWorldLoading(true);
+    try {
+      if (window.innerWidth < 1024) await requestLandscapeFullscreen();
+      engine.updateHeroStats(character);
+      await engine.syncHeroAppearance(character.classType, items.filter(i => i.isEquipped), character.sex);
+      await engine.loadMap(character.currentMapId || 'lorencia', true);
+      engine.setMode('playing'); setScreenStage('playing');
+    } catch(error) {
+      pushBanner(`No se pudo cargar el personaje o mapa: ${String(error)}`, '#f87171');
+    } finally { worldLoadRef.current = false; setWorldLoading(false); }
   };
 
   const handleWarpToMap = async (mapId: MapId) => {
-    if (!character) return;
+    const engine = engineRef.current;
+    if (!character || !engine || worldLoadRef.current) return;
     const mapCfg = getMapById(mapId);
     if (character.zen < mapCfg.warpZen) {
-      pushBanner(`Necesitas ${mapCfg.warpZen.toLocaleString()} Zen para viajar a ${mapCfg.name}`, '#f87171');
-      return;
+      pushBanner(`Necesitas ${mapCfg.warpZen.toLocaleString()} Zen para viajar a ${mapCfg.name}`, '#f87171'); return;
     }
-    const updated: MuCharacter = {
-      ...character,
-      zen: character.zen - mapCfg.warpZen,
-      currentMapId: mapId,
-    };
-    const saved = await updateCharacter(updated);
-    setCharacter(saved);
-    await engineRef.current?.loadMap(mapId, true);
-    setActiveDrawer('none');
-    pushBanner(`Teletransportado a ${mapCfg.name} (${mapCfg.areaKm2} km²)`, '#38bdf8');
+    worldLoadRef.current = true; setWorldLoading(true);
+    try {
+      await engine.loadMap(mapId, true);
+      const latest = charRef.current;
+      if (!latest || latest.id !== character.id) return;
+      const saved = await updateCharacter({ ...latest, zen: latest.zen - mapCfg.warpZen, currentMapId: mapId });
+      setCharacter(saved); setActiveDrawer('none');
+      pushBanner(`Teletransportado a ${mapCfg.name} (${mapCfg.areaKm2.toFixed(2)} km²)`, '#38bdf8');
+    } catch(error) {
+      pushBanner(`No se pudo viajar: ${String(error)}`, '#f87171');
+      try { await engine.loadMap(character.currentMapId, true); }
+      catch { engine.setMode('character_select'); setScreenStage('character_select'); }
+    } finally { worldLoadRef.current = false; setWorldLoading(false); }
   };
 
   const handleUpdateSettings = async (next: GameSettings) => {
@@ -966,7 +992,8 @@ export default function App() {
     engineRef.current?.syncHeroAppearance(
       character.classType,
       nextItems.filter((i) => i.isEquipped),
-    );
+      character.sex,
+    ).catch(console.error);
     soundSynth.playForge(true);
     setForgeMessage('Equipo actualizado y guardado en IndexedDB (Dexie).');
   };
@@ -981,7 +1008,8 @@ export default function App() {
     engineRef.current?.syncHeroAppearance(
       result.character.classType,
       result.items.filter((i) => i.isEquipped),
-    );
+      result.character.sex,
+    ).catch(console.error);
   };
 
   const handleAllocateStat = async (stat: 'str' | 'agi' | 'vit' | 'ene' | 'cmd', amount: number) => {
@@ -1038,6 +1066,9 @@ export default function App() {
       peerId: syncRef.current?.peerId || 'peer-local',
       name: c.name,
       classType: c.classType,
+      sex: c.sex ?? 'male',
+      currentMapId: c.currentMapId,
+      equipment: items.filter(i => i.isEquipped),
       level: c.level,
       role: 'host',
       transport: 'wifi',
@@ -1053,8 +1084,10 @@ export default function App() {
 
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-[#0c1018]">
+      {engineError && <div role="alert" className="fixed top-2 left-2 right-2 z-50 rounded bg-red-950/95 text-red-100 p-3 text-sm">{engineError}</div>}
       <div ref={canvasMountRef} className="absolute inset-0 w-full h-full" />
 
+      {worldLoading && <div role="status" aria-live="polite" className="fixed inset-0 z-[100] grid place-items-center bg-slate-950/90 text-amber-200"><div className="text-center space-y-3"><div className="mx-auto w-10 h-10 rounded-full border-4 border-amber-900 border-t-amber-300 animate-spin" /><p>Cargando personaje y escenario…</p></div></div>}
       <OfflineIndicator />
 
       {isPortraitMobile && (
@@ -1098,7 +1131,7 @@ export default function App() {
             setScreenStage('login');
           }}
           onOpenApkCenter={() => setActiveDrawer('apk')}
-          onPreviewClass={(cls) => engineRef.current?.syncHeroAppearance(cls, [])}
+          onPreviewClass={(cls, sex) => engineRef.current?.syncHeroAppearance(cls, getStarterItemsForMuClass('preview','Vista previa',cls), sex).catch(console.error)}
         />
       )}
 
@@ -1166,6 +1199,7 @@ export default function App() {
             syncStatus={syncStatus}
             onJoystickVector={(x, y) => engineRef.current?.setJoystickVector(x, y)}
             onPressAttack={handlePressAttack}
+            onJump={() => engineRef.current?.jump()}
             onToggleComboArmed={() => setComboArmed((v) => !v)}
             onCastSkill={handleCastSkill}
             onUpdateComboConfig={handleUpdateComboConfig}
@@ -1234,6 +1268,7 @@ export default function App() {
               setForgeMessage(null);
             }}
             onEquip={handleEquip}
+            onRepair={async () => { if (!character) return; try { const saved=await repairEquipment(character.id); await selectAndHydrateCharacter(saved); } catch(error) { setForgeMessage(String(error)); } }}
             onUpgrade={handleUpgrade}
             forgeMessage={forgeMessage}
           />

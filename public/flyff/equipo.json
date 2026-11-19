@@ -1,0 +1,67 @@
+{
+  "sourceRevision": "7986e75c884174892edc98cc2151df7fcda331fd",
+  "weapons": {
+    "Espada del Dragón": "equipo/item_weaswofireis.glb",
+    "Espada del Arcángel": "equipo/item_weaswoangel.glb",
+    "Bone Blade (Hoja Ósea)": "equipo/item_weaswobloody.glb",
+    "Báculo Legendario": "equipo/item_weastawiz.glb",
+    "Báculo de Kundun": "equipo/item_weastaancient.glb",
+    "Báculo de Platina": "equipo/item_weastacrystal.glb",
+    "Arco Celestial": "equipo/item_weabowwoode.glb",
+    "Ballesta de Cristal": "equipo/item_weabowcrystal.glb",
+    "Arco Albatros": "equipo/item_weabowangel.glb",
+    "Cetro del Señor Oscuro": "equipo/item_weawanmisty.glb",
+    "Cetro Solemnidad": "equipo/item_weawandivine.glb",
+    "Cetro Solemnidad Real": "equipo/item_weawanangel.glb",
+    "Espada Rúnica": "equipo/item_weaswocrystal.glb",
+    "Espada Relámpago (Izq)": "equipo/item_weaswocomet.glb",
+    "Espada Dancer Oscura": "equipo/item_weaswobluesh.glb",
+    "Espada Bastarda Rúnica": "equipo/item_weaswolegendg.glb",
+    "Escudo Dragón": "equipo/item_armshiscale.glb",
+    "Escudo Legendario": "equipo/item_armshistar.glb",
+    "Escudo de Hierro Oscuro": "equipo/item_armshitower.glb"
+  },
+  "sets": {
+    "Dragon": {
+      "male": "equipo/Mer01_male.glb",
+      "female": "equipo/Mer01_female.glb"
+    },
+    "Great Dragon": {
+      "male": "equipo/Mer03_male.glb",
+      "female": "equipo/Mer03_female.glb"
+    },
+    "Legendary": {
+      "male": "equipo/Mag01_male.glb",
+      "female": "equipo/Mag01_female.glb"
+    },
+    "Grand Soul": {
+      "male": "equipo/Mag03_male.glb",
+      "female": "equipo/Mag03_female.glb"
+    },
+    "Guardian": {
+      "male": "equipo/Acr01_male.glb",
+      "female": "equipo/Acr01_female.glb"
+    },
+    "Divine": {
+      "male": "equipo/Acr03_male.glb",
+      "female": "equipo/Acr03_female.glb"
+    },
+    "Dark Steel": {
+      "male": "equipo/Ass01_male.glb",
+      "female": "equipo/Ass01_female.glb"
+    },
+    "Dark Master": {
+      "male": "equipo/Ass03_male.glb",
+      "female": "equipo/Ass03_female.glb"
+    },
+    "Hurricane": {
+      "male": "equipo/Vag02_male.glb",
+      "female": "equipo/Vag02_female.glb"
+    },
+    "Volcano": {
+      "male": "equipo/Mer02_male.glb",
+      "female": "equipo/Mer02_female.glb"
+    }
+  },
+  "rights": "Original resource notices in licencias/"
+}
