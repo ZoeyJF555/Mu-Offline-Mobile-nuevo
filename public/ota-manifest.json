@@ -1,0 +1,9 @@
+{
+  "appName": "MU Lorencia Offline & Sync",
+  "version": "2.2.0",
+  "repo": "ZoeyJF555/Mu-Offline-Mobile-nuevo-",
+  "pagesUrl": "https://zoeyjf555.github.io/Mu-Offline-Mobile-nuevo-/",
+  "apkReleaseUrl": "https://github.com/ZoeyJF555/Mu-Offline-Mobile-nuevo-/releases/latest",
+  "buildTimestamp": "2026-11-19T12:00:00.000Z",
+  "offlineEngine": "Dexie.js (IndexedDB Offline-First) + Babylon.js GLB"
+}

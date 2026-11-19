@@ -37,11 +37,13 @@ import type {
   WeatherKind,
 } from '../types/game';
 import {
+  AUTO_AIM_PROBABILITY,
   findAutoAimTarget,
   getEffectiveSkillMultiplier,
   getSkillRank,
   getVariantKey,
   getVariantProfile,
+  rollAutoAimHit,
   rollMonsterAttack,
   scaleMonsterForPlayerLevel,
 } from './combatAndProgression';
@@ -428,16 +430,18 @@ export class MuWorldEngine {
   private keys = new Set<string>();
   private joystickVec = { x: 0, y: 0 };
   private free3dMode = true;
-  private cameraDistance = 6.4;
+  private cameraDistance = 3.4;
   private camDragPointerId: number | null = null;
   private camDragLastX = 0;
   private camDragLastY = 0;
+  private camAutoTurnCooldown = 0;
   private autoAimAssist = true;
   private activeEffectBonuses = { atkBonusPct: 0, speedBonusPct: 0, critBonusPct: 0 };
   private userBrightness = 1.08;
   private targetFps: 30 | 45 | 60 = 60;
   private isSoftwareGl = false;
   private lastRenderTime = 0;
+  private lastRenderEndTime = 0;
   private lastTime = performance.now();
   private lastTelemetryTime = 0;
   private lastMoveSyncTime = 0;
@@ -450,7 +454,7 @@ export class MuWorldEngine {
   private loadSeq = 0;
 
   private comboState: {
-    steps: [SkillDef, SkillDef, SkillDef] | null;
+    steps: SkillDef[] | null;
     nextIndex: number;
     timer: number;
     bonusStatPower: number;
@@ -476,15 +480,19 @@ export class MuWorldEngine {
 
     try {
       const gl = (this.engine as unknown as { _gl?: WebGLRenderingContext })._gl;
+      let rendererStr = '';
       if (gl) {
         const dbg = gl.getExtension('WEBGL_debug_renderer_info');
-        const rendererStr = String(
+        rendererStr = String(
           (dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)) ?? '',
         );
-        if (/swiftshader|llvmpipe|software/i.test(rendererStr)) {
-          this.isSoftwareGl = true;
-          this.engine.setHardwareScalingLevel(1.3);
-        }
+      }
+      if (!rendererStr && typeof this.engine.getGlInfo === 'function') {
+        rendererStr = String(this.engine.getGlInfo()?.renderer ?? '');
+      }
+      if (/swiftshader|llvmpipe|software|angle.*swiftshader/i.test(rendererStr)) {
+        this.isSoftwareGl = true;
+        this.engine.setHardwareScalingLevel(1.8);
       }
     } catch {
       // Ignore WebGL probe failures
@@ -512,7 +520,7 @@ export class MuWorldEngine {
     );
     this.camera.lowerBetaLimit = 0.32;
     this.camera.upperBetaLimit = 1.48;
-    this.camera.lowerRadiusLimit = 3.2;
+    this.camera.lowerRadiusLimit = 2.0;
     this.camera.upperRadiusLimit = 20;
     this.camera.wheelPrecision = 24;
     this.canvas.style.touchAction = 'none';
@@ -545,15 +553,20 @@ export class MuWorldEngine {
     this.engine.runRenderLoop(() => {
       if (this.disposed) return;
       const now = performance.now();
-      const minIntervalMs = this.isSoftwareGl ? 42 : this.targetFps < 60 ? 1000 / this.targetFps : 0;
-      if (minIntervalMs > 0 && now - this.lastRenderTime < minIntervalMs) {
-        return;
+      if (this.isSoftwareGl) {
+        if (now - this.lastRenderEndTime < 180) return;
+      } else {
+        const minIntervalMs = this.targetFps < 60 ? 1000 / this.targetFps : 0;
+        if (minIntervalMs > 0 && now - this.lastRenderTime < minIntervalMs) {
+          return;
+        }
       }
       this.lastRenderTime = now;
       const dt = Math.min(0.05, (now - this.lastTime) / 1000);
       this.lastTime = now;
       this.update(dt, now);
       this.scene.render();
+      this.lastRenderEndTime = performance.now();
     });
   }
 
@@ -624,17 +637,19 @@ export class MuWorldEngine {
     this.camDragLastY = e.clientY;
     this.camera.alpha -= dx * 0.0085;
     this.camera.beta = Math.max(0.32, Math.min(1.48, this.camera.beta - dy * 0.0065));
+    this.camAutoTurnCooldown = 0.45;
   };
 
   private handleWindowPointerUp = (e: PointerEvent) => {
     if (e.pointerId === this.camDragPointerId) {
       this.camDragPointerId = null;
+      this.camAutoTurnCooldown = 0.45;
     }
   };
 
   private handleCanvasWheel = (e: WheelEvent) => {
     if (this.mode !== 'playing') return;
-    this.cameraDistance = Math.max(3.6, Math.min(16, this.cameraDistance + Math.sign(e.deltaY) * 0.6));
+    this.cameraDistance = Math.max(2.2, Math.min(14, this.cameraDistance + Math.sign(e.deltaY) * 0.6));
   };
 
   private handleKeyDown = (e: KeyboardEvent) => {
@@ -659,6 +674,10 @@ export class MuWorldEngine {
     this.mode = mode;
     if (mode !== 'playing') {
       this.camDragPointerId = null;
+    } else {
+      this.camera.radius = this.cameraDistance;
+      const hy = this.getTerrainHeight(this.heroX, this.heroZ);
+      this.camera.target.set(this.heroX, hy + 1.32, this.heroZ);
     }
   }
 
@@ -667,7 +686,7 @@ export class MuWorldEngine {
   }
 
   setCameraDistance(dist: number) {
-    this.cameraDistance = Math.max(4.5, Math.min(12.5, dist));
+    this.cameraDistance = Math.max(2.2, Math.min(12.0, dist));
   }
 
   setAutoAimAssist(enabled: boolean) {
@@ -1567,7 +1586,7 @@ export class MuWorldEngine {
     return candidates;
   }
 
-  executeSkill(skill: SkillDef, _comboMultiplier = 1, bonusStatPower = 0) {
+  executeSkill(skill: SkillDef, comboMultiplier = 1, bonusStatPower = 0) {
     if (this.mode !== 'playing' || this.loadingMap) return;
 
     // STRICT SAFE CITY RULE: No attacks or skills inside the capital city!
@@ -1580,7 +1599,7 @@ export class MuWorldEngine {
       return;
     }
 
-    // 80% Auto-Aim assist across all 10 hero variants (works mid-run & mid-jump!)
+    // 60% Auto-Aim assist across all 10 hero variants (works mid-run & mid-jump!)
     const aimRange = Math.max(skill.range + 6, 16);
     const aimResult = this.autoAimAssist
       ? findAutoAimTarget(
@@ -1589,7 +1608,7 @@ export class MuWorldEngine {
           this.heroRotY,
           aimRange,
           this.getAutoAimCandidateList(aimRange),
-          0.8,
+          AUTO_AIM_PROBABILITY,
         )
       : null;
 
@@ -1603,35 +1622,56 @@ export class MuWorldEngine {
     this.flyff.cast(skill);
     this.spawnSkillVfx(skill);
 
-    const { damage, isCritical, isExcellent } = this.computeHeroDamage(skill, bonusStatPower);
+    const dmgRoll = this.computeHeroDamage(skill, bonusStatPower);
+    const damage = Math.max(12, Math.round(dmgRoll.damage * Math.max(1, comboMultiplier)));
+    const { isCritical, isExcellent } = dmgRoll;
 
     if (skill.isBuff) {
       this.callbacks.onFloatingText(`+${skill.shortName} Activo`, '#4ade80');
       return;
     }
 
-    // Ranged projectile skills aimed with 80% auto-aim blend
+    const hitLanded = aimResult ? rollAutoAimHit(this.autoAimAssist, AUTO_AIM_PROBABILITY) : true;
+
+    // Ranged projectile skills aimed with 60% auto-aim blend & accuracy roll
     if (
       skill.vfx === 'bolt' ||
+      skill.vfx === 'fire_burst' ||
       skill.vfx === 'arrow' ||
       skill.vfx === 'triple_shot' ||
       skill.vfx === 'ice_arrow' ||
-      skill.vfx === 'fire_scream'
+      skill.vfx === 'fire_scream' ||
+      skill.vfx === 'raven'
     ) {
       const count = skill.vfx === 'triple_shot' ? 3 : 1;
-      const baseAngle = aimResult ? aimResult.blendedAngle : this.heroRotY;
+      const missDeflect = hitLanded ? 0 : (Math.random() < 0.5 ? -0.28 : 0.28);
+      const baseAngle = (aimResult ? aimResult.blendedAngle : this.heroRotY) + missDeflect;
+      const projColor = Color3.FromHexString(`#${skill.colorHex.toString(16).padStart(6, '0')}`);
+
       for (let i = 0; i < count; i++) {
         const spread = (i - (count - 1) / 2) * 0.22;
         const ang = baseAngle + spread;
-        const orb = MeshBuilder.CreateSphere('proj', { diameter: 0.44, segments: 8 }, this.scene);
+        const isArrow = skill.vfx === 'arrow' || skill.vfx === 'triple_shot' || skill.vfx === 'ice_arrow';
+        const orb = isArrow
+          ? MeshBuilder.CreateCylinder('projArrow', { diameterTop: 0.08, diameterBottom: 0.22, height: 1.35, tessellation: 8 }, this.scene)
+          : MeshBuilder.CreateSphere('projOrb', { diameter: 0.58, segments: 10 }, this.scene);
+        if (isArrow) {
+          orb.rotation.x = Math.PI / 2;
+          orb.rotation.y = ang;
+        }
+        const halo = MeshBuilder.CreateTorus('projHalo', { diameter: 0.72, thickness: 0.08, tessellation: 14 }, this.scene);
         const mat = new StandardMaterial('projMat', this.scene);
-        mat.emissiveColor = Color3.FromHexString(`#${skill.colorHex.toString(16).padStart(6, '0')}`);
+        mat.emissiveColor = projColor;
+        mat.diffuseColor = projColor;
         mat.disableLighting = true;
         orb.material = mat;
+        halo.material = mat;
+        halo.parent = orb;
+
         orb.position = new Vector3(
-          this.heroX + Math.sin(ang) * 1.1,
-          this.getTerrainHeight(this.heroX, this.heroZ) + 1.4,
-          this.heroZ + Math.cos(ang) * 1.1,
+          this.heroX + Math.sin(ang) * 1.15,
+          this.getTerrainHeight(this.heroX, this.heroZ) + 1.35,
+          this.heroZ + Math.cos(ang) * 1.15,
         );
         orb.parent = this.fxRoot;
         this.projectiles.push({
@@ -1639,10 +1679,10 @@ export class MuWorldEngine {
           x: orb.position.x,
           y: orb.position.y,
           z: orb.position.z,
-          vx: Math.sin(ang) * 29,
-          vz: Math.cos(ang) * 29,
-          life: 0.9,
-          damage,
+          vx: Math.sin(ang) * 28,
+          vz: Math.cos(ang) * 28,
+          life: 0.95,
+          damage: hitLanded ? damage : Math.round(damage * 0.2),
           isCritical,
           isExcellent,
         });
@@ -1650,8 +1690,8 @@ export class MuWorldEngine {
       return;
     }
 
-    // Melee / AoE instant area hit (prioritizes 80% auto-aimed target first!)
-    const nearby = this.queryNearbyMonsterIndices(this.heroX, this.heroZ, skill.range + 2.2);
+    // Melee / AoE instant area hit (prioritizes 60% auto-aimed target first!)
+    const nearby = this.queryNearbyMonsterIndices(this.heroX, this.heroZ, skill.range + 2.4);
     if (aimResult && nearby.includes(aimResult.targetIndex)) {
       const i = nearby.indexOf(aimResult.targetIndex);
       if (i > 0) {
@@ -1659,11 +1699,25 @@ export class MuWorldEngine {
         nearby.unshift(aimResult.targetIndex);
       }
     }
+
+    if (!hitLanded && nearby.length > 0) {
+      const missIdx = nearby[0];
+      const mx = this.monX[missIdx];
+      const mz = this.monZ[missIdx];
+      this.emitDamageNumber(
+        new Vector3(mx, this.getTerrainHeight(mx, mz) + 2.3, mz),
+        'Esquivado (Aim 60%)',
+        '#94a3b8',
+        false,
+      );
+      return;
+    }
+
     let hits = 0;
     for (const idx of nearby) {
       if (this.monAlive[idx] !== 1) continue;
       if (!skill.isAoe && hits >= 1) break;
-      this.damageMonsterAt(idx, damage, isCritical, isExcellent);
+      this.damageMonsterAt(idx, damage, isCritical, isExcellent, skill.colorHex);
       hits++;
       if (hits >= 14) break;
     }
@@ -1673,64 +1727,212 @@ export class MuWorldEngine {
     }
   }
 
-  executeComboChain(skills: [SkillDef, SkillDef, SkillDef], bonusStatPower = 0) {
+  executeComboChain(skills: SkillDef[], bonusStatPower = 0) {
     if (this.mode !== 'playing') return;
     if (this.isInSafeCity()) {
       this.callbacks.onFloatingText('Zona Segura de la Capital: Sal por las puertas para usar Combo', '#fbbf24');
       return;
     }
-    this.comboState = { steps: skills, nextIndex: 0, timer: 0.01, bonusStatPower };
+    const chain = skills.slice(0, 5);
+    if (chain.length === 0) return;
+    this.comboState = { steps: chain, nextIndex: 0, timer: 0.01, bonusStatPower };
   }
 
   private spawnSkillVfx(skill: SkillDef) {
     const color = Color3.FromHexString(`#${skill.colorHex.toString(16).padStart(6, '0')}`);
     const hy = this.getTerrainHeight(this.heroX, this.heroZ);
     const node = new TransformNode(`vfx_${skill.id}_${Date.now()}`, this.scene);
-    node.position = new Vector3(this.heroX, hy + 0.8, this.heroZ);
+    node.position = new Vector3(this.heroX, hy + 0.75, this.heroZ);
+    node.rotation.y = this.heroRotY;
     node.parent = this.fxRoot;
 
+    const makeGlowMat = (suffix: string, alpha = 0.88) => {
+      const mat = new StandardMaterial(`vfxMat_${suffix}_${Date.now()}`, this.scene);
+      mat.emissiveColor = color;
+      mat.diffuseColor = color;
+      mat.alpha = alpha;
+      mat.disableLighting = true;
+      mat.backFaceCulling = false;
+      return mat;
+    };
+
+    // Ground aura disc (always visible under caster)
+    const aura = MeshBuilder.CreateDisc('vfxAura', { radius: skill.isAoe ? 2.4 : 1.35, tessellation: 24 }, this.scene);
+    aura.rotation.x = Math.PI / 2;
+    aura.position.y = -0.62;
+    aura.material = makeGlowMat('aura', 0.36);
+    aura.isPickable = false;
+    aura.parent = node;
+
+    // Main expanding shockwave ring
     const ring = MeshBuilder.CreateTorus(
       'vfxRing',
-      { diameter: skill.isAoe ? 3.2 : 1.8, thickness: 0.16, tessellation: 24 },
+      { diameter: skill.isAoe ? 3.5 : 2.1, thickness: 0.2, tessellation: 24 },
       this.scene,
     );
-    const mat = new StandardMaterial('vfxMat', this.scene);
-    mat.emissiveColor = color;
-    mat.alpha = 0.85;
-    mat.disableLighting = true;
-    ring.material = mat;
+    ring.material = makeGlowMat('ring', 0.9);
+    ring.isPickable = false;
     ring.parent = node;
 
-    if (skill.vfx === 'hellfire' || skill.vfx === 'nova' || skill.vfx === 'evil_spirit' || skill.vfx === 'ice_storm') {
-      const pillar = MeshBuilder.CreateCylinder('vfxPillar', { diameterTop: 2.8, diameterBottom: 0.8, height: 4.5, tessellation: 12 }, this.scene);
-      const pMat = new StandardMaterial('vfxPMat', this.scene);
-      pMat.emissiveColor = color;
-      pMat.alpha = 0.45;
-      pMat.disableLighting = true;
-      pillar.material = pMat;
-      pillar.position.y = 1.6;
+    let spinSpeed = 8.5;
+    let riseSpeed = 1.2;
+    let expandRate = skill.isAoe ? 4.8 : 2.4;
+
+    if (
+      skill.vfx === 'slash' ||
+      skill.vfx === 'power_slash' ||
+      skill.vfx === 'sword_rush' ||
+      skill.vfx === 'death_stab'
+    ) {
+      const arc = MeshBuilder.CreateTorus('vfxSlashArc', { diameter: 3.1, thickness: 0.22, tessellation: 20 }, this.scene);
+      arc.rotation.x = Math.PI / 3;
+      arc.rotation.z = 0.45;
+      arc.position.y = 0.5;
+      arc.material = makeGlowMat('arc', 0.92);
+      arc.parent = node;
+
+      const lance = MeshBuilder.CreateCylinder('vfxLance', { diameterTop: 0.08, diameterBottom: 0.48, height: 2.8, tessellation: 10 }, this.scene);
+      lance.rotation.x = Math.PI / 2;
+      lance.position.set(0, 0.55, 1.5);
+      lance.material = makeGlowMat('lance', 0.85);
+      lance.parent = node;
+      spinSpeed = 11.5;
+    } else if (
+      skill.vfx === 'twisting' ||
+      skill.vfx === 'blood_storm' ||
+      skill.vfx === 'rageful_blow' ||
+      skill.vfx === 'earthshake' ||
+      skill.vfx === 'gigantic_storm'
+    ) {
+      const ring2 = MeshBuilder.CreateTorus('vfxTwinRing', { diameter: 2.9, thickness: 0.18, tessellation: 20 }, this.scene);
+      ring2.rotation.x = 0.65;
+      ring2.position.y = 0.65;
+      ring2.material = makeGlowMat('twin', 0.88);
+      ring2.parent = node;
+
+      const spire = MeshBuilder.CreateCylinder('vfxSpire', { diameterTop: 2.6, diameterBottom: 0.7, height: 3.4, tessellation: 12 }, this.scene);
+      spire.position.y = 1.1;
+      spire.material = makeGlowMat('spire', 0.45);
+      spire.parent = node;
+      spinSpeed = 15.0;
+    } else if (
+      skill.vfx === 'hellfire' ||
+      skill.vfx === 'nova' ||
+      skill.vfx === 'evil_spirit' ||
+      skill.vfx === 'fire_scream' ||
+      skill.vfx === 'chaotic_ray'
+    ) {
+      const pillar = MeshBuilder.CreateCylinder('vfxPillar', { diameterTop: 3.2, diameterBottom: 0.9, height: 4.8, tessellation: 14 }, this.scene);
+      pillar.material = makeGlowMat('pillar', 0.5);
+      pillar.position.y = 1.7;
       pillar.parent = node;
+
+      for (let i = 0; i < 3; i++) {
+        const ang = (i / 3) * Math.PI * 2;
+        const orb = MeshBuilder.CreateSphere(`vfxOrb_${i}`, { diameter: 0.55, segments: 8 }, this.scene);
+        orb.position.set(Math.cos(ang) * 1.9, 0.9, Math.sin(ang) * 1.9);
+        orb.material = makeGlowMat(`orb${i}`, 0.95);
+        orb.parent = node;
+      }
+      spinSpeed = 12.0;
+    } else if (
+      skill.vfx === 'ice_storm' ||
+      skill.vfx === 'meteor' ||
+      skill.vfx === 'starfall' ||
+      skill.vfx === 'lightning_shock' ||
+      skill.vfx === 'aqua_beam'
+    ) {
+      if (skill.vfx === 'aqua_beam') {
+        const beam = MeshBuilder.CreateCylinder('vfxBeam', { diameter: 0.85, height: 6.5, tessellation: 12 }, this.scene);
+        beam.rotation.x = Math.PI / 2;
+        beam.position.set(0, 0.7, 3.3);
+        beam.material = makeGlowMat('beam', 0.75);
+        beam.parent = node;
+        spinSpeed = 2.0;
+        riseSpeed = 0.2;
+      } else {
+        for (let i = 0; i < 4; i++) {
+          const ang = (i / 4) * Math.PI * 2;
+          const shard = MeshBuilder.CreateCylinder(`vfxShard_${i}`, { diameterTop: 0.06, diameterBottom: 0.55, height: 1.9, tessellation: 6 }, this.scene);
+          shard.rotation.z = Math.PI;
+          shard.position.set(Math.cos(ang) * 1.5, 2.8 + (i % 2) * 0.7, Math.sin(ang) * 1.5);
+          shard.material = makeGlowMat(`shard${i}`, 0.86);
+          shard.parent = node;
+        }
+        riseSpeed = -2.6;
+        spinSpeed = 9.0;
+      }
+    } else if (skill.vfx === 'buff') {
+      const halo = MeshBuilder.CreateTorus('vfxHalo', { diameter: 2.2, thickness: 0.14, tessellation: 20 }, this.scene);
+      halo.position.y = 1.65;
+      halo.material = makeGlowMat('halo', 0.9);
+      halo.parent = node;
+
+      const beam = MeshBuilder.CreateCylinder('vfxBlessPillar', { diameter: 1.6, height: 4.2, tessellation: 14 }, this.scene);
+      beam.position.y = 1.4;
+      beam.material = makeGlowMat('bless', 0.35);
+      beam.parent = node;
+      riseSpeed = 2.1;
+      expandRate = 1.6;
+    } else {
+      const burst = MeshBuilder.CreatePolyhedron('vfxBurst', { type: 1, size: 0.65 }, this.scene);
+      burst.position.set(0, 0.9, 1.1);
+      burst.material = makeGlowMat('burst', 0.92);
+      burst.parent = node;
+      spinSpeed = 14.0;
     }
 
     this.transientFx.push({
       node,
-      life: 0.48,
-      maxLife: 0.48,
-      expandRate: skill.isAoe ? 5.2 : 2.2,
-      spinSpeed: 8.5,
-      riseSpeed: skill.vfx === 'ice_storm' ? -2.0 : 1.4,
+      life: 0.55,
+      maxLife: 0.55,
+      expandRate,
+      spinSpeed,
+      riseSpeed,
     });
   }
 
-  private damageMonsterAt(idx: number, damage: number, isCritical: boolean, isExcellent: boolean) {
+  private spawnHitImpactVfx(x: number, y: number, z: number, colorHex = 0xfbbf24, isCritical = false) {
+    const color = Color3.FromHexString(`#${colorHex.toString(16).padStart(6, '0')}`);
+    const node = new TransformNode(`hitFx_${Date.now()}`, this.scene);
+    node.position.set(x, y, z);
+    node.parent = this.fxRoot;
+
+    const flash = MeshBuilder.CreatePolyhedron('hitBurst', { type: 1, size: isCritical ? 0.48 : 0.32 }, this.scene);
+    const mat = new StandardMaterial('hitMat', this.scene);
+    mat.emissiveColor = color;
+    mat.diffuseColor = color;
+    mat.alpha = 0.92;
+    mat.disableLighting = true;
+    flash.material = mat;
+    flash.parent = node;
+
+    const ring = MeshBuilder.CreateTorus('hitRing', { diameter: isCritical ? 1.75 : 1.15, thickness: 0.11, tessellation: 16 }, this.scene);
+    ring.rotation.x = Math.PI / 4;
+    ring.material = mat;
+    ring.parent = node;
+
+    this.transientFx.push({
+      node,
+      life: 0.34,
+      maxLife: 0.34,
+      expandRate: 3.4,
+      spinSpeed: 12.0,
+      riseSpeed: 0.6,
+    });
+  }
+
+  private damageMonsterAt(idx: number, damage: number, isCritical: boolean, isExcellent: boolean, colorHex = 0xfbbf24) {
     if (this.monAlive[idx] !== 1) return;
     this.monHp[idx] = Math.max(0, this.monHp[idx] - damage);
     this.flyff.impact(this.monX[idx], this.monZ[idx]);
 
-    // Emit floating 3D -> 2D projected damage number
+    // Emit floating 3D -> 2D projected damage number + visible Babylon hit spark
     const mx = this.monX[idx];
     const mz = this.monZ[idx];
-    const my = this.getTerrainHeight(mx, mz) + 2.4;
+    const groundY = this.getTerrainHeight(mx, mz);
+    const my = groundY + 2.4;
+    this.spawnHitImpactVfx(mx, groundY + 1.1, mz, isExcellent ? 0x34d399 : isCritical ? 0xfbbf24 : colorHex, isCritical || isExcellent);
     this.emitDamageNumber(
       new Vector3(mx, my, mz),
       isExcellent ? `EXC -${damage}!` : isCritical ? `CRIT -${damage}!` : `-${damage}`,
@@ -1891,18 +2093,24 @@ export class MuWorldEngine {
       this.fpsLastReport = now;
     }
 
-    // Combo chain stepper
+    if (this.camAutoTurnCooldown > 0) {
+      this.camAutoTurnCooldown = Math.max(0, this.camAutoTurnCooldown - dt);
+    }
+
+    // Combo chain stepper (up to 5 powers!)
     if (this.comboState.steps) {
       this.comboState.timer -= dt;
       if (this.comboState.timer <= 0) {
-        const skill = this.comboState.steps[this.comboState.nextIndex];
-        this.executeSkill(skill, 1.35, this.comboState.bonusStatPower);
+        const stepIdx = this.comboState.nextIndex;
+        const skill = this.comboState.steps[stepIdx];
+        this.executeSkill(skill, 1.15 + stepIdx * 0.1, this.comboState.bonusStatPower);
         this.comboState.nextIndex += 1;
-        if (this.comboState.nextIndex >= 3) {
+        if (this.comboState.nextIndex >= this.comboState.steps.length) {
+          const count = this.comboState.steps.length;
           this.comboState.steps = null;
-          this.callbacks.onFloatingText('¡COMBO x3!', '#38bdf8');
+          this.callbacks.onFloatingText(`¡COMBO x${count}!`, '#38bdf8');
         } else {
-          this.comboState.timer = 0.24;
+          this.comboState.timer = 0.26;
         }
       }
     }
@@ -1937,6 +2145,16 @@ export class MuWorldEngine {
           this.heroRotY = Math.atan2(nx, nz);
           this.heroAction = 'move';
         }
+        // Smooth third-person camera turn following hero heading while running forward/sideways
+        if (this.camDragPointerId === null && this.camAutoTurnCooldown <= 0 && lz > -0.35) {
+          const desiredAlpha = Math.atan2(-Math.cos(this.heroRotY), -Math.sin(this.heroRotY));
+          const diff = Math.atan2(
+            Math.sin(desiredAlpha - this.camera.alpha),
+            Math.cos(desiredAlpha - this.camera.alpha),
+          );
+          const turnRate = Math.abs(lx) > 0.25 ? 2.8 : 1.9;
+          this.camera.alpha += diff * Math.min(1, dt * turnRate);
+        }
       } else if (this.attackSwingTimer <= 0) {
         this.heroAction = 'idle';
       }
@@ -1961,9 +2179,14 @@ export class MuWorldEngine {
         this.heroWeaponNode.rotation.x = 0.45;
       }
 
-      // Free 360° third-person camera: follows character height smoothly while preserving user drag angles at all times
-      this.camera.target = Vector3.Lerp(this.camera.target, new Vector3(this.heroX, hy + 1.32, this.heroZ), 0.22);
-      this.camera.radius += (this.cameraDistance - this.camera.radius) * 0.14;
+      // Smooth 3rd-person camera follow (~3.4m default close distance) without triggering setTarget() alpha/radius reset
+      const desiredTargetY = hy + 1.32;
+      this.camera.target.set(
+        this.camera.target.x + (this.heroX - this.camera.target.x) * 0.28,
+        this.camera.target.y + (desiredTargetY - this.camera.target.y) * 0.28,
+        this.camera.target.z + (this.heroZ - this.camera.target.z) * 0.28,
+      );
+      this.camera.radius += (this.cameraDistance - this.camera.radius) * 0.22;
 
       // Sync peer location
       if (now - this.lastMoveSyncTime > 120) {
@@ -1988,7 +2211,7 @@ export class MuWorldEngine {
     } else {
       // Login / Character select cinematic orbit around Lorencia plaza
       const orbit = now * 0.00025;
-      this.camera.target = new Vector3(this.heroX, this.getTerrainHeight(this.heroX,this.heroZ)+1.05, this.heroZ);
+      this.camera.target.set(this.heroX, this.getTerrainHeight(this.heroX, this.heroZ) + 1.05, this.heroZ);
       this.camera.alpha = orbit;
       this.camera.beta = 1.1;
       this.camera.radius = this.mode === 'character_select' ? 4 : 15;
@@ -2132,7 +2355,7 @@ export class MuWorldEngine {
             this.heroRotY,
             18,
             this.getAutoAimCandidateList(18),
-            0.8,
+            AUTO_AIM_PROBABILITY,
           )
         : null;
       if (aim && !this.isInSafeCity()) {

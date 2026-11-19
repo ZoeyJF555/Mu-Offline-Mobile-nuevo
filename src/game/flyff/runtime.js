@@ -341,7 +341,7 @@ export class FlyffWorld {
     root.parent=this.rootParent??null;
     try {
       const [terrain, surface] = await Promise.all([importGLB(this.scene, this.base, tile.terrain), fetch(new URL(tile.surface,this.base)).then(r=>{if(!r.ok)throw new Error('Surface unavailable');return r.arrayBuffer();}).then(b=>new Uint8Array(b))]);
-      terrain.meshes.forEach(m=>{if(m.material)ownedMaterials.add(m.material);});
+      terrain.meshes.forEach(m=>{if(m.material)ownedMaterials.add(m.material);m.setEnabled(true);m.isVisible=true;m.receiveShadows=true;});
       terrain.meshes.filter(m => !m.parent).forEach(m => {
         m.parent = root;
         m.rotationQuaternion = null;
@@ -349,6 +349,8 @@ export class FlyffWorld {
         m.scaling.set(1, 1, -1);
         m.position.x += tile.x;
         m.position.z += tile.z;
+        m.setEnabled(true);
+        m.isVisible = true;
       });
       if(this.disposed)throw new Error('World disposed');
       const models = [...new Set(tile.objects.map(o => o.model))];
@@ -458,7 +460,9 @@ export class FlyffWorld {
   async stream(x, z, radius = 0, distance = 0) {
     if (this.disposed) return;
     const gx = Math.floor(x / 512), gz = Math.floor(z / 512), generation = ++this.generation;
-    const needed = this.manifest.tiles.filter(t => distance > 0 ? Math.hypot(Math.max(t.x-x,0,x-t.x-512),Math.max(t.z-z,0,z-t.z-512)) <= distance : Math.abs(t.x/512-gx)<=radius && Math.abs(t.z/512-gz)<=radius);
+    const needed = this.manifest.tiles
+      .filter(t => distance > 0 ? Math.hypot(Math.max(t.x-x,0,x-t.x-512),Math.max(t.z-z,0,z-t.z-512)) <= distance : Math.abs(t.x/512-gx)<=radius && Math.abs(t.z/512-gz)<=radius)
+      .sort((a, b) => Math.hypot(a.x + 256 - x, a.z + 256 - z) - Math.hypot(b.x + 256 - x, b.z + 256 - z));
     const keep = new Set(needed.map(t=>t.id));
     this.desired=keep;this.lava.setEnabled(Math.hypot(x-this.manifest.volcano.x,z-this.manifest.volcano.z)<1000);
     for (const [id, tile] of this.tiles) if (!keep.has(id)) { this.releaseTile(tile); this.tiles.delete(id); }
@@ -466,9 +470,8 @@ export class FlyffWorld {
       if (this.tiles.has(tile.id)) continue;
       if (!this.pending.has(tile.id)) this.pending.set(tile.id, this.loadTile(tile).finally(() => this.pending.delete(tile.id)));
       const loaded = await this.pending.get(tile.id);
-      if (this.disposed || !this.desired.has(tile.id)) { if (!this.tiles.has(tile.id)) this.releaseTile(loaded); return; }
+      if (this.disposed || !this.desired.has(tile.id)) { if (!this.tiles.has(tile.id)) this.releaseTile(loaded); continue; }
       this.tiles.set(tile.id, loaded);
-      if(generation!==this.generation)return;
     }
     if(generation===this.generation&&this.pending.size===0){
       const used=new Set(needed.flatMap(tile=>tile.objects.map(o=>o.model)));

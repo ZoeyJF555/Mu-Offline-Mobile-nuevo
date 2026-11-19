@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  AUTO_AIM_PROBABILITY,
   MAX_HERO_LEVEL,
   MAX_STAT_POINTS,
   POINTS_PER_LEVEL,
@@ -14,10 +15,11 @@ import {
   findAutoAimTarget,
   getEffectiveSkillMultiplier,
   resolveAsyncDuel,
+  rollAutoAimHit,
   rollMonsterAttack,
   scaleMonsterForPlayerLevel,
 } from './combatAndProgression';
-import { getStarterItemsForMuClass } from '../data/muSkillsAndClasses';
+import { getDefaultComboConfig, getStarterItemsForMuClass } from '../data/muSkillsAndClasses';
 import { MU_MAPS } from '../data/muWorldData';
 import type { HeroClass, MapMonsterDef, MuCharacter } from '../types/game';
 
@@ -97,18 +99,25 @@ test('progression constants enforce +5 pts/level, Lv.99 reset cap, and 65,000 st
   assert.equal(MAX_STAT_POINTS, 65000);
 });
 
-test('all 10 character variants exist, include full gear/jewelry/attack tables, and are competitively balanced', () => {
+test('all 10 character variants exist, each has 10 unique skills + 5-skill combo, and are competitively balanced', () => {
   assert.equal(TEN_CHARACTER_TABLES.length, 10);
   const scores = TEN_CHARACTER_TABLES.map((t) => t.competitivePowerScore);
   const minScore = Math.min(...scores);
   const maxScore = Math.max(...scores);
   assert.ok(maxScore - minScore <= 10, `Spread too large: ${minScore}..${maxScore}`);
   for (const profile of TEN_CHARACTER_TABLES) {
-    assert.equal(profile.skills.length, 6);
+    assert.equal(profile.skills.length, 10);
+    const uniqueSkillIds = new Set(profile.skills.map((s) => s.skillId));
+    assert.equal(uniqueSkillIds.size, 10);
     assert.ok(profile.basicAttackName.length > 3);
     assert.ok(profile.weapons.length >= 3);
     assert.ok(profile.armorPieces.armor && profile.armorPieces.boots && profile.armorPieces.shield);
     assert.ok(profile.jewelry.pendant && profile.jewelry.ring1 && profile.jewelry.ring2 && profile.jewelry.pet);
+  }
+  for (const cls of ['DK', 'DW', 'ELF', 'DL', 'MG'] as HeroClass[]) {
+    const combo = getDefaultComboConfig(cls);
+    assert.equal(combo.comboSkillIds.length, 5);
+    assert.equal(new Set(combo.comboSkillIds).size, 5);
   }
 });
 
@@ -161,7 +170,8 @@ test('monsters scale dynamically inside map level bands and expose crit damage t
   assert.equal(critHit.damage, atLv99Flaris.damageTable.criticalHit);
 });
 
-test('80% auto-aim locks onto nearest target and blends angle by 80%', () => {
+test('60% auto-aim locks onto nearest target, blends angle by 60%, and rolls 60% hit accuracy', () => {
+  assert.equal(AUTO_AIM_PROBABILITY, 0.6);
   const heroRotY = 0; // Facing +Z
   const res = findAutoAimTarget(
     0,
@@ -172,12 +182,13 @@ test('80% auto-aim locks onto nearest target and blends angle by 80%', () => {
       { index: 1, x: 5, z: 5, dist: Math.hypot(5, 5) },
       { index: 2, x: 18, z: 0, dist: 18 },
     ],
-    0.8,
   );
   assert.ok(res !== null);
   assert.equal(res.targetIndex, 1);
-  assert.equal(res.coveragePct, 80);
-  assert.ok(Math.abs(res.blendedAngle - (Math.PI / 4) * 0.8) < 0.001);
+  assert.equal(res.coveragePct, 60);
+  assert.ok(Math.abs(res.blendedAngle - (Math.PI / 4) * 0.6) < 0.001);
+  assert.equal(rollAutoAimHit(true, 0.6, 0.59), true);
+  assert.equal(rollAutoAimHit(true, 0.6, 0.61), false);
 });
 
 test('achievements evaluate kills, level, and duel wins accurately', () => {

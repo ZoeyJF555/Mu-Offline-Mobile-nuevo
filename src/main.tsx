@@ -28,9 +28,12 @@ if (import.meta.env.PROD) {
           registration.update().catch(() => {});
         }
       });
+      window.addEventListener('online', () => {
+        registration.update().catch(() => {});
+      });
       window.setInterval(() => {
         registration.update().catch(() => {});
-      }, 15 * 60 * 1000);
+      }, 5 * 60 * 1000);
     },
     onNeedRefresh() {
       updateSW(true);

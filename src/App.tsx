@@ -118,7 +118,8 @@ const INITIAL_SETTINGS: GameSettings = {
   musicEnabled: true,
   musicVolume: 0.45,
   free3dCamera: false,
-  cameraDistance: 6.4,
+  cameraDistance: 3.4,
+  cameraDistanceMigratedV2: true,
   autoAimAssist: true,
   targetFps: 60,
 };
@@ -433,7 +434,7 @@ export default function App() {
     soundSynth.setMusicConfig(gameSettings.musicEnabled, gameSettings.musicVolume);
     engineRef.current?.setBrightness(gameSettings.brightness);
     engineRef.current?.setFree3dMode(gameSettings.free3dCamera);
-    engineRef.current?.setCameraDistance(gameSettings.cameraDistance ?? 6.4);
+    engineRef.current?.setCameraDistance(gameSettings.cameraDistance ?? 3.4);
     engineRef.current?.setAutoAimAssist(gameSettings.autoAimAssist ?? true);
     engineRef.current?.setTargetFps(gameSettings.targetFps);
   }, [gameSettings]);
@@ -903,7 +904,7 @@ export default function App() {
     engine.setBrightness(settingsRef.current.brightness);
     engine.setAudio(settingsRef.current.volume, settingsRef.current.muted);
     engine.setFree3dMode(settingsRef.current.free3dCamera);
-    engine.setCameraDistance(settingsRef.current.cameraDistance ?? 6.4);
+    engine.setCameraDistance(settingsRef.current.cameraDistance ?? 3.4);
     engine.setAutoAimAssist(settingsRef.current.autoAimAssist ?? true);
     engine.setTargetFps(settingsRef.current.targetFps);
 
@@ -990,14 +991,22 @@ export default function App() {
     }
 
     if (comboArmed) {
-      const s1 = classSkills.find((s) => s.id === comboConfig.comboSkillIds[0]) || classSkills[1] || classSkills[0];
-      const s2 = classSkills.find((s) => s.id === comboConfig.comboSkillIds[1]) || classSkills[2] || classSkills[0];
-      const s3 = classSkills.find((s) => s.id === comboConfig.comboSkillIds[2]) || classSkills[3] || classSkills[0];
-      const totalMp = Math.round((s1.mpCost + s2.mpCost + s3.mpCost) * 0.65);
-      const totalAg = Math.round((s1.agCost + s2.agCost + s3.agCost) * 0.65);
+      const selectedIds = comboConfig.comboSkillIds.slice(0, 5);
+      const comboSkills: SkillDef[] = [];
+      for (const id of selectedIds) {
+        const found = classSkills.find((s) => s.id === id);
+        if (found) comboSkills.push(found);
+      }
+      for (let idx = 1; comboSkills.length < 5 && idx < classSkills.length; idx++) {
+        if (!comboSkills.some((s) => s.id === classSkills[idx].id)) {
+          comboSkills.push(classSkills[idx]);
+        }
+      }
+      const totalMp = Math.round(comboSkills.reduce((sum, s) => sum + s.mpCost, 0) * 0.55);
+      const totalAg = Math.round(comboSkills.reduce((sum, s) => sum + s.agCost, 0) * 0.55);
 
       if (c.mp < totalMp || c.ag < totalAg) {
-        pushBanner('MP/AG insuficiente para Combo · Ataque base', '#fbbf24');
+        pushBanner('MP/AG insuficiente para Combo x5 · Ataque base', '#fbbf24');
         const def = classSkills.find((s) => s.id === comboConfig.defaultSkillId) || classSkills[0];
         handleCastSkill(def);
         return;
@@ -1012,7 +1021,7 @@ export default function App() {
             }
           : prev,
       );
-      engineRef.current?.executeComboChain([s1, s2, s3], computeBonusStatPower(c));
+      engineRef.current?.executeComboChain(comboSkills, computeBonusStatPower(c));
     } else {
       const def = classSkills.find((s) => s.id === comboConfig.defaultSkillId) || classSkills[0];
       handleCastSkill(def);
@@ -1064,6 +1073,14 @@ export default function App() {
         handleCastSkill(skills[4]);
       } else if (e.code === 'Digit6' && skills[5]) {
         handleCastSkill(skills[5]);
+      } else if (e.code === 'Digit7' && skills[6]) {
+        handleCastSkill(skills[6]);
+      } else if (e.code === 'Digit8' && skills[7]) {
+        handleCastSkill(skills[7]);
+      } else if (e.code === 'Digit9' && skills[8]) {
+        handleCastSkill(skills[8]);
+      } else if (e.code === 'Digit0' && skills[9]) {
+        handleCastSkill(skills[9]);
       } else if (e.code === 'KeyM') {
         setActiveDrawer('mapWarp');
       } else if (e.code === 'KeyC') {

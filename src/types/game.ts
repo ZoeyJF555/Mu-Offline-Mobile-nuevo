@@ -30,18 +30,25 @@ export type SkillVfxKind =
   | 'twisting'
   | 'death_stab'
   | 'rageful_blow'
+  | 'blood_storm'
+  | 'sword_rush'
   | 'bolt'
   | 'evil_spirit'
   | 'ice_storm'
   | 'nova'
   | 'hellfire'
+  | 'meteor'
+  | 'aqua_beam'
+  | 'lightning_shock'
   | 'arrow'
   | 'triple_shot'
   | 'ice_arrow'
+  | 'starfall'
   | 'fire_burst'
   | 'fire_scream'
   | 'earthshake'
   | 'raven'
+  | 'chaotic_ray'
   | 'power_slash'
   | 'gigantic_storm'
   | 'buff';
@@ -179,7 +186,7 @@ export interface SkillDef {
 
 export interface CharacterComboConfig {
   defaultSkillId: string;
-  comboSkillIds: [string, string, string];
+  comboSkillIds: string[]; // Up to 5 powers/attacks in combo chain
 }
 
 export type HudButtonId =
@@ -211,8 +218,9 @@ export interface GameSettings {
   musicEnabled: boolean;
   musicVolume: number; // 0 to 1
   free3dCamera: boolean;
-  cameraDistance?: number; // 4.5 to 14m third-person distance
-  autoAimAssist?: boolean; // 80% auto-aim toggle (default true)
+  cameraDistance?: number; // 2.2 to 10.5m third-person distance (default 3.4m)
+  cameraDistanceMigratedV2?: boolean;
+  autoAimAssist?: boolean; // 60% auto-aim toggle (default true)
   targetFps: 30 | 45 | 60;
 }
 

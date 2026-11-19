@@ -123,6 +123,8 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
 }) => {
   const [selectedEditId, setSelectedEditId] = useState<HudButtonId | null>('attack');
   const [showComboPicker, setShowComboPicker] = useState(false);
+  const [powersOpen, setPowersOpen] = useState(true);
+  const [assignComboMode, setAssignComboMode] = useState(false);
   const lastActionFireRef = useRef<Record<string, number>>({});
   const dragState = useRef<{
     id: HudButtonId;
@@ -231,9 +233,28 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
     );
   };
 
-  const cycleComboSlot = (slotIdx: 0 | 1 | 2, skillId: string) => {
-    const next: [string, string, string] = [...comboConfig.comboSkillIds] as [string, string, string];
+  const cycleComboSlot = (slotIdx: number, skillId: string) => {
+    const next = [...comboConfig.comboSkillIds];
+    while (next.length < 5) {
+      const extra = classSkills.find((s) => !next.includes(s.id)) || classSkills[0];
+      next.push(extra.id);
+    }
     next[slotIdx] = skillId;
+    onUpdateComboConfig({ ...comboConfig, comboSkillIds: next.slice(0, 5) });
+  };
+
+  const toggleSkillInCombo = (skillId: string) => {
+    const current = [...comboConfig.comboSkillIds].slice(0, 5);
+    const existingIdx = current.indexOf(skillId);
+    let next: string[];
+    if (existingIdx >= 0) {
+      if (current.length <= 1) return;
+      next = current.filter((id) => id !== skillId);
+    } else if (current.length < 5) {
+      next = [...current, skillId];
+    } else {
+      next = [...current.slice(1), skillId];
+    }
     onUpdateComboConfig({ ...comboConfig, comboSkillIds: next });
   };
 
@@ -271,7 +292,7 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
           </span>
           <span className="font-mono-tabular text-emerald-300">{measuredFps} FPS</span>
           {autoAimAssist && (
-            <span className="hidden xl:inline font-mono-tabular text-amber-300">· Auto-Aim 80%</span>
+            <span className="hidden xl:inline font-mono-tabular text-amber-300">· Auto-Aim 60%</span>
           )}
           {free3dCamera && (
             <span className="hidden xl:inline font-mono-tabular text-purple-300">· 3D Libre</span>
@@ -567,68 +588,147 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
         </button>,
       )}
 
-      {/* MU Online 6-Skill Selector Mini-Windows */}
+      {/* SEPARATED PODERES BUTTON + 10 SMALL SKILL/MAGIC SQUARES (5x2) */}
       {wrapButton(
         'skillTray',
-        <div className="flex items-center gap-1 rounded-lg bg-[#0b1019]/92 border border-amber-700/60 p-1 shadow-xl touch-none select-none">
-          {classSkills.map((sk) => {
-            const isDefault = sk.id === defaultSkill.id;
-            const comboIdx = comboConfig.comboSkillIds.indexOf(sk.id);
-            const rank = getSkillRank(character, sk.id);
-            const cdRemaining = skillCooldowns[sk.id] ?? 0;
-            return (
-              <button
-                key={sk.id}
-                onPointerDown={(e) => {
-                  if (editMode) return;
-                  e.stopPropagation();
-                  fireImmediateAction(`skill_${sk.id}`, () => onCastSkill(sk));
-                }}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  fireImmediateAction(`skill_${sk.id}`, () => onCastSkill(sk));
-                }}
-                title={`${sk.name} Nv.${rank} (MP ${sk.mpCost})`}
-                style={{ borderColor: isDefault ? '#f59e0b' : 'rgba(71, 85, 105, 0.7)' }}
-                className="relative w-10 h-10 rounded bg-[#151c2c] hover:bg-[#1f2940] border flex flex-col items-center justify-center text-center cursor-pointer active:scale-95 overflow-hidden touch-none select-none"
-              >
-                <span
-                  style={{ backgroundColor: sk.badgeColor }}
-                  className="w-2 h-2 rounded-sm mb-0.5 pointer-events-none"
-                />
-                <span className="text-[8px] font-bold text-slate-100 leading-none truncate max-w-[34px] pointer-events-none">
-                  {sk.shortName}
-                </span>
-                <span className="text-[7px] font-mono-tabular text-amber-300/90 leading-none mt-0.5 pointer-events-none">
-                  R{rank}
-                </span>
-                {comboIdx >= 0 && (
-                  <span className="absolute -top-0.5 -right-0.5 px-1 rounded bg-rose-600 text-[7px] font-bold text-white pointer-events-none">
-                    C{comboIdx + 1}
-                  </span>
-                )}
-                {cdRemaining > 0.05 && (
-                  <div className="absolute inset-0 bg-slate-950/78 flex items-center justify-center text-[10px] font-mono-tabular font-bold text-amber-300 pointer-events-none">
-                    {cdRemaining.toFixed(1)}
-                  </div>
-                )}
-              </button>
-            );
-          })}
-          <button
-            onClick={() => !editMode && setShowComboPicker((v) => !v)}
-            title="Configurar ataque por defecto y Combo x3"
-            className="w-8 h-10 rounded bg-[#1b2234] hover:bg-slate-700 border border-slate-600 text-amber-300 flex items-center justify-center cursor-pointer"
-          >
-            <SlidersHorizontal className="w-3.5 h-3.5" />
-          </button>
+        <div data-testid="hud-skill-tray" className="flex flex-col items-end gap-1 touch-none select-none">
+          <div className="flex items-center gap-1">
+            <button
+              onPointerDown={(e) => {
+                if (editMode) return;
+                e.stopPropagation();
+                fireImmediateAction('toggle_powers_grid', () => setPowersOpen((v) => !v));
+              }}
+              onClick={(e) => {
+                e.stopPropagation();
+                fireImmediateAction('toggle_powers_grid', () => setPowersOpen((v) => !v));
+              }}
+              className={`min-h-[30px] px-2.5 rounded-lg border text-[10px] font-bold inline-flex items-center gap-1 shadow-lg cursor-pointer touch-none select-none ${
+                powersOpen
+                  ? 'bg-amber-600/95 border-amber-300 text-slate-950'
+                  : 'bg-[#0b1019]/92 border-amber-700/70 text-amber-200'
+              }`}
+            >
+              <Flame className="w-3 h-3 pointer-events-none" />
+              <span className="pointer-events-none">Poderes (10)</span>
+            </button>
+
+            <button
+              onPointerDown={(e) => {
+                if (editMode) return;
+                e.stopPropagation();
+                fireImmediateAction('assign_combo_mode', () => {
+                  setPowersOpen(true);
+                  setAssignComboMode((v) => !v);
+                });
+              }}
+              onClick={(e) => {
+                e.stopPropagation();
+                fireImmediateAction('assign_combo_mode', () => {
+                  setPowersOpen(true);
+                  setAssignComboMode((v) => !v);
+                });
+              }}
+              title="Elige hasta 5 poderes para el botón COMBO"
+              className={`min-h-[30px] px-2 rounded-lg border text-[10px] font-bold cursor-pointer touch-none select-none ${
+                assignComboMode
+                  ? 'bg-rose-600 border-rose-300 text-white'
+                  : 'bg-[#121826]/92 border-slate-600 text-slate-200'
+              }`}
+            >
+              {assignComboMode
+                ? `Editando Combo (${comboConfig.comboSkillIds.length}/5)`
+                : `+Combo (${comboConfig.comboSkillIds.length}/5)`}
+            </button>
+
+            <button
+              onPointerDown={(e) => {
+                if (editMode) return;
+                e.stopPropagation();
+                fireImmediateAction('open_combo_picker', () => setShowComboPicker((v) => !v));
+              }}
+              onClick={(e) => {
+                e.stopPropagation();
+                fireImmediateAction('open_combo_picker', () => setShowComboPicker((v) => !v));
+              }}
+              title="Configurar ataque por defecto y Combo x5"
+              className="w-8 h-[30px] rounded-lg bg-[#1b2234]/95 hover:bg-slate-700 border border-slate-600 text-amber-300 flex items-center justify-center cursor-pointer touch-none select-none"
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5 pointer-events-none" />
+            </button>
+          </div>
+
+          {powersOpen && (
+            <div className="grid grid-cols-5 gap-1 rounded-lg bg-[#0b1019]/92 border border-amber-700/60 p-1 shadow-xl">
+              {classSkills.slice(0, 10).map((sk) => {
+                const isDefault = sk.id === defaultSkill.id;
+                const comboIdx = comboConfig.comboSkillIds.indexOf(sk.id);
+                const rank = getSkillRank(character, sk.id);
+                const cdRemaining = skillCooldowns[sk.id] ?? 0;
+                return (
+                  <button
+                    key={sk.id}
+                    onPointerDown={(e) => {
+                      if (editMode) return;
+                      e.stopPropagation();
+                      if (assignComboMode) {
+                        fireImmediateAction(`slot_${sk.id}`, () => toggleSkillInCombo(sk.id));
+                      } else {
+                        fireImmediateAction(`skill_${sk.id}`, () => onCastSkill(sk));
+                      }
+                    }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (assignComboMode) {
+                        fireImmediateAction(`slot_${sk.id}`, () => toggleSkillInCombo(sk.id));
+                      } else {
+                        fireImmediateAction(`skill_${sk.id}`, () => onCastSkill(sk));
+                      }
+                    }}
+                    title={`${sk.name} Nv.${rank} (MP ${sk.mpCost})`}
+                    style={{
+                      borderColor:
+                        assignComboMode && comboIdx >= 0
+                          ? '#f43f5e'
+                          : isDefault
+                            ? '#f59e0b'
+                            : 'rgba(71, 85, 105, 0.75)',
+                    }}
+                    className="relative w-9 h-9 rounded bg-[#151c2c] hover:bg-[#1f2940] border flex flex-col items-center justify-center text-center cursor-pointer active:scale-95 overflow-hidden touch-none select-none"
+                  >
+                    <span
+                      style={{ backgroundColor: sk.badgeColor }}
+                      className="w-2 h-2 rounded-sm mb-0.5 pointer-events-none"
+                    />
+                    <span className="text-[7.5px] font-bold text-slate-100 leading-none truncate max-w-[32px] pointer-events-none">
+                      {sk.shortName}
+                    </span>
+                    <span className="text-[6.5px] font-mono-tabular text-amber-300/90 leading-none mt-0.5 pointer-events-none">
+                      R{rank}
+                    </span>
+                    {comboIdx >= 0 && (
+                      <span className="absolute -top-0.5 -right-0.5 px-1 rounded bg-rose-600 text-[7px] font-bold text-white pointer-events-none">
+                        C{comboIdx + 1}
+                      </span>
+                    )}
+                    {cdRemaining > 0.05 && (
+                      <div className="absolute inset-0 bg-slate-950/78 flex items-center justify-center text-[9px] font-mono-tabular font-bold text-amber-300 pointer-events-none">
+                        {cdRemaining.toFixed(1)}
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>,
       )}
 
-      {/* COMBO x3 TOGGLE BUTTON */}
+      {/* COMBO x5 TOGGLE BUTTON (Tap once to arm/disarm 5-power combo for Attack button) */}
       {wrapButton(
         'combo',
         <button
+          data-testid="hud-combo-btn"
           onPointerDown={(e) => {
             if (editMode) return;
             e.stopPropagation();
@@ -645,8 +745,11 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
           }`}
         >
           <Flame className={`w-5 h-5 pointer-events-none ${comboArmed ? 'text-amber-200' : 'text-slate-400'}`} />
-          <span className="text-[10px] font-bold leading-tight pointer-events-none">
+          <span className="text-[9.5px] font-bold leading-tight pointer-events-none">
             {comboArmed ? 'COMBO ON' : 'COMBO'}
+          </span>
+          <span className="text-[8px] font-mono-tabular text-amber-200/90 pointer-events-none">
+            {comboConfig.comboSkillIds.slice(0, 5).length}/5
           </span>
         </button>,
       )}
@@ -655,6 +758,7 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
       {wrapButton(
         'attack',
         <button
+          data-testid="hud-attack-btn"
           onPointerDown={(e) => {
             if (editMode) return;
             e.stopPropagation();
@@ -672,7 +776,7 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
         >
           <Sword className="w-7 h-7 pointer-events-none" />
           <span className="text-[10px] font-extrabold leading-tight mt-0.5 max-w-[68px] truncate pointer-events-none">
-            {comboArmed ? 'Atacar x3' : defaultSkill.shortName}
+            {comboArmed ? 'Atacar x5' : defaultSkill.shortName}
           </span>
         </button>,
       )}
@@ -733,13 +837,13 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
         </div>
       </div>
 
-      {/* SMALL MU ONLINE SKILL & COMBO CONFIGURATOR POPOVER */}
+      {/* SMALL MU ONLINE SKILL & 5-POWER COMBO CONFIGURATOR POPOVER */}
       {showComboPicker && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/75 p-3">
           <div className="w-full max-w-md max-h-[90vh] overflow-y-auto mu-scroll rounded-xl bg-[#0e131f] border-2 border-amber-700/80 p-4 space-y-3 shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-800 pb-2">
               <h3 className="font-display text-sm font-bold text-amber-300">
-                Ventana de Ataques y Combo x3 ({character.classType})
+                10 Poderes y Combo x5 ({character.classType})
               </h3>
               <button
                 onClick={() => setShowComboPicker(false)}
@@ -754,7 +858,7 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
                 1. Ataque por Defecto (cuando COMBO está apagado)
               </div>
               <div className="grid grid-cols-2 gap-1.5">
-                {classSkills.map((sk) => (
+                {classSkills.slice(0, 10).map((sk) => (
                   <button
                     key={sk.id}
                     onClick={() =>
@@ -777,19 +881,19 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
 
             <div className="space-y-2 pt-1 border-t border-slate-800">
               <div className="text-xs font-semibold text-rose-300">
-                2. Cadena de Combo (3 ataques al activar botón COMBO)
+                2. Cadena de Combo (5 poderes al activar el botón COMBO)
               </div>
-              {([0, 1, 2] as const).map((stepIdx) => (
+              {([0, 1, 2, 3, 4] as const).map((stepIdx) => (
                 <div key={stepIdx} className="flex items-center justify-between gap-2">
                   <span className="text-xs font-mono-tabular text-amber-300 shrink-0">
                     Paso {stepIdx + 1}:
                   </span>
                   <select
-                    value={comboConfig.comboSkillIds[stepIdx]}
+                    value={comboConfig.comboSkillIds[stepIdx] || classSkills[stepIdx + 1]?.id || classSkills[0].id}
                     onChange={(e) => cycleComboSlot(stepIdx, e.target.value)}
                     className="flex-1 min-h-[38px] rounded-lg bg-[#090d16] border border-slate-700 px-2.5 text-xs text-slate-100"
                   >
-                    {classSkills.map((sk) => (
+                    {classSkills.slice(0, 10).map((sk) => (
                       <option key={sk.id} value={sk.id}>
                         {sk.name} (x{sk.damageMultiplier})
                       </option>
@@ -803,7 +907,7 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
               onClick={() => setShowComboPicker(false)}
               className="w-full min-h-[42px] rounded-lg bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-xs cursor-pointer"
             >
-              Confirmar Habilidades
+              Confirmar 5 Poderes de Combo
             </button>
           </div>
         </div>

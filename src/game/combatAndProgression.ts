@@ -691,7 +691,9 @@ export function rollMonsterAttack(
   };
 }
 
-// --- 80% Auto-Aim System ---
+// --- 60% Auto-Aim System ---
+
+export const AUTO_AIM_PROBABILITY = 0.6;
 
 export interface AutoAimCandidate {
   index: number;
@@ -717,9 +719,21 @@ function normalizeAngle(rad: number): number {
 }
 
 /**
- * 80% Auto-Aim assist across all 10 hero variants:
+ * Determines whether an auto-aimed attack/power hits cleanly (60% probability).
+ */
+export function rollAutoAimHit(
+  autoAimEnabled: boolean,
+  accuracyWeight = AUTO_AIM_PROBABILITY,
+  rand = Math.random(),
+): boolean {
+  if (!autoAimEnabled) return true;
+  return rand < Math.max(0, Math.min(1, accuracyWeight));
+}
+
+/**
+ * 60% Auto-Aim assist across all 10 hero variants:
  * Picks the highest-priority target inside aim range (favoring forward cone & proximity),
- * and blends 80% toward the exact target vector so melee and ranged attacks stay snappy and reliable.
+ * and blends 60% toward the exact target vector with a 60% hit accuracy probability.
  */
 export function findAutoAimTarget(
   heroX: number,
@@ -727,7 +741,7 @@ export function findAutoAimTarget(
   heroRotY: number,
   maxRange: number,
   candidates: AutoAimCandidate[],
-  assistWeight = 0.8,
+  assistWeight = AUTO_AIM_PROBABILITY,
 ): AutoAimResult | null {
   if (!candidates.length) return null;
   let best: AutoAimCandidate | null = null;

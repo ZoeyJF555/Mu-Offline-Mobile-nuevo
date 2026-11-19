@@ -25,7 +25,7 @@ import type {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PORT = 3000;
-const APP_VERSION = '2.1.0';
+const APP_VERSION = '2.2.0';
 const CLOUD_STORE_PATH = path.join(__dirname, '.mu-cloud-sync-store.json');
 
 interface CloudStoreData {

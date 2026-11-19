@@ -180,7 +180,9 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: v${opts.appVersion}.\${{ github.run_number }}
+          name: MU Lorencia Offline APK v${opts.appVersion}.\${{ github.run_number }}
           files: android/app/build/outputs/apk/debug/app-debug.apk
+          generate_release_notes: true
 `,
   );
 
@@ -190,7 +192,7 @@ jobs:
       {
         version: opts.appVersion,
         webEntryUrl: cleanWebUrl,
-        repoUrl: opts.repoUrl || 'https://github.com/tu-usuario/mu-lorencia-offline',
+        repoUrl: opts.repoUrl || 'https://github.com/ZoeyJF555/Mu-Offline-Mobile-nuevo-',
         autoUpdateWebBundle: true,
         offlineEngine: 'Dexie IndexedDB + Workbox GLB Cache',
       },

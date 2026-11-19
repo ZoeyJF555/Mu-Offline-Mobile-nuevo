@@ -2,6 +2,7 @@ import Dexie, { type Table } from 'dexie';
 import {
   DEFAULT_BUTTON_LAYOUTS,
   MU_CLASSES,
+  MU_SKILLS,
   getDefaultComboConfig,
   getStarterItemsForMuClass,
 } from '../data/muSkillsAndClasses';
@@ -878,7 +879,8 @@ const DEFAULT_SETTINGS: GameSettings = {
   musicEnabled: true,
   musicVolume: 0.45,
   free3dCamera: false,
-  cameraDistance: 6.4,
+  cameraDistance: 3.4,
+  cameraDistanceMigratedV2: true,
   autoAimAssist: true,
   targetFps: 60,
 };
@@ -888,7 +890,18 @@ export async function loadGameSettings(): Promise<GameSettings> {
   const row = await db.KvSettings.get('game_settings');
   if (!row) return { ...DEFAULT_SETTINGS };
   try {
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(row.valueJson) };
+    const parsed = JSON.parse(row.valueJson) as Partial<GameSettings>;
+    if (!parsed.cameraDistanceMigratedV2) {
+      const migrated: GameSettings = {
+        ...DEFAULT_SETTINGS,
+        ...parsed,
+        cameraDistance: 3.4,
+        cameraDistanceMigratedV2: true,
+      };
+      await db.KvSettings.put({ key: 'game_settings', valueJson: JSON.stringify(migrated) });
+      return migrated;
+    }
+    return { ...DEFAULT_SETTINGS, ...parsed };
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
@@ -896,7 +909,10 @@ export async function loadGameSettings(): Promise<GameSettings> {
 
 export async function saveGameSettings(settings: GameSettings): Promise<void> {
   await initDexie();
-  await db.KvSettings.put({ key: 'game_settings', valueJson: JSON.stringify(settings) });
+  await db.KvSettings.put({
+    key: 'game_settings',
+    valueJson: JSON.stringify({ ...settings, cameraDistanceMigratedV2: true }),
+  });
 }
 
 export async function loadButtonLayouts(): Promise<Record<HudButtonId, ButtonLayoutItem>> {
@@ -917,12 +933,33 @@ export async function saveButtonLayouts(layouts: Record<HudButtonId, ButtonLayou
 
 export async function loadComboConfig(charId: string, classType: HeroClass): Promise<CharacterComboConfig> {
   await initDexie();
+  const defCfg = getDefaultComboConfig(classType);
+  const validIds = new Set((MU_SKILLS[classType] || MU_SKILLS.DK).map((s) => s.id));
   const row = await db.KvSettings.get(`combo_${charId}`);
-  if (!row) return getDefaultComboConfig(classType);
+  if (!row) return defCfg;
   try {
-    return JSON.parse(row.valueJson) as CharacterComboConfig;
+    const parsed = JSON.parse(row.valueJson) as Partial<CharacterComboConfig>;
+    const filtered: string[] = [];
+    for (const id of parsed.comboSkillIds || []) {
+      if (validIds.has(id) && !filtered.includes(id)) {
+        filtered.push(id);
+      }
+      if (filtered.length >= 5) break;
+    }
+    for (const fallbackId of defCfg.comboSkillIds) {
+      if (filtered.length >= 5) break;
+      if (!filtered.includes(fallbackId)) {
+        filtered.push(fallbackId);
+      }
+    }
+    return {
+      defaultSkillId: parsed.defaultSkillId && validIds.has(parsed.defaultSkillId)
+        ? parsed.defaultSkillId
+        : defCfg.defaultSkillId,
+      comboSkillIds: filtered.slice(0, 5),
+    };
   } catch {
-    return getDefaultComboConfig(classType);
+    return defCfg;
   }
 }
 

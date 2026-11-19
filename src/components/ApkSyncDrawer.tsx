@@ -1,11 +1,14 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
+  CheckCircle2,
   Cloud,
   CloudOff,
   Database,
   Download,
+  ExternalLink,
   FileArchive,
   GitBranch,
+  Link2,
   RefreshCw,
   Smartphone,
   Upload,
@@ -14,6 +17,15 @@ import {
 import { exportDatabaseFile, getDatabaseStats, importDatabaseFile } from '../db/dexieStore';
 import { generateAndroidApkKitZip } from '../services/apkKitGenerator';
 import { cloudSyncManager } from '../services/cloudSyncManager';
+import {
+  applyWebOtaUpdate,
+  checkForGithubOtaUpdate,
+  getConfiguredCloudApiUrl,
+  getLinkedGithubRepoSlug,
+  setConfiguredCloudApiUrl,
+  setLinkedGithubRepoSlug,
+  type GithubOtaStatus,
+} from '../services/githubOtaService';
 import type { SyncStatusInfo } from '../types/game';
 import { PWAInstallButton } from './PWAInstallButton';
 
@@ -24,50 +36,99 @@ interface ApkSyncDrawerProps {
   onDatabaseImported: () => Promise<void>;
 }
 
-interface OtaManifest {
-  appName: string;
-  version: string;
-  buildTimestamp: string;
-  webEntryUrl: string;
-  offlineEngine: string;
-  githubWorkflow: string;
-}
-
 export const ApkSyncDrawer: React.FC<ApkSyncDrawerProps> = ({
   open,
   syncStatus,
   onClose,
   onDatabaseImported,
 }) => {
-  const [manifest, setManifest] = useState<OtaManifest | null>(null);
+  const [otaStatus, setOtaStatus] = useState<GithubOtaStatus | null>(null);
+  const [checkingOta, setCheckingOta] = useState(false);
   const [dbStats, setDbStats] = useState<{
     tables: Array<{ name: string; rows: number }>;
     byteSize: number;
   } | null>(null);
-  const [repoUrl, setRepoUrl] = useState('https://github.com/ZoeyJF555/Mu-Offline-Mobile-nuevo-');
+  const [repoUrl, setRepoUrl] = useState(
+    () => `https://github.com/${getLinkedGithubRepoSlug()}`,
+  );
+  const [cloudUrlInput, setCloudUrlInput] = useState(() => getConfiguredCloudApiUrl());
   const [downloadingKit, setDownloadingKit] = useState(false);
   const [syncingCloud, setSyncingCloud] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
+  const runOtaCheck = useCallback(async () => {
+    setCheckingOta(true);
+    try {
+      const status = await checkForGithubOtaUpdate();
+      setOtaStatus(status);
+      return status;
+    } finally {
+      setCheckingOta(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (!open) return;
     getDatabaseStats().then(setDbStats).catch(() => {});
-    fetch('/api/ota/manifest')
-      .then((r) => r.json())
-      .then(setManifest)
-      .catch(() => {});
-  }, [open]);
+    runOtaCheck().catch(() => {});
+  }, [open, runOtaCheck]);
 
   if (!open) return null;
+
+  const handleSaveGithubLink = async () => {
+    const slug = setLinkedGithubRepoSlug(repoUrl);
+    setRepoUrl(`https://github.com/${slug}`);
+    const status = await runOtaCheck();
+    setNotice(
+      status.updateAvailable && status.updateReason
+        ? `Repositorio vinculado (${slug}). ${status.updateReason}`
+        : `Repositorio GitHub vinculado: ${slug}.`,
+    );
+  };
+
+  const handleSaveCloudUrl = async () => {
+    const clean = setConfiguredCloudApiUrl(cloudUrlInput);
+    setCloudUrlInput(clean);
+    cloudSyncManager.resetApiProbe();
+    const res = await cloudSyncManager.syncNow();
+    setNotice(
+      clean
+        ? `URL Cloud Sync guardada (${clean}). ${res.message}`
+        : `Servidor remoto desvinculado. Modo GitHub Pages / Offline-First activo.`,
+    );
+  };
+
+  const handleCheckAndApplyUpdate = async () => {
+    setNotice(null);
+    const status = await runOtaCheck();
+    if (status.updateAvailable) {
+      setNotice(
+        `${status.updateReason || 'Actualización encontrada en GitHub.'} Recargando versión más reciente...`,
+      );
+      await applyWebOtaUpdate(status.latestCommitSha);
+    } else if (status.latestCommitSha) {
+      setNotice(
+        `Tu Web/APKweb ya está al día (${status.localVersion} · commit ${status.latestCommitSha} en ${status.repoSlug}).`,
+      );
+    } else {
+      setNotice(
+        `Versión local v${status.localVersion} activa. Conecta a internet para consultar commits/releases en ${status.repoSlug}.`,
+      );
+    }
+  };
 
   const handleDownloadApkKit = async () => {
     setDownloadingKit(true);
     setNotice(null);
     try {
+      const slug = setLinkedGithubRepoSlug(repoUrl);
+      const pagesEntry =
+        otaStatus?.pagesUrl ||
+        `https://${slug.split('/')[0].toLowerCase()}.github.io/${slug.split('/')[1]}/`;
       const blob = await generateAndroidApkKitZip({
-        webAppUrl: manifest?.webEntryUrl || window.location.origin,
-        repoUrl,
-        appVersion: manifest?.version || '2.0.0',
+        webAppUrl: pagesEntry,
+        repoUrl: `https://github.com/${slug}`,
+        appVersion: otaStatus?.localVersion || '2.2.0',
       });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -76,7 +137,7 @@ export const ApkSyncDrawer: React.FC<ApkSyncDrawerProps> = ({
       a.click();
       URL.revokeObjectURL(url);
       setNotice(
-        'Kit APK + GitHub Actions descargado. Súbelo en commits pequeños (sin node_modules ni dist) para compilar el APK automáticamente en GitHub.',
+        `Kit APK + GitHub Actions descargado apuntando a ${pagesEntry}. Al compilar el APK recibirá tus actualizaciones de GitHub automáticamente.`,
       );
     } finally {
       setDownloadingKit(false);
@@ -87,13 +148,31 @@ export const ApkSyncDrawer: React.FC<ApkSyncDrawerProps> = ({
     setSyncingCloud(true);
     setNotice(null);
     try {
-      const res = await cloudSyncManager.syncNow();
-      setNotice(res.message);
+      const [res, ota] = await Promise.all([cloudSyncManager.syncNow(), runOtaCheck()]);
       const stats = await getDatabaseStats();
       setDbStats(stats);
+      if (ota.updateAvailable && ota.updateReason) {
+        setNotice(`${res.message} · ${ota.updateReason}`);
+      } else {
+        setNotice(res.message);
+      }
     } finally {
       setSyncingCloud(false);
     }
+  };
+
+  const handleExportGithubSnapshot = async () => {
+    const jsonText = await cloudSyncManager.buildGithubSyncSnapshotJson();
+    const blob = new Blob([jsonText], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `github-sync-snapshot-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setNotice(
+      'Registro completo (cuentas, héroes, inventarios, intercambios Wi-Fi/BT y duelos) exportado en JSON para respaldo en GitHub.',
+    );
   };
 
   const handleExportJson = async () => {
@@ -125,10 +204,10 @@ export const ApkSyncDrawer: React.FC<ApkSyncDrawerProps> = ({
             <Smartphone className="w-5 h-5 text-amber-400" />
             <div>
               <h2 className="font-display text-lg font-bold text-amber-300">
-                PWA, Cloud Sync (Timestamp) e IndexedDB Dexie
+                PWA, Auto-Update GitHub, APKweb e IndexedDB
               </h2>
               <p className="text-xs text-slate-400">
-                Instalación offline-first con caché de modelos .glb, sincronización sin sobreescritura y kit APK Android.
+                Actualizaciones automáticas desde tu repositorio GitHub al conectarse a internet + respaldo offline Dexie.
               </p>
             </div>
           </div>
@@ -147,19 +226,45 @@ export const ApkSyncDrawer: React.FC<ApkSyncDrawerProps> = ({
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto mu-scroll p-5 space-y-5">
-          {/* 1. Direct Mobile Web Install + Cloud Sync Status */}
+        <div className="flex-1 overflow-y-auto mu-scroll p-5 space-y-4">
+          {/* 1. PWA + GitHub Auto-Update OTA + Cloud Sync */}
           <div className="p-4 rounded-xl bg-[#151c2c] border border-slate-800 space-y-3">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
-                <h3 className="text-sm font-semibold text-slate-100">
-                  1. PWA Offline-First + Service Worker Auto-Update
+                <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
+                  <span>1. Web / PWA / APKweb Auto-Update (GitHub OTA)</span>
+                  {otaStatus?.updateAvailable && (
+                    <span className="px-2 py-0.5 rounded bg-amber-500 text-slate-950 text-[10px] font-bold">
+                      Actualización lista
+                    </span>
+                  )}
                 </h3>
                 <p className="text-xs text-slate-400 mt-1">
-                  Versión: <span className="font-mono-tabular text-amber-300">{manifest?.version || '2.0.0'}</span> · Motor: <span className="text-sky-300">{manifest?.offlineEngine || 'Dexie IndexedDB + Babylon.js GLB'}</span>
+                  Versión local: <span className="font-mono-tabular text-amber-300">{otaStatus?.localVersion || '2.2.0'}</span>
+                  {otaStatus?.pagesVersion && (
+                    <> · GitHub Pages: <span className="font-mono-tabular text-emerald-300">{otaStatus.pagesVersion}</span></>
+                  )}
+                  {otaStatus?.latestCommitSha && (
+                    <> · Commit: <span className="font-mono-tabular text-sky-300">{otaStatus.latestCommitSha}</span></>
+                  )}
                 </p>
+                {otaStatus?.latestCommitMessage && (
+                  <p className="text-[11px] text-slate-400 mt-0.5 truncate max-w-xl">
+                    Último push en GitHub: {otaStatus.latestCommitMessage}
+                  </p>
+                )}
               </div>
-              <PWAInstallButton />
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={handleCheckAndApplyUpdate}
+                  disabled={checkingOta}
+                  className="min-h-[38px] px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${checkingOta ? 'animate-spin' : ''}`} />
+                  {otaStatus?.updateAvailable ? 'Aplicar Actualización' : 'Buscar Actualizaciones'}
+                </button>
+                <PWAInstallButton />
+              </div>
             </div>
 
             <div className="flex items-center justify-between flex-wrap gap-2 pt-2 border-t border-slate-800/80">
@@ -184,75 +289,118 @@ export const ApkSyncDrawer: React.FC<ApkSyncDrawerProps> = ({
                 className="min-h-[38px] px-3 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${syncingCloud ? 'animate-spin' : ''}`} />
-                Sincronizar Nube Ahora
+                Sincronizar Ahora
               </button>
             </div>
           </div>
 
-          {/* 2. Downloadable Android APK Wrapper + GitHub Actions Workflow */}
+          {/* 2. GitHub Repo + APKweb + Optional Cloud API Server Linking */}
           <div className="p-4 rounded-xl bg-[#141a26] border border-slate-800 space-y-3">
-            <div className="flex items-center gap-2 text-sm font-semibold text-amber-300">
-              <FileArchive className="w-4 h-4" />
-              2. Kit APK Android (WebView + Capacitor + GitHub Actions)
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-2 text-sm font-semibold text-amber-300">
+                <FileArchive className="w-4 h-4" />
+                2. Vínculo GitHub Pages + APKweb Auto-Actualizable
+              </div>
+              {otaStatus?.latestReleaseTag && otaStatus.latestApkUrl && (
+                <a
+                  href={otaStatus.latestApkUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs text-emerald-300 hover:text-emerald-200 inline-flex items-center gap-1 font-semibold"
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  APK {otaStatus.latestReleaseTag}
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              )}
             </div>
+
             <p className="text-xs text-slate-300 leading-relaxed">
-              Al compilar el APK desde GitHub Actions, la aplicación precarga todos los modelos <code>.glb</code> medievales y ejecuta el juego en pantalla completa offline usando Dexie IndexedDB y sincronización por fecha <code>updatedAt</code> al recuperar conexión.
+              Cada <code>git push</code> a tu repositorio reconstruye GitHub Pages y el APK en Actions. Cuando la Web o el APKweb tienen internet, descargan la nueva versión del Service Worker y actualizan el juego automáticamente sin perder tu IndexedDB.
             </p>
-            <label className="block text-xs text-slate-400">
-              URL de tu repositorio GitHub:
-              <input
-                type="text"
-                value={repoUrl}
-                onChange={(e) => setRepoUrl(e.target.value)}
-                className="mt-1.5 w-full min-h-[44px] rounded-lg bg-[#0d111a] border border-slate-700 px-3 text-xs font-mono-tabular text-slate-100"
-              />
-            </label>
-            <button
-              onClick={handleDownloadApkKit}
-              disabled={downloadingKit}
-              className="min-h-[44px] px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-slate-950 font-semibold text-xs inline-flex items-center gap-2 cursor-pointer"
-            >
-              <Download className="w-4 h-4" />
-              {downloadingKit ? 'Empaquetando Kit...' : 'Descargar Kit APK + Workflow (.zip)'}
-            </button>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <label className="block text-xs text-slate-400">
+                  Repositorio GitHub vinculado:
+                  <input
+                    type="text"
+                    value={repoUrl}
+                    onChange={(e) => setRepoUrl(e.target.value)}
+                    className="mt-1 w-full min-h-[40px] rounded-lg bg-[#0d111a] border border-slate-700 px-3 text-xs font-mono-tabular text-slate-100"
+                  />
+                </label>
+                <button
+                  onClick={handleSaveGithubLink}
+                  className="min-h-[36px] px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-200 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Link2 className="w-3.5 h-3.5" />
+                  Vincular Repo GitHub
+                </button>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block text-xs text-slate-400">
+                  Servidor Cloud Sync URL (Opcional si usas Backend):
+                  <input
+                    type="text"
+                    value={cloudUrlInput}
+                    placeholder="https://tu-servidor-mu.com (vacío = Offline/Pages)"
+                    onChange={(e) => setCloudUrlInput(e.target.value)}
+                    className="mt-1 w-full min-h-[40px] rounded-lg bg-[#0d111a] border border-slate-700 px-3 text-xs font-mono-tabular text-slate-100"
+                  />
+                </label>
+                <button
+                  onClick={handleSaveCloudUrl}
+                  className="min-h-[36px] px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-200 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Cloud className="w-3.5 h-3.5" />
+                  Guardar URL Cloud Sync
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2.5 flex-wrap pt-1">
+              <button
+                onClick={handleDownloadApkKit}
+                disabled={downloadingKit}
+                className="min-h-[42px] px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-slate-950 font-semibold text-xs inline-flex items-center gap-2 cursor-pointer"
+              >
+                <Download className="w-4 h-4" />
+                {downloadingKit ? 'Empaquetando Kit...' : 'Descargar Kit APK + Workflow (.zip)'}
+              </button>
+              {otaStatus?.pagesUrl && (
+                <a
+                  href={otaStatus.pagesUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="min-h-[42px] px-3.5 rounded-lg bg-[#1a2233] hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-semibold inline-flex items-center gap-1.5"
+                >
+                  <ExternalLink className="w-3.5 h-3.5 text-sky-400" />
+                  Abrir Web GitHub Pages
+                </a>
+              )}
+            </div>
           </div>
 
-          {/* 3. GitHub Push Hygiene & Sync Export */}
-          <div className="p-4 rounded-xl bg-[#141a26] border border-slate-800 space-y-3">
+          {/* 3. GitHub Export */}
+          <div className="p-4 rounded-xl bg-[#141a26] border border-slate-800 space-y-2.5">
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <div className="flex items-center gap-2 text-sm font-semibold text-sky-300">
                 <GitBranch className="w-4 h-4" />
-                3. Registro &amp; Sincronización con Repositorio GitHub
+                3. Registro &amp; Respaldo para Repositorio GitHub
               </div>
               <button
-                onClick={async () => {
-                  await cloudSyncManager.syncNow();
-                  const res = await fetch('/api/cloud/github-export');
-                  if (!res.ok) return;
-                  const blob = new Blob([await res.text()], { type: 'application/json' });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = `github-sync-snapshot-${new Date().toISOString().slice(0, 10)}.json`;
-                  a.click();
-                  URL.revokeObjectURL(url);
-                  setNotice('Instantánea completa de cuentas, inventarios, intercambios y duelos exportada para GitHub.');
-                }}
-                disabled={!syncStatus.isOnline}
-                className="min-h-[38px] px-3 rounded-lg bg-sky-700 hover:bg-sky-600 disabled:opacity-45 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                onClick={handleExportGithubSnapshot}
+                className="min-h-[38px] px-3 rounded-lg bg-sky-700 hover:bg-sky-600 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
               >
                 <Download className="w-3.5 h-3.5" />
                 Exportar Registro GitHub (.json)
               </button>
             </div>
-            <ul className="list-disc pl-5 text-xs text-slate-300 space-y-1.5 leading-relaxed">
-              <li>
-                Al recuperar internet, el juego sincroniza automáticamente cuentas, inventarios, intercambios Wi-Fi/BT y duelos sin borrar nada del modo offline.
-              </li>
-              <li>
-                Cada push al repositorio actualiza el Service Worker (<code>autoUpdate</code>), descargando mapas, texturas y parches al abrir el juego.
-              </li>
-            </ul>
+            <p className="text-xs text-slate-300 leading-relaxed">
+              Tus cuentas, personajes, niveles, resets, ítems ganados en duelos Wi-Fi/BT y eventos quedan guardados en IndexedDB y listos para respaldar o enviar al repositorio GitHub sin pérdida alguna.
+            </p>
           </div>
 
           {/* 4. Dexie IndexedDB Inspector & Backup */}

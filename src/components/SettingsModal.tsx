@@ -180,22 +180,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </button>
           </div>
 
-          {/* Third-Person Camera Distance (Close Character Height) */}
+          {/* Third-Person Camera Distance (Close Character Height ~3.4m) */}
           <div className="p-3.5 rounded-lg bg-[#141a28] border border-slate-800 space-y-2">
             <div className="flex items-center justify-between text-xs">
               <span className="font-semibold text-slate-100">
-                Distancia Cámara 3ra Persona (Altura del Héroe)
+                Distancia Cámara 3ra Persona (Cercana al Héroe)
               </span>
               <span className="font-mono-tabular text-amber-300">
-                {(settings.cameraDistance ?? 6.4).toFixed(1)} m
+                {(settings.cameraDistance ?? 3.4).toFixed(1)} m
               </span>
             </div>
             <input
               type="range"
-              min={4.5}
-              max={12}
-              step={0.3}
-              value={settings.cameraDistance ?? 6.4}
+              min={2.2}
+              max={10.5}
+              step={0.2}
+              value={settings.cameraDistance ?? 3.4}
               onChange={(e) =>
                 onUpdateSettings({ ...settings, cameraDistance: Number(e.target.value) })
               }
@@ -203,14 +203,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             />
           </div>
 
-          {/* 80% Auto-Aim Toggle */}
+          {/* 60% Auto-Aim Toggle */}
           <div className="p-3.5 rounded-lg bg-[#141a28] border border-slate-800 flex items-center justify-between gap-3">
             <div>
               <div className="text-xs font-semibold text-slate-100">
-                Autopuntado Táctico al 80% (10 Héroes)
+                Autopuntado Táctico al 60% (10 Héroes)
               </div>
               <div className="text-[11px] text-slate-400 mt-0.5">
-                Orienta automáticamente tus ataques y habilidades hacia el enemigo más cercano.
+                Orienta automáticamente tus ataques y habilidades con un 60% de probabilidad de impacto asistido hacia el monstruo más cercano.
               </div>
             </div>
             <button
@@ -223,7 +223,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   : 'bg-slate-800 text-slate-300'
               }`}
             >
-              {(settings.autoAimAssist ?? true) ? '80% Activo' : 'Manual'}
+              {(settings.autoAimAssist ?? true) ? '60% Activo' : 'Manual'}
             </button>
           </div>
 

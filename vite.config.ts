@@ -20,7 +20,7 @@ export default defineConfig(() => {
           name: 'MU Lorencia Offline & Sync',
           short_name: 'MU Lorencia',
           description:
-            'Juego Web3D Babylon.js Offline-First con IndexedDB (Dexie), modelos .glb medievales, 6 mapas MU y un mundo Madrigal de 9.44 km², sincronización por timestamp y kit APK.',
+            'Juego Web3D Babylon.js Offline-First con IndexedDB (Dexie), modelos .glb medievales, 4 mapas MU y un mundo Madrigal de 9.44 km², sincronización con GitHub/Cloud y kit APK auto-actualizable.',
           theme_color: '#0c1018',
           background_color: '#0c1018',
           display: 'standalone',
@@ -56,6 +56,10 @@ export default defineConfig(() => {
           skipWaiting: true,
           navigateFallback: 'index.html',
           runtimeCaching: [
+            {
+              urlPattern: /\/ota-manifest\.json$/i,
+              handler: 'NetworkOnly',
+            },
             {
               urlPattern: /\/models\/.*\.glb$/i,
               handler: 'NetworkFirst',
@@ -120,9 +124,7 @@ export default defineConfig(() => {
           enabled: false,
         },
       }),
-      // Copies src/assets into dist/ so root-relative URLs like
-      // "/src/assets/images/..." (e.g. generate_image output) still resolve
-      // in production builds. Do not remove.
+      // Copies src/assets into dist/ and stamps buildTimestamp in dist/ota-manifest.json
       {
         name: 'copy-unbundled-src-assets',
         apply: 'build',
@@ -135,6 +137,16 @@ export default defineConfig(() => {
           const distAssets = path.resolve(distDir, 'src/assets');
           if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
             fs.cpSync(srcAssets, distAssets, {recursive: true, force: true});
+          }
+          const manifestPath = path.resolve(distDir, 'ota-manifest.json');
+          if (fs.existsSync(manifestPath)) {
+            try {
+              const parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+              parsed.buildTimestamp = new Date().toISOString();
+              fs.writeFileSync(manifestPath, JSON.stringify(parsed, null, 2), 'utf8');
+            } catch {
+              // ignore
+            }
           }
         },
       },

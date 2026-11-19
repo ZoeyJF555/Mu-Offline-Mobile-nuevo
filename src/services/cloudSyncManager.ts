@@ -8,6 +8,11 @@ import {
   upsertAccountFromCloud,
   upsertCharacterFromCloud,
 } from '../db/dexieStore';
+import {
+  getConfiguredCloudApiUrl,
+  getLinkedGithubRepoSlug,
+  probeSameOriginBackend,
+} from './githubOtaService';
 import type { AsyncDuelChallenge, MuAccount, MuCharacter, SyncStatusInfo } from '../types/game';
 
 export interface CloudSyncResponse {
@@ -34,6 +39,20 @@ export class CloudSyncManager {
   private debounceTimer: number | null = null;
   private periodicTimer: number | null = null;
   private started = false;
+  private cachedSameOriginApi: boolean | null = null;
+
+  private async resolveApiBase(): Promise<string | null> {
+    const customUrl = getConfiguredCloudApiUrl();
+    if (customUrl) return customUrl;
+    if (this.cachedSameOriginApi === null) {
+      this.cachedSameOriginApi = await probeSameOriginBackend();
+    }
+    return this.cachedSameOriginApi ? '' : null;
+  }
+
+  resetApiProbe() {
+    this.cachedSameOriginApi = null;
+  }
 
   start() {
     if (this.started) return;
@@ -103,9 +122,10 @@ export class CloudSyncManager {
   }
 
   private handleOnline = () => {
+    this.cachedSameOriginApi = null;
     this.emitStatus({
       isOnline: true,
-      lastMessage: 'Conexión detectada · Sincronizando cambios locales con la nube...',
+      lastMessage: 'Conexión detectada · Verificando actualizaciones y sincronización...',
     });
     this.scheduleSync(350);
   };
@@ -134,6 +154,7 @@ export class CloudSyncManager {
    * Sincronización bidireccional con Regla de Oro contra Sobreescritura:
    * - Solo envía registros con isSynced = false.
    * - Compara timestamps `updatedAt`: el registro más reciente siempre gana (local vs nube).
+   * - En GitHub Pages o APK sin backend propio configurado, mantiene IndexedDB local activo sin falsos errores.
    */
   async syncNow(): Promise<{ ok: boolean; message: string }> {
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
@@ -146,11 +167,27 @@ export class CloudSyncManager {
       return { ok: true, message: 'Sincronización en curso...' };
     }
 
+    const apiBase = await this.resolveApiBase();
+    if (apiBase === null) {
+      const remaining = await countPendingSync();
+      const msg = 'GitHub Pages / APK Offline-First activo · Progreso seguro en IndexedDB';
+      this.emitStatus({
+        isOnline: true,
+        syncing: false,
+        pendingCount: remaining,
+        lastMessage: msg,
+      });
+      return {
+        ok: true,
+        message: 'Modo GitHub Pages / APK activo: todo tu progreso está seguro en IndexedDB y las actualizaciones llegan desde GitHub.',
+      };
+    }
+
     this.emitStatus({ isOnline: true, syncing: true });
 
     try {
       const pending = await getAllSyncRecordsForCloud();
-      const res = await fetch('/api/cloud/sync', {
+      const res = await fetch(`${apiBase}/api/cloud/sync`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -209,10 +246,48 @@ export class CloudSyncManager {
       this.emitStatus({
         syncing: false,
         pendingCount: remaining,
-        lastMessage: 'Nube no accesible temporalmente · Modo Offline-First activo.',
+        lastMessage: 'Servidor Cloud remoto no respondió · Modo Offline-First activo.',
       });
-      return { ok: false, message: 'No se pudo conectar con la API Cloud Sync.' };
+      return {
+        ok: false,
+        message: 'El servidor Cloud configurado no respondió. Tus datos locales siguen seguros en IndexedDB.',
+      };
     }
+  }
+
+  async buildGithubSyncSnapshotJson(): Promise<string> {
+    const apiBase = await this.resolveApiBase();
+    if (apiBase !== null && navigator.onLine) {
+      try {
+        await this.syncNow();
+        const res = await fetch(`${apiBase}/api/cloud/github-export`);
+        if (res.ok && (res.headers.get('content-type') || '').includes('json')) {
+          return await res.text();
+        }
+      } catch {
+        // Fallback to local Dexie snapshot below
+      }
+    }
+
+    const records = await getAllSyncRecordsForCloud();
+    return JSON.stringify(
+      {
+        repository: getLinkedGithubRepoSlug(),
+        exportedAt: new Date().toISOString(),
+        version: '2.2.0',
+        source: 'dexie-indexeddb-local',
+        summary: {
+          accounts: records.accounts.length,
+          characters: records.characters.length,
+          ledgerEntries: records.ledger.length,
+          duelRecords: records.duels.length,
+          eventSessions: records.events.length,
+        },
+        data: records,
+      },
+      null,
+      2,
+    );
   }
 
   async fetchRecoveryQuestionsFromCloud(
@@ -221,9 +296,13 @@ export class CloudSyncManager {
     if (!navigator.onLine) {
       return { found: false, error: 'Sin internet para consultar la nube.' };
     }
+    const apiBase = await this.resolveApiBase();
+    if (apiBase === null) {
+      return { found: false, error: 'Sin servidor Cloud remoto vinculado en este dispositivo.' };
+    }
     try {
       const res = await fetch(
-        `/api/cloud/recovery-questions?username=${encodeURIComponent(username.trim().toLowerCase())}`,
+        `${apiBase}/api/cloud/recovery-questions?username=${encodeURIComponent(username.trim().toLowerCase())}`,
       );
       if (!res.ok) return { found: false };
       const data = (await res.json()) as { found: boolean; secretQ1?: string; secretQ2?: string };
@@ -245,8 +324,12 @@ export class CloudSyncManager {
     if (!navigator.onLine) {
       return { ok: false, error: 'Sin conexión a internet para recuperar desde la nube.' };
     }
+    const apiBase = await this.resolveApiBase();
+    if (apiBase === null) {
+      return { ok: false, error: 'Configura la URL del Servidor Cloud Sync o usa recuperación local.' };
+    }
     try {
-      const res = await fetch('/api/cloud/recover', {
+      const res = await fetch(`${apiBase}/api/cloud/recover`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -287,8 +370,10 @@ export class CloudSyncManager {
 
   async publishDuelChallenge(challenge: AsyncDuelChallenge): Promise<boolean> {
     if (!navigator.onLine) return false;
+    const apiBase = await this.resolveApiBase();
+    if (apiBase === null) return false;
     try {
-      const res = await fetch('/api/duels/challenge', {
+      const res = await fetch(`${apiBase}/api/duels/challenge`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(challenge),
@@ -301,8 +386,10 @@ export class CloudSyncManager {
 
   async fetchDuelChallenges(): Promise<AsyncDuelChallenge[]> {
     if (!navigator.onLine) return [];
+    const apiBase = await this.resolveApiBase();
+    if (apiBase === null) return [];
     try {
-      const res = await fetch('/api/duels/challenges');
+      const res = await fetch(`${apiBase}/api/duels/challenges`);
       if (!res.ok) return [];
       const data = (await res.json()) as { challenges?: AsyncDuelChallenge[] };
       return data.challenges || [];

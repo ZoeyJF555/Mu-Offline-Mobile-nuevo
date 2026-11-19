@@ -28,8 +28,11 @@ export class FlyffContent {
   private collisionTiles = "";
 
   private streaming = false;
-  private streamClock = 1;
+  private streamQueued = false;
+  private streamClock = 0.45;
   private worldClock = 0;
+  private lastStreamX = Number.NaN;
+  private lastStreamZ = Number.NaN;
   private pendingSounds: Promise<void> | null = null;
   private volume = .7;
   private muted = false;
@@ -102,14 +105,24 @@ export class FlyffContent {
       this.actor.play(index===0?'attack':'cast_release',false);
     }
     const point=this.actor.root.getAbsolutePosition().add(new Vector3(0,.5,0));
-    void this.effects.spawn(`efectos/${recipe[0]}.json`,point,.65).catch(this.onError);
+    void this.effects.spawn(`efectos/${recipe[0]}.json`,point,.72).catch(this.onError);
     void this.audio?.play(recipe[1],.5).catch(this.onError);
     void this.audio?.play(index===0?`attack_${this.actor.config.sex}`:'cast_fire',.3).catch(this.onError);
   }
   impact(x:number,z:number) {
     const y=this.world?this.height(x,z):0;
-    void this.effects.spawn('efectos/sfx_hitsword01.json',new Vector3(x,y+.8,z),.5).catch(this.onError);
+    void this.effects.spawn('efectos/sfx_hitsword01.json',new Vector3(x,y+.8,z),.55).catch(this.onError);
     void this.audio?.play('hit_sword',.3).catch(this.onError);
+  }
+  private ensureTilesVisible(world: FlyffWorld) {
+    for (const tile of world.tiles.values()) {
+      tile.root.parent = this.origin;
+      tile.root.setEnabled(true);
+      for (const m of tile.root.getChildMeshes(false)) {
+        m.setEnabled(true);
+        m.isVisible = true;
+      }
+    }
   }
   async loadWorld(x:number,z:number) {
     const generation=++this.worldGeneration;this.loadingWorld=true;
@@ -125,9 +138,11 @@ export class FlyffContent {
         next.lava.parent=this.origin;
         next.rootParent=this.origin;
       }
-      await next.stream(x+ORIGIN,z+ORIGIN,0,100);
+      this.lastStreamX = x;
+      this.lastStreamZ = z;
+      await next.stream(x+ORIGIN,z+ORIGIN,0,360);
       if(!this.disposed&&generation===this.worldGeneration) {
-        for(const tile of next.tiles.values())tile.root.parent=this.origin;
+        this.ensureTilesVisible(next);
         this.refreshCollision();
       }
     } catch (err) {
@@ -138,18 +153,35 @@ export class FlyffContent {
   }
   clearWorld(invalidate=true) {
     if(invalidate){this.worldGeneration++;this.loadingWorld=false;}
+    this.lastStreamX = Number.NaN;
+    this.lastStreamZ = Number.NaN;
+    this.streamQueued = false;
     this.world?.dispose();this.world=null;this.origin?.dispose();this.origin=null;this.collision.rebuild([]);this.collisionTiles="";
   }
   private async stream(x:number,z:number) {
-    const world=this.world;const generation=this.worldGeneration;if(!world||this.streaming||this.disposed)return;
+    const world=this.world;const generation=this.worldGeneration;
+    if(!world||this.disposed)return;
+    if(this.streaming){this.streamQueued=true;return;}
     this.streaming=true;
-    try {await world.stream(x+ORIGIN,z+ORIGIN,0,100);
-      if(world===this.world&&!this.disposed&&generation===this.worldGeneration){for(const tile of world.tiles.values())tile.root.parent=this.origin;this.refreshCollision();}
+    this.lastStreamX = x;
+    this.lastStreamZ = z;
+    try {
+      await world.stream(x+ORIGIN,z+ORIGIN,0,360);
+      if(world===this.world&&!this.disposed&&generation===this.worldGeneration){
+        this.ensureTilesVisible(world);
+        this.refreshCollision();
+      }
     } catch (err) {
       if (!this.disposed && generation === this.worldGeneration && !(err instanceof Error && err.message === 'World disposed')) {
         throw err;
       }
-    } finally {this.streaming=false;}
+    } finally {
+      this.streaming=false;
+      if(this.streamQueued&&!this.disposed&&this.world===world){
+        this.streamQueued=false;
+        this.worldClock=this.streamClock;
+      }
+    }
   }
   height(x:number,z:number) {return this.world?.heightAt(x+ORIGIN,z+ORIGIN)??0;}
   safe(x:number,z:number) {return Boolean(this.world?.manifest.cities.some((c:any)=>Math.max(Math.abs(x+ORIGIN-c.x),Math.abs(z+ORIGIN-c.z))<c.sizeMeters/2));}
@@ -175,7 +207,11 @@ export class FlyffContent {
   }
   update(dt:number,x:number,z:number,moving:boolean,rotation:number) {
     this.effects.update(dt);this.world?.update(dt);this.worldClock+=dt;
-    if(this.world&&!this.loadingWorld&&this.worldClock>this.streamClock){this.worldClock=0;void this.stream(x,z).catch(this.onError);}
+    const movedDist = Number.isFinite(this.lastStreamX) ? Math.hypot(x - this.lastStreamX, z - this.lastStreamZ) : 999;
+    if(this.world&&!this.loadingWorld&&(movedDist>=24||this.worldClock>=this.streamClock)){
+      this.worldClock=0;
+      void this.stream(x,z).catch(this.onError);
+    }
     if(this.actor){this.actor.root.rotation.y=rotation;
       this.actor.update(dt,{moving,running:true,height:0,surface:this.world?.surfaceAt(x+ORIGIN,z+ORIGIN)??'land'});
     }
