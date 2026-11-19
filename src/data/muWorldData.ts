@@ -410,6 +410,26 @@ export const MU_MAPS: MuMapConfig[] = [
   },
 ];
 
+// Four arrival points in one continuous 3.072 km world.
+const flyffDestinations = [
+  { id: 'flaris', name: 'Flaris', x: -200, z: -255, safe: true },
+  { id: 'robledal', name: 'Villa del Robledal', x: -1016, z: 904, safe: true },
+  { id: 'puerto', name: 'Puerto de Bruma', x: 764, z: 854, safe: true },
+  { id: 'ceniza', name: 'Cráter de Ceniza', x: 710, z: -1046, safe: false },
+] as const;
+for (const [index, dest] of flyffDestinations.entries()) {
+  MU_MAPS.push({ ...MU_MAPS[0], id: dest.id, name: dest.name,
+    subtitle: 'Madrigal · mundo continuo de 3.072 × 3.072 m',
+    worldIndex: 20 + index, assetWorld: 'flyff', sizeMeters: 3072,
+    areaKm2: 9.437184, cityRadius: dest.safe ? 360 : 0,
+    weather: dest.id === 'ceniza' ? 'embers' : 'leaves',
+    targetMonsterCount: 24000, minLevel: 1, warpZen: 0, fogDensity: .0018,
+    spawn: { x: dest.x, z: dest.z },
+    npcs: MU_MAPS[0].npcs.map(n => ({ ...n, id: `${dest.id}-${n.id}`,
+      x: dest.x + n.x, z: dest.z + n.z })),
+  });
+}
+
 export function getMapById(mapId: MapId): MuMapConfig {
   return MU_MAPS.find((m) => m.id === mapId) || MU_MAPS[0];
 }

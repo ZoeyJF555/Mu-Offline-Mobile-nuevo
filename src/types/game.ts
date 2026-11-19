@@ -1,6 +1,9 @@
 export type HeroClass = 'DK' | 'DW' | 'ELF' | 'DL' | 'MG';
 
+export type CharacterSex = 'male' | 'female';
+
 export type MapId =
+  | 'flaris' | 'robledal' | 'puerto' | 'ceniza'
   | 'lorencia'
   | 'noria'
   | 'devias'
@@ -106,6 +109,7 @@ export interface MuItem {
   luck: boolean;
   excellentOpt: string;
   isEquipped: boolean;
+  durability?: number; // Missing values in old saves mean 100%.
   originalOwner: string;
   sharedFromSession: string | null;
   acquiredAt: string;
@@ -117,6 +121,7 @@ export interface MuCharacter {
   name: string;
   class: HeroClass;
   classType: HeroClass;
+  sex?: CharacterSex; // Backward compatible with old characters.
   level: number;
   xp: number;
   xpToNext: number;
@@ -239,9 +244,12 @@ export interface ChatMessageRecord {
 }
 
 export interface RoomPeer {
+  currentMapId?: MapId;
+  equipment?: MuItem[];
   peerId: string;
   name: string;
   classType: HeroClass;
+  sex?: CharacterSex; // Backward compatible with old characters.
   level: number;
   role: 'host' | 'guest';
   transport: TransportMode;
@@ -339,6 +347,8 @@ export type GroundTheme =
   | 'vulcanus';
 
 export interface MuMapConfig {
+  assetWorld?: 'flyff';
+  spawn?: { x: number; z: number };
   id: MapId;
   worldIndex: number;
   name: string;

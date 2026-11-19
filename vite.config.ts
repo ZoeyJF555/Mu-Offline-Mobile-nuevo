@@ -20,7 +20,7 @@ export default defineConfig(() => {
           name: 'MU Lorencia Offline & Sync',
           short_name: 'MU Lorencia',
           description:
-            'Juego Web3D Babylon.js Offline-First con IndexedDB (Dexie), modelos .glb medievales, 6 mapas de 1-1.6 km², sincronización por timestamp y kit APK.',
+            'Juego Web3D Babylon.js Offline-First con IndexedDB (Dexie), modelos .glb medievales, 6 mapas MU y un mundo Madrigal de 9.44 km², sincronización por timestamp y kit APK.',
           theme_color: '#0c1018',
           background_color: '#0c1018',
           display: 'standalone',
@@ -49,7 +49,7 @@ export default defineConfig(() => {
           ],
         },
         workbox: {
-          globPatterns: ['**/*.{js,css,html,ico,png,svg,glb,woff,woff2}'],
+          globPatterns: ['**/*.{js,css,html,ico,png,svg,glb,woff,woff2,json,f32,u8,wav}', 'flyff/licencias/*.txt'],
           maximumFileSizeToCacheInBytes: 25 * 1024 * 1024,
           cleanupOutdatedCaches: true,
           clientsClaim: true,

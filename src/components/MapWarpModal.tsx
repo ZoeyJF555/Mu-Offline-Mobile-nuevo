@@ -28,7 +28,7 @@ export const MapWarpModal: React.FC<MapWarpModalProps> = ({
             <Compass className="w-5 h-5 text-amber-400" />
             <div>
               <h2 className="font-display text-sm sm:text-base font-bold text-amber-300">
-                Ventana de Teletransporte (M) · 6 Reinos MU Online (1.00–1.60 km²)
+                Teletransporte · Reinos MU y Madrigal (9,44 km²)
               </h2>
               <p className="text-[11px] text-slate-400 font-mono-tabular">
                 Nivel actual: {character.level} · Zen disponible: {character.zen.toLocaleString()} · Cada mapa posee capital segura y hasta 45,000 monstruos fuera de ciudad
@@ -79,7 +79,7 @@ export const MapWarpModal: React.FC<MapWarpModalProps> = ({
                 <div className="flex items-center justify-between text-[11px] font-mono-tabular text-slate-300 bg-[#0b1019] rounded-lg px-2.5 py-1.5 border border-slate-800/80">
                   <span className="inline-flex items-center gap-1 text-emerald-300">
                     <Shield className="w-3 h-3" />
-                    Capital {m.cityRadius}m
+                    {m.cityRadius ? `Zona segura ${m.cityRadius * 2}m` : 'Zona de caza'}
                   </span>
                   <span className="text-amber-200">
                     {m.areaKm2.toFixed(2)} km² · {m.targetMonsterCount.toLocaleString()} mobs

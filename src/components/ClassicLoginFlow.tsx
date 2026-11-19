@@ -47,11 +47,11 @@ interface ClassicLoginFlowProps {
     newPassword: string;
   }) => Promise<{ ok: boolean; message?: string; error?: string }>;
   onSelectCharacter: (charId: string) => void;
-  onCreateCharacter: (name: string, classType: HeroClass) => Promise<void>;
+  onCreateCharacter: (name: string, classType: HeroClass, sex: 'male' | 'female') => Promise<void>;
   onEnterWorld: () => void;
   onLogoutAccount: () => void;
   onOpenApkCenter: () => void;
-  onPreviewClass: (classType: HeroClass) => void;
+  onPreviewClass: (classType: HeroClass, sex?: 'male' | 'female') => void;
 }
 
 const PRESET_QUESTIONS_1 = [
@@ -118,6 +118,7 @@ export const ClassicLoginFlow: React.FC<ClassicLoginFlowProps> = ({
   // Character creation
   const [creatingChar, setCreatingChar] = useState(false);
   const [newCharName, setNewCharName] = useState('');
+  const [newCharSex, setNewCharSex] = useState<'male' | 'female'>('male');
   const [newCharClass, setNewCharClass] = useState<HeroClass>('DK');
 
   const clearFeedback = () => {
@@ -226,7 +227,7 @@ export const ClassicLoginFlow: React.FC<ClassicLoginFlowProps> = ({
   const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newCharName.trim()) return;
-    await onCreateCharacter(newCharName.trim(), newCharClass);
+    await onCreateCharacter(newCharName.trim(), newCharClass, newCharSex);
     setNewCharName('');
     setCreatingChar(false);
   };
@@ -297,7 +298,7 @@ export const ClassicLoginFlow: React.FC<ClassicLoginFlowProps> = ({
                 fontSize="12"
                 letterSpacing="3"
               >
-                6 REINOS 3D · INDEXEDDB &amp; CLOUD SYNC
+                MU + MADRIGAL · 10 VARIANTES 3D
               </text>
             </svg>
           </div>
@@ -655,14 +656,14 @@ export const ClassicLoginFlow: React.FC<ClassicLoginFlowProps> = ({
               <div className="flex items-center gap-2">
                 <Users className="w-4 h-4 text-amber-400" />
                 <h2 className="font-display text-sm font-bold text-amber-300">
-                  Selección de Personaje ({characters.length}/5)
+                  Selección de Personaje ({characters.length}/10)
                 </h2>
               </div>
-              {characters.length < 5 && !creatingChar && (
+              {characters.length < 10 && !creatingChar && (
                 <button
                   onClick={() => {
                     setCreatingChar(true);
-                    onPreviewClass(newCharClass);
+                    onPreviewClass(newCharClass, newCharSex);
                   }}
                   className="min-h-[38px] px-3 rounded-lg bg-amber-600/20 border border-amber-500/60 hover:bg-amber-600/30 text-amber-200 text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
                 >
@@ -695,7 +696,7 @@ export const ClassicLoginFlow: React.FC<ClassicLoginFlowProps> = ({
                         <div>
                           <div className="text-sm font-bold text-slate-100">{ch.name}</div>
                           <div className="text-xs text-slate-400 font-mono-tabular">
-                            {clsMeta?.name || ch.classType} · Nv.{ch.level} · {ch.isSynced ? 'Sync OK' : 'Local'}
+                            {clsMeta?.name || ch.classType} · {ch.sex === 'female' ? 'Femenino' : 'Masculino'} · Nv.{ch.level} · {ch.isSynced ? 'Sync OK' : 'Local'}
                           </div>
                         </div>
                         <span className="text-xs font-mono-tabular text-amber-300">
@@ -718,7 +719,7 @@ export const ClassicLoginFlow: React.FC<ClassicLoginFlowProps> = ({
                       type="button"
                       onClick={() => {
                         setNewCharClass(cls.id);
-                        onPreviewClass(cls.id);
+                        onPreviewClass(cls.id, newCharSex);
                       }}
                       className={`p-2.5 rounded-lg border text-left cursor-pointer ${
                         newCharClass === cls.id
@@ -731,6 +732,14 @@ export const ClassicLoginFlow: React.FC<ClassicLoginFlowProps> = ({
                     </button>
                   ))}
                 </div>
+                <fieldset className="flex gap-2" aria-label="Variante del personaje">
+                  {(['male', 'female'] as const).map(sex => <button key={sex} type="button"
+                    aria-pressed={newCharSex === sex}
+                    onClick={() => { setNewCharSex(sex); onPreviewClass(newCharClass, sex); }}
+                    className={`flex-1 min-h-[42px] rounded border ${newCharSex === sex ? 'border-amber-400 bg-amber-900/40' : 'border-slate-600'}`}>
+                    {sex === 'male' ? 'Masculino' : 'Femenino'}
+                  </button>)}
+                </fieldset>
                 <input
                   type="text"
                   value={newCharName}
@@ -770,7 +779,7 @@ export const ClassicLoginFlow: React.FC<ClassicLoginFlowProps> = ({
               </button>
               <div className="text-xs text-slate-300 font-mono-tabular flex items-center gap-1.5">
                 <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                6 Mapas (1.0–1.6 km²) · Capitales Seguras · Controles PUBG
+                6 Reinos MU + Madrigal (9,44 km²) · Capitales Seguras
               </div>
             </div>
           )}

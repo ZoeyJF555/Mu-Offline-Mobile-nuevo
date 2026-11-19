@@ -19,7 +19,7 @@ export const CharacterStatsModal: React.FC<CharacterStatsModalProps> = ({
 }) => {
   if (!open) return null;
 
-  const equipped = items.filter((i) => i.isEquipped);
+  const equipped = items.filter((i) => i.isEquipped && (i.durability ?? 100) > 0);
   const gearMinDmg = equipped.reduce((s, i) => s + i.minDmg, 0);
   const gearMaxDmg = equipped.reduce((s, i) => s + i.maxDmg, 0);
   const gearDef = equipped.reduce((s, i) => s + i.defense, 0);
