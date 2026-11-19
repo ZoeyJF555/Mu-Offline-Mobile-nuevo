@@ -548,12 +548,12 @@ export class MuWorldEngine {
     const generation = ++this.accessoryGeneration, actor = this.flyff.actor;
     this.heroAccessories.forEach(n => n.dispose()); this.heroAccessories = [];
     if (!actor) return;
-    for (const [slot, file, socket, scale] of [['wings','wings_angel.glb','Bip02 Spine2',.6]] as const) {
+    for (const [slot, file, scale] of [['wings', 'wings_angel.glb', 0.45]] as const) {
       if (!this.heroEquippedItems.some(i => i.slot === slot && i.isEquipped && (i.durability ?? 100) > 0)) continue;
-      const parent = actor.outfit.transformNodes.find(n => n.name === socket);
-      if (!parent) continue;
-      const accessory = await this.assetManager.instantiateModel(file, `hero_${slot}`, parent, {scale});
+      const accessory = await this.assetManager.instantiateModel(file, `hero_${slot}`, actor.root, { scale });
       if (generation !== this.accessoryGeneration || this.disposed || actor !== this.flyff.actor) { accessory.root.dispose(); return; }
+      accessory.root.position.set(0, 1.02, 0.15);
+      this.heroWingsNode = accessory.root;
       this.heroAccessories.push(accessory.root);
     }
   }
@@ -611,7 +611,9 @@ export class MuWorldEngine {
       if (mySeq !== this.loadSeq || this.disposed) return;
       if (resetHeroPosition) {
         this.heroX = mapCfg.spawn.x; this.heroZ = mapCfg.spawn.z;
-        this.heroRoot.position.set(this.heroX, this.getTerrainHeight(this.heroX, this.heroZ), this.heroZ);
+        const spawnY = this.getTerrainHeight(this.heroX, this.heroZ);
+        this.heroRoot.position.set(this.heroX, spawnY, this.heroZ);
+        this.camera.target.set(this.heroX, spawnY + 1.6, this.heroZ);
       }
       for (const npcDef of mapCfg.npcs) {
         const inst = await this.assetManager.instantiateModel(npcDef.role === 'chaos_goblin' ? 'npc_goblin.glb' : 'npc_merchant.glb', `npc_${npcDef.id}`, this.cityRoot);
@@ -666,6 +668,7 @@ export class MuWorldEngine {
       this.heroZ = 8;
       this.heroRotY = Math.PI;
       this.heroRoot.position = new Vector3(0, 0, 8);
+      this.camera.target.set(0, 1.6, 8);
     }
 
     // Build Capital City Medieval Architecture, NPCs, Bots, Outskirts Flora, and <= 50,000 Monsters

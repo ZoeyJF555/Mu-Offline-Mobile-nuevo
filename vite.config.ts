@@ -49,20 +49,37 @@ export default defineConfig(() => {
           ],
         },
         workbox: {
-          globPatterns: ['**/*.{js,css,html,ico,png,svg,glb,woff,woff2,json,f32,u8,wav}', 'flyff/licencias/*.txt'],
-          maximumFileSizeToCacheInBytes: 25 * 1024 * 1024,
+          globPatterns: ['**/*.{js,css,html,ico,png,svg,webmanifest}'],
+          maximumFileSizeToCacheInBytes: 10 * 1024 * 1024,
           cleanupOutdatedCaches: true,
           clientsClaim: true,
           skipWaiting: true,
+          navigateFallback: 'index.html',
           runtimeCaching: [
             {
               urlPattern: /\/models\/.*\.glb$/i,
-              handler: 'CacheFirst',
+              handler: 'NetworkFirst',
               options: {
-                cacheName: 'mu-3d-glb-models-cache',
+                cacheName: 'mu-3d-assets-v2',
+                networkTimeoutSeconds: 3,
                 expiration: {
                   maxEntries: 80,
-                  maxAgeSeconds: 60 * 60 * 24 * 365,
+                  maxAgeSeconds: 60 * 60 * 24 * 30,
+                },
+                cacheableResponse: {
+                  statuses: [0, 200],
+                },
+              },
+            },
+            {
+              urlPattern: /\/flyff\/.*\.(?:glb|json|png|f32|u8|wav|txt)$/i,
+              handler: 'NetworkFirst',
+              options: {
+                cacheName: 'mu-flyff-assets-v2',
+                networkTimeoutSeconds: 3,
+                expiration: {
+                  maxEntries: 1000,
+                  maxAgeSeconds: 60 * 60 * 24 * 30,
                 },
                 cacheableResponse: {
                   statuses: [0, 200],
@@ -71,7 +88,7 @@ export default defineConfig(() => {
             },
             {
               urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
-              handler: 'CacheFirst',
+              handler: 'StaleWhileRevalidate',
               options: {
                 cacheName: 'google-fonts-cache',
                 expiration: {
@@ -100,8 +117,7 @@ export default defineConfig(() => {
           ],
         },
         devOptions: {
-          enabled: true,
-          type: 'module',
+          enabled: false,
         },
       }),
       // Copies src/assets into dist/ so root-relative URLs like

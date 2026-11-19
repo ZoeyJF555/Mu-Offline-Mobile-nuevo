@@ -244,7 +244,14 @@ export class FlyffWorld {
     try {
       const [terrain, surface] = await Promise.all([importGLB(this.scene, this.base, tile.terrain), fetch(new URL(tile.surface,this.base)).then(r=>{if(!r.ok)throw new Error('Surface unavailable');return r.arrayBuffer();}).then(b=>new Uint8Array(b))]);
       terrain.meshes.forEach(m=>{if(m.material)ownedMaterials.add(m.material);});
-      terrain.meshes.filter(m => !m.parent).forEach(m => { m.parent = root; m.position.x += tile.x; m.position.z += tile.z; });
+      terrain.meshes.filter(m => !m.parent).forEach(m => {
+        m.parent = root;
+        m.rotationQuaternion = null;
+        m.rotation.setAll(0);
+        m.scaling.set(1, 1, -1);
+        m.position.x += tile.x;
+        m.position.z += tile.z;
+      });
       if(this.disposed)throw new Error('World disposed');
       const models = [...new Set(tile.objects.map(o => o.model))];
       // Bound acquisition concurrency: large cities should not issue hundreds of requests at once.
