@@ -16,98 +16,28 @@ const MOTIFS: Record<string, MusicMotif> = {
     leadWave: 'triangle',
     padWave: 'sine',
   },
-  lorencia: {
-    bpm: 92,
+  flaris: {
+    bpm: 94,
     notes: [62, 65, 69, 74, 72, 69, 65, 67, 62, 65, 69, 72, 70, 69, 65, 64],
     bass: [38, 0, 45, 0, 41, 0, 45, 0, 38, 0, 43, 0, 45, 0, 38, 0],
     leadWave: 'triangle',
     padWave: 'sine',
   },
-  dungeon: {
-    bpm: 72,
-    notes: [52, 0, 55, 54, 52, 0, 48, 51, 52, 0, 59, 58, 55, 0, 52, 0],
-    bass: [28, 0, 28, 0, 31, 0, 29, 0, 28, 0, 36, 0, 35, 0, 28, 0],
-    leadWave: 'sawtooth',
-    padWave: 'triangle',
-  },
-  devias: {
-    bpm: 84,
-    notes: [67, 71, 74, 79, 76, 74, 71, 69, 67, 71, 74, 78, 76, 74, 71, 0],
-    bass: [43, 0, 50, 0, 48, 0, 47, 0, 43, 0, 50, 0, 45, 0, 43, 0],
-    leadWave: 'sine',
-    padWave: 'sine',
-  },
-  noria: {
+  robledal: {
     bpm: 96,
     notes: [64, 68, 71, 76, 73, 71, 68, 69, 64, 68, 73, 76, 75, 73, 71, 68],
     bass: [40, 0, 47, 0, 44, 0, 45, 0, 40, 0, 49, 0, 47, 0, 40, 0],
     leadWave: 'sine',
     padWave: 'triangle',
   },
-  losttower: {
-    bpm: 102,
-    notes: [57, 60, 63, 64, 63, 60, 57, 56, 57, 64, 68, 69, 68, 64, 60, 56],
-    bass: [33, 33, 36, 36, 35, 35, 32, 32, 33, 33, 40, 40, 39, 39, 32, 32],
-    leadWave: 'sawtooth',
-    padWave: 'triangle',
-  },
-  stadium: {
-    bpm: 112,
-    notes: [60, 60, 67, 65, 63, 60, 63, 65, 67, 70, 72, 70, 67, 65, 63, 67],
-    bass: [36, 0, 36, 43, 39, 0, 41, 0, 43, 0, 48, 0, 43, 41, 39, 36],
-    leadWave: 'square',
-    padWave: 'sawtooth',
-  },
-  atlans: {
-    bpm: 76,
+  puerto: {
+    bpm: 82,
     notes: [60, 64, 67, 71, 72, 71, 67, 64, 62, 65, 69, 72, 71, 67, 64, 0],
     bass: [36, 0, 43, 0, 40, 0, 43, 0, 38, 0, 45, 0, 43, 0, 36, 0],
     leadWave: 'sine',
     padWave: 'sine',
   },
-  tarkan: {
-    bpm: 98,
-    notes: [62, 63, 67, 68, 67, 63, 62, 60, 62, 67, 70, 72, 70, 68, 67, 63],
-    bass: [38, 0, 38, 45, 38, 0, 43, 0, 38, 0, 46, 0, 45, 0, 38, 0],
-    leadWave: 'triangle',
-    padWave: 'sawtooth',
-  },
-  icarus: {
-    bpm: 86,
-    notes: [69, 72, 76, 81, 79, 76, 74, 72, 69, 72, 76, 79, 81, 79, 76, 0],
-    bass: [45, 0, 52, 0, 48, 0, 50, 0, 45, 0, 52, 0, 53, 0, 45, 0],
-    leadWave: 'sine',
-    padWave: 'triangle',
-  },
-  aida: {
-    bpm: 88,
-    notes: [64, 67, 71, 74, 72, 71, 69, 67, 64, 69, 72, 76, 74, 72, 71, 67],
-    bass: [40, 0, 47, 0, 45, 0, 43, 0, 40, 0, 48, 0, 47, 0, 40, 0],
-    leadWave: 'triangle',
-    padWave: 'sine',
-  },
-  kanturu: {
-    bpm: 108,
-    notes: [59, 64, 66, 71, 69, 66, 64, 62, 59, 64, 67, 71, 74, 71, 67, 66],
-    bass: [35, 35, 42, 42, 40, 40, 38, 38, 35, 35, 43, 43, 47, 47, 42, 35],
-    leadWave: 'sawtooth',
-    padWave: 'triangle',
-  },
-  elbeland: {
-    bpm: 94,
-    notes: [65, 69, 72, 77, 76, 72, 69, 70, 65, 69, 74, 77, 76, 74, 72, 69],
-    bass: [41, 0, 48, 0, 45, 0, 46, 0, 41, 0, 50, 0, 48, 0, 41, 0],
-    leadWave: 'sine',
-    padWave: 'triangle',
-  },
-  raklion: {
-    bpm: 80,
-    notes: [61, 64, 68, 73, 71, 68, 66, 64, 61, 64, 68, 71, 73, 71, 68, 0],
-    bass: [37, 0, 44, 0, 42, 0, 40, 0, 37, 0, 44, 0, 45, 0, 37, 0],
-    leadWave: 'sine',
-    padWave: 'sine',
-  },
-  vulcanus: {
+  ceniza: {
     bpm: 118,
     notes: [56, 59, 63, 64, 68, 64, 63, 59, 56, 64, 68, 71, 68, 64, 63, 59],
     bass: [32, 32, 32, 39, 36, 36, 35, 35, 32, 32, 40, 40, 39, 39, 35, 32],
@@ -185,7 +115,7 @@ class MuSoundSynth {
   }
 
   public playMapMusic(theme: string, bed: AmbientBedKind = 'none') {
-    this.activeTheme = MOTIFS[theme] ? theme : 'lorencia';
+    this.activeTheme = MOTIFS[theme] ? theme : 'flaris';
     this.activeBed = bed;
     this.stepIdx = 0;
     if (this.musicEnabled) {
@@ -208,7 +138,7 @@ class MuSoundSynth {
       this.seqTimer = null;
     }
     if (!this.musicEnabled || this.musicVolume <= 0.01) return;
-    const motif = MOTIFS[this.activeTheme] || MOTIFS.lorencia;
+    const motif = MOTIFS[this.activeTheme] || MOTIFS.flaris;
     const stepMs = Math.round((60 / motif.bpm / 2) * 1000);
 
     this.seqTimer = window.setInterval(() => {
@@ -216,7 +146,7 @@ class MuSoundSynth {
       const ctx = this.ctx;
       if (!ctx || ctx.state !== 'running') return;
 
-      const curMotif = MOTIFS[this.activeTheme] || MOTIFS.lorencia;
+      const curMotif = MOTIFS[this.activeTheme] || MOTIFS.flaris;
       const idx = this.stepIdx % curMotif.notes.length;
       this.stepIdx++;
 

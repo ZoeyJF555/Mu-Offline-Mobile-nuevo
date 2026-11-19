@@ -8,6 +8,9 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { GoogleGenAI, Type } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
 import type {
+  AsyncDuelChallenge,
+  AsyncDuelRecord,
+  EventSessionRecord,
   EventType,
   HeroClass,
   MuAccount,
@@ -22,28 +25,36 @@ import type {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PORT = 3000;
-const APP_VERSION = '2.0.0';
+const APP_VERSION = '2.1.0';
 const CLOUD_STORE_PATH = path.join(__dirname, '.mu-cloud-sync-store.json');
 
 interface CloudStoreData {
   accounts: Record<string, MuAccount>;
   characters: Record<string, MuCharacter>;
+  ledger: Record<string, SharedLedgerEntry>;
+  duels: Record<string, AsyncDuelRecord>;
+  events: Record<string, EventSessionRecord>;
+  challenges: Record<string, AsyncDuelChallenge>;
 }
 
 function loadCloudStore(): CloudStoreData {
   try {
     if (fs.existsSync(CLOUD_STORE_PATH)) {
       const raw = fs.readFileSync(CLOUD_STORE_PATH, 'utf8');
-      const parsed = JSON.parse(raw) as CloudStoreData;
+      const parsed = JSON.parse(raw) as Partial<CloudStoreData>;
       return {
         accounts: parsed.accounts || {},
         characters: parsed.characters || {},
+        ledger: parsed.ledger || {},
+        duels: parsed.duels || {},
+        events: parsed.events || {},
+        challenges: parsed.challenges || {},
       };
     }
   } catch {
     // fallback to empty store
   }
-  return { accounts: {}, characters: {} };
+  return { accounts: {}, characters: {}, ledger: {}, duels: {}, events: {}, challenges: {} };
 }
 
 function saveCloudStore(data: CloudStoreData) {
@@ -355,13 +366,36 @@ async function startServer() {
           return;
         }
 
+        if (msg.type === 'duel:challenge') {
+          const challenge = msg.challenge as AsyncDuelChallenge;
+          const fromPeer = room.peers.get(currentPeerId)?.peer;
+          if (!challenge || !fromPeer) return;
+          cloudStore.challenges[challenge.id] = challenge;
+          saveCloudStore(cloudStore);
+          broadcastRoom(
+            room,
+            { type: 'duel:challenge', fromPeerName: fromPeer.name, challenge },
+            currentPeerId,
+          );
+          return;
+        }
+
+        if (msg.type === 'duel:completed') {
+          const record = msg.record as AsyncDuelRecord;
+          if (!record) return;
+          cloudStore.duels[record.id] = record;
+          saveCloudStore(cloudStore);
+          broadcastRoom(room, { type: 'duel:completed', record }, currentPeerId);
+          return;
+        }
+
         if (msg.type === 'room:end') {
           if (room.hostPeerId === currentPeerId) {
             broadcastRoom(room, {
               type: 'room:ended',
               code: room.code,
               message:
-                'La invitación finalizó. Todos los ítems compartidos y recompensas quedaron guardados en tu base SQLite local.',
+                'Invitación finalizada con éxito. Todos los ítems intercambiados, duelos y recompensas permanecen guardados de forma segura en tu IndexedDB local y listos para sincronizarse.',
             });
             rooms.delete(room.code);
           } else {
@@ -415,10 +449,16 @@ async function startServer() {
     const {
       accounts = [],
       characters = [],
+      ledger = [],
+      duels = [],
+      events = [],
       activeAccountId = null,
     } = req.body as {
       accounts?: MuAccount[];
       characters?: MuCharacter[];
+      ledger?: SharedLedgerEntry[];
+      duels?: AsyncDuelRecord[];
+      events?: EventSessionRecord[];
       activeAccountId?: string | null;
     };
 
@@ -454,6 +494,28 @@ async function startServer() {
       }
     }
 
+    for (const entry of ledger) {
+      if (entry?.id && !cloudStore.ledger[entry.id]) {
+        cloudStore.ledger[entry.id] = entry;
+        dirty = true;
+      }
+    }
+    for (const duel of duels) {
+      if (duel?.id && !cloudStore.duels[duel.id]) {
+        cloudStore.duels[duel.id] = duel;
+        dirty = true;
+      }
+    }
+    for (const ev of events) {
+      if (ev?.id) {
+        const prev = cloudStore.events[ev.id];
+        if (!prev || (!prev.endedAt && ev.endedAt) || ev.wavesCleared > prev.wavesCleared) {
+          cloudStore.events[ev.id] = ev;
+          dirty = true;
+        }
+      }
+    }
+
     // Pull any characters belonging to activeAccountId that exist on cloud
     if (activeAccountId) {
       const sentIds = new Set(characters.map((c) => c.id));
@@ -473,7 +535,45 @@ async function startServer() {
       acceptedCharacterIds,
       newerAccounts,
       newerCharacters,
+      syncedLedgerCount: Object.keys(cloudStore.ledger).length,
+      syncedDuelsCount: Object.keys(cloudStore.duels).length,
       serverTimestamp: Date.now(),
+    });
+  });
+
+  // API: Publish & List Async Duel Challenges (Wi-Fi / Offline Sync)
+  app.get('/api/duels/challenges', (_req, res) => {
+    const list = Object.values(cloudStore.challenges)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, 30);
+    res.json({ challenges: list });
+  });
+
+  app.post('/api/duels/challenge', (req, res) => {
+    const challenge = req.body as AsyncDuelChallenge;
+    if (!challenge?.id || !challenge?.challengerName) {
+      res.status(400).json({ ok: false, error: 'Snapshot de duelo inválido.' });
+      return;
+    }
+    cloudStore.challenges[challenge.id] = challenge;
+    saveCloudStore(cloudStore);
+    res.json({ ok: true, challenge });
+  });
+
+  // API: GitHub Repo Sync Export Snapshot
+  app.get('/api/cloud/github-export', (_req, res) => {
+    res.json({
+      repository: 'ZoeyJF555/Mu-Offline-Mobile-nuevo-',
+      exportedAt: new Date().toISOString(),
+      version: APP_VERSION,
+      summary: {
+        accounts: Object.keys(cloudStore.accounts).length,
+        characters: Object.keys(cloudStore.characters).length,
+        ledgerEntries: Object.keys(cloudStore.ledger).length,
+        duelRecords: Object.keys(cloudStore.duels).length,
+        eventSessions: Object.keys(cloudStore.events).length,
+      },
+      data: cloudStore,
     });
   });
 

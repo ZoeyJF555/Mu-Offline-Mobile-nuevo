@@ -1,4 +1,6 @@
 import type {
+  AsyncDuelChallenge,
+  AsyncDuelRecord,
   EventType,
   MuItem,
   RoomPeer,
@@ -32,6 +34,8 @@ export interface SyncCallbacks {
     item: MuItem;
     timestamp: string;
   }) => void;
+  onDuelChallenge?: (payload: { fromPeerName: string; challenge: AsyncDuelChallenge }) => void;
+  onDuelCompleted?: (payload: { record: AsyncDuelRecord }) => void;
   onRoomEnded: (message: string) => void;
   onError: (message: string) => void;
   onConnectionChange: (connected: boolean) => void;
@@ -84,6 +88,12 @@ export class LocalSyncManager {
               break;
             case 'trade:confirmed':
               this.callbacks.onTradeConfirmed(msg);
+              break;
+            case 'duel:challenge':
+              this.callbacks.onDuelChallenge?.(msg);
+              break;
+            case 'duel:completed':
+              this.callbacks.onDuelCompleted?.(msg);
               break;
             case 'room:ended':
               this.callbacks.onRoomEnded(msg.message);
@@ -171,6 +181,14 @@ export class LocalSyncManager {
 
   sendTradeItem(targetPeerId: string, item: MuItem) {
     this.send({ type: 'trade:send_item', targetPeerId, item });
+  }
+
+  sendDuelChallenge(challenge: AsyncDuelChallenge) {
+    this.send({ type: 'duel:challenge', challenge });
+  }
+
+  sendDuelCompleted(record: AsyncDuelRecord) {
+    this.send({ type: 'duel:completed', record });
   }
 
   endRoom() {

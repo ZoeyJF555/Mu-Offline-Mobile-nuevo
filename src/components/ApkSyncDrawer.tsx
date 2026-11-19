@@ -217,18 +217,40 @@ export const ApkSyncDrawer: React.FC<ApkSyncDrawerProps> = ({
             </button>
           </div>
 
-          {/* 3. GitHub Push Hygiene */}
-          <div className="p-4 rounded-xl bg-[#141a26] border border-slate-800 space-y-2">
-            <div className="flex items-center gap-2 text-sm font-semibold text-sky-300">
-              <GitBranch className="w-4 h-4" />
-              3. Buenas Prácticas para GitHub &amp; Auto-Update PWA
+          {/* 3. GitHub Push Hygiene & Sync Export */}
+          <div className="p-4 rounded-xl bg-[#141a26] border border-slate-800 space-y-3">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-2 text-sm font-semibold text-sky-300">
+                <GitBranch className="w-4 h-4" />
+                3. Registro &amp; Sincronización con Repositorio GitHub
+              </div>
+              <button
+                onClick={async () => {
+                  await cloudSyncManager.syncNow();
+                  const res = await fetch('/api/cloud/github-export');
+                  if (!res.ok) return;
+                  const blob = new Blob([await res.text()], { type: 'application/json' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `github-sync-snapshot-${new Date().toISOString().slice(0, 10)}.json`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                  setNotice('Instantánea completa de cuentas, inventarios, intercambios y duelos exportada para GitHub.');
+                }}
+                disabled={!syncStatus.isOnline}
+                className="min-h-[38px] px-3 rounded-lg bg-sky-700 hover:bg-sky-600 disabled:opacity-45 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Exportar Registro GitHub (.json)
+              </button>
             </div>
             <ul className="list-disc pl-5 text-xs text-slate-300 space-y-1.5 leading-relaxed">
               <li>
-                Mantén <code>node_modules/</code>, <code>dist/</code> y <code>build/</code> en <code>.gitignore</code> para evitar pushes pesados.
+                Al recuperar internet, el juego sincroniza automáticamente cuentas, inventarios, intercambios Wi-Fi/BT y duelos sin borrar nada del modo offline.
               </li>
               <li>
-                Cada push actualiza el Service Worker (<code>autoUpdate</code>), descargando nuevos mapas <code>.glb</code> y parches automáticamente al abrir la app.
+                Cada push al repositorio actualiza el Service Worker (<code>autoUpdate</code>), descargando mapas, texturas y parches al abrir el juego.
               </li>
             </ul>
           </div>

@@ -5,12 +5,16 @@ import {
   Check,
   Copy,
   History,
+  RefreshCw,
+  ShieldCheck,
   Swords,
   Users,
   Wifi,
   X,
 } from 'lucide-react';
 import type {
+  AsyncDuelChallenge,
+  AsyncDuelRecord,
   EventSessionRecord,
   EventType,
   MuCharacter,
@@ -30,6 +34,9 @@ interface SyncLinkDrawerProps {
   bluetoothDeviceName: string | null;
   ledger: SharedLedgerEntry[];
   eventHistory: EventSessionRecord[];
+  duelRecords: AsyncDuelRecord[];
+  serverChallenges: AsyncDuelChallenge[];
+  lastDuelResult: AsyncDuelRecord | null;
   statusMessage: string | null;
   onClose: () => void;
   onPairBluetooth: () => Promise<void>;
@@ -38,6 +45,11 @@ interface SyncLinkDrawerProps {
   onStartEvent: (eventType: EventType) => void;
   onSendItemToPeer: (targetPeerId: string, item: MuItem) => void;
   onEndRoom: () => void;
+  onGenerateDuelToken: (transport: TransportMode) => string;
+  onPublishDuelChallenge: (transport: TransportMode) => Promise<void>;
+  onRefreshDuelChallenges: () => Promise<void>;
+  onFightAsyncDuelToken: (token: string, transport: TransportMode) => Promise<void>;
+  onFightChallenge: (challenge: AsyncDuelChallenge, transport: TransportMode) => Promise<void>;
 }
 
 const EVENT_LABELS: Record<EventType, string> = {
@@ -57,6 +69,9 @@ export const SyncLinkDrawer: React.FC<SyncLinkDrawerProps> = ({
   bluetoothDeviceName,
   ledger,
   eventHistory,
+  duelRecords,
+  serverChallenges,
+  lastDuelResult,
   statusMessage,
   onClose,
   onPairBluetooth,
@@ -65,8 +80,13 @@ export const SyncLinkDrawer: React.FC<SyncLinkDrawerProps> = ({
   onStartEvent,
   onSendItemToPeer,
   onEndRoom,
+  onGenerateDuelToken,
+  onPublishDuelChallenge,
+  onRefreshDuelChallenges,
+  onFightAsyncDuelToken,
+  onFightChallenge,
 }) => {
-  const [tab, setTab] = useState<'link' | 'trade' | 'history'>('link');
+  const [tab, setTab] = useState<'link' | 'duels' | 'trade' | 'history'>('link');
   const [transport, setTransport] = useState<TransportMode>('wifi');
   const [eventType, setEventType] = useState<EventType>('blood_castle');
   const [joinCode, setJoinCode] = useState(() => {
@@ -75,6 +95,9 @@ export const SyncLinkDrawer: React.FC<SyncLinkDrawerProps> = ({
   });
   const [selectedPeerId, setSelectedPeerId] = useState<string>('');
   const [copied, setCopied] = useState(false);
+  const [duelTokenCopied, setDuelTokenCopied] = useState(false);
+  const [myDuelToken, setMyDuelToken] = useState('');
+  const [friendToken, setFriendToken] = useState('');
 
   if (!open) return null;
 
@@ -99,6 +122,18 @@ export const SyncLinkDrawer: React.FC<SyncLinkDrawerProps> = ({
     }
   };
 
+  const handleCreateOrCopyMyDuelToken = async () => {
+    const token = onGenerateDuelToken(transport);
+    setMyDuelToken(token);
+    try {
+      await navigator.clipboard.writeText(token);
+      setDuelTokenCopied(true);
+      setTimeout(() => setDuelTokenCopied(false), 1800);
+    } catch {
+      // Clipboard blocked in some headless contexts; input still shows token
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-40 flex items-end md:items-center justify-center bg-black/75 p-0 md:p-6">
       <div className="w-full max-w-4xl max-h-[90vh] flex flex-col rounded-t-2xl md:rounded-2xl bg-[#111622] border border-slate-700/80 shadow-2xl overflow-hidden">
@@ -106,10 +141,10 @@ export const SyncLinkDrawer: React.FC<SyncLinkDrawerProps> = ({
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800">
           <div>
             <h2 className="font-display text-lg font-bold text-amber-300">
-              Vinculación Local Wi-Fi y Bluetooth · Intercambio en Tiempo Real
+              Multijugador Local Wi-Fi & Bluetooth · Duelos Asíncronos e Intercambio
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              Invita amigos a eventos y comparte armas o sets; cada cambio se guarda al instante en IndexedDB (Dexie) sin perder nada al cerrar la sala.
+              Invita amigos vía Wi-Fi o Bluetooth; todo intercambio, duelo y recompensa queda guardado permanentemente en IndexedDB aunque canceles o termines la invitación.
             </p>
           </div>
           <button
@@ -130,7 +165,16 @@ export const SyncLinkDrawer: React.FC<SyncLinkDrawerProps> = ({
             }`}
           >
             <Users className="w-4 h-4" />
-            Sala y Eventos ({roomState ? roomState.peers.length : 0})
+            Invitaciones Wi-Fi/BT ({roomState ? roomState.peers.length : 0})
+          </button>
+          <button
+            onClick={() => setTab('duels')}
+            className={`min-h-[42px] px-4 py-2 rounded-lg text-xs font-semibold inline-flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer ${
+              tab === 'duels' ? 'bg-amber-600 text-slate-950' : 'bg-[#171e2e] text-slate-300 hover:text-white'
+            }`}
+          >
+            <Swords className="w-4 h-4" />
+            Duelos Asíncronos ({duelRecords.length})
           </button>
           <button
             onClick={() => setTab('trade')}
@@ -148,8 +192,16 @@ export const SyncLinkDrawer: React.FC<SyncLinkDrawerProps> = ({
             }`}
           >
             <History className="w-4 h-4" />
-            Historial Persistente ({ledger.length})
+            Historial Cero-Pérdida ({ledger.length})
           </button>
+        </div>
+
+        {/* Zero-Loss Guarantee Banner */}
+        <div className="px-5 py-2 bg-emerald-950/50 border-b border-emerald-500/30 flex items-center gap-2 text-[11px] text-emerald-200">
+          <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+          <span>
+            Garantía Cero-Pérdida: cancelar o finalizar una invitación Wi-Fi/Bluetooth nunca borra tus ítems, recompensas ni duelos; se respaldan en IndexedDB y se sincronizan al repositorio/servidor al volver a tener internet.
+          </span>
         </div>
 
         {statusMessage && (
@@ -344,6 +396,168 @@ export const SyncLinkDrawer: React.FC<SyncLinkDrawerProps> = ({
             </>
           )}
 
+          {tab === 'duels' && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Export Challenge Token & Publish */}
+                <div className="p-4 rounded-xl bg-[#141a26] border border-slate-800 space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="font-semibold text-sm text-amber-300">
+                      Tu Tarjeta de Duelo Rápido ({character.name})
+                    </h3>
+                    <span className="text-[11px] font-mono-tabular text-slate-400">
+                      {character.duelWins ?? 0}V / {character.duelLosses ?? 0}D
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    Genera un código portátil <code className="text-amber-300">MUDUEL1:...</code> para enviarlo por Bluetooth o Wi-Fi Direct sin internet, o publícalo en la red local.
+                  </p>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      onClick={handleCreateOrCopyMyDuelToken}
+                      className="min-h-[40px] px-3.5 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-slate-950 font-semibold text-xs inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      {duelTokenCopied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                      {duelTokenCopied ? 'Token Copiado' : `Generar Token (${transport.toUpperCase()})`}
+                    </button>
+                    <button
+                      onClick={() => onPublishDuelChallenge(transport)}
+                      className="min-h-[40px] px-3.5 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-semibold text-xs inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Wifi className="w-4 h-4" />
+                      Publicar Desafío
+                    </button>
+                  </div>
+                  {myDuelToken && (
+                    <textarea
+                      readOnly
+                      value={myDuelToken}
+                      aria-label="Tu token de duelo"
+                      rows={3}
+                      className="w-full rounded-lg bg-[#0d111a] border border-slate-700 p-2 text-[11px] font-mono-tabular text-emerald-300"
+                    />
+                  )}
+                </div>
+
+                {/* Paste Friend Token & Fight */}
+                <div className="p-4 rounded-xl bg-[#141a26] border border-slate-800 space-y-3">
+                  <h3 className="font-semibold text-sm text-rose-300">
+                    Reta a un Amigo (Token Bluetooth / Wi-Fi)
+                  </h3>
+                  <textarea
+                    value={friendToken}
+                    onChange={(e) => setFriendToken(e.target.value)}
+                    placeholder="Pega aquí el token MUDUEL1:... de tu amigo o usa un desafío publicado abajo"
+                    aria-label="Token de duelo del rival"
+                    rows={3}
+                    className="w-full rounded-lg bg-[#0d111a] border border-slate-700 p-2.5 text-xs font-mono-tabular text-slate-100"
+                  />
+                  <button
+                    onClick={() => onFightAsyncDuelToken(friendToken, transport)}
+                    disabled={!friendToken.trim()}
+                    className="w-full min-h-[42px] rounded-lg bg-rose-600 hover:bg-rose-500 disabled:opacity-40 text-white font-semibold text-xs inline-flex items-center justify-center gap-1.5 cursor-pointer disabled:cursor-not-allowed"
+                  >
+                    <Swords className="w-4 h-4" />
+                    Iniciar Duelo Táctico Asíncrono ({transport.toUpperCase()})
+                  </button>
+                </div>
+              </div>
+
+              {/* Latest Duel Round-by-Round Log */}
+              {lastDuelResult && (
+                <div
+                  className={`p-4 rounded-xl border space-y-2 ${
+                    lastDuelResult.won
+                      ? 'bg-emerald-950/35 border-emerald-500/45'
+                      : 'bg-rose-950/35 border-rose-500/45'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-sm font-bold text-slate-100">{lastDuelResult.summary}</div>
+                    <span className="text-xs font-mono-tabular text-amber-300">
+                      +{lastDuelResult.rewardZen.toLocaleString()} Zen · Daño {lastDuelResult.damageDealt}
+                    </span>
+                  </div>
+                  <div className="max-h-32 overflow-y-auto space-y-1 text-[11px] font-mono-tabular text-slate-300">
+                    {lastDuelResult.roundLog.map((line, idx) => (
+                      <div key={idx}>{line}</div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Server / Room Challenges */}
+              <div className="p-4 rounded-xl bg-[#141a26] border border-slate-800 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <h4 className="text-xs font-semibold text-sky-300">
+                    Desafíos Publicados en Red / Sala ({serverChallenges.length})
+                  </h4>
+                  <button
+                    onClick={onRefreshDuelChallenges}
+                    className="min-h-[34px] px-3 rounded-lg bg-[#1d2538] hover:bg-slate-700 text-slate-200 text-xs inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    Actualizar
+                  </button>
+                </div>
+                {serverChallenges.length === 0 ? (
+                  <div className="text-xs text-slate-400">
+                    No hay otros desafíos publicados aún. Pulsa &ldquo;Publicar Desafío&rdquo; o comparte tokens MUDUEL1 directamente.
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    {serverChallenges.map((ch) => (
+                      <div
+                        key={ch.id}
+                        className="p-3 rounded-lg bg-[#0e131d] border border-slate-800 flex items-center justify-between gap-2"
+                      >
+                        <div>
+                          <div className="text-xs font-bold text-slate-100">
+                            {ch.challengerName} · {ch.variantKey}
+                          </div>
+                          <div className="text-[11px] text-slate-400 font-mono-tabular">
+                            Nv.{ch.level} · CP {ch.combatPower} · {ch.topWeapon}
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => onFightChallenge(ch, transport)}
+                          className="min-h-[36px] px-3 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs cursor-pointer shrink-0"
+                        >
+                          Duelo
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Persistent Duel History */}
+              {duelRecords.length > 0 && (
+                <div className="space-y-2">
+                  <h4 className="text-xs font-semibold text-amber-300">
+                    Historial de Duelos Guardado en IndexedDB ({duelRecords.length})
+                  </h4>
+                  {duelRecords.slice(0, 8).map((rec) => (
+                    <div
+                      key={rec.id}
+                      className="p-3 rounded-lg bg-[#141a26] border border-slate-800 flex items-center justify-between gap-2 text-xs"
+                    >
+                      <div>
+                        <span className={rec.won ? 'text-emerald-300 font-bold' : 'text-rose-300 font-bold'}>
+                          {rec.won ? 'VICTORIA' : 'DERROTA'}
+                        </span>{' '}
+                        <span className="text-slate-200">{rec.summary}</span>
+                      </div>
+                      <span className="font-mono-tabular text-amber-300 shrink-0">
+                        +{rec.rewardZen.toLocaleString()} Zen
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {tab === 'trade' && (
             <div className="space-y-4">
               {!roomState || remotePeers.length === 0 ? (
@@ -428,7 +642,9 @@ export const SyncLinkDrawer: React.FC<SyncLinkDrawerProps> = ({
                             ? 'Enviado a'
                             : entry.direction === 'received'
                               ? 'Recibido de'
-                              : 'Recompensa de Evento con'}{' '}
+                              : entry.direction === 'duel_reward'
+                                ? 'Duelo Asíncrono vs'
+                                : 'Recompensa de Evento con'}{' '}
                           {entry.partnerName} · Sala {entry.sessionId} · {entry.transportMode.toUpperCase()}
                         </div>
                       </div>

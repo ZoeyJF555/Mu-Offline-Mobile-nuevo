@@ -668,80 +668,249 @@ buildMedievalHero('npc_goblin.glb', {
   writeGlb('crystal_spire.glb', b);
 }
 
-// --- Build Medieval Monsters (.glb) — ZERO Minecraft cubes! ---
+// --- Build Organic High-Detail Medieval Monsters (.glb) ---
+function makeCurvedLimb(points, radii, segs = 12) {
+  const pos = [];
+  const norm = [];
+  const idx = [];
+  const rings = points.length;
+  for (let r = 0; r < rings; r++) {
+    const [px, py, pz] = points[r];
+    const rad = radii[r];
+    const prev = points[Math.max(0, r - 1)];
+    const next = points[Math.min(rings - 1, r + 1)];
+    let tx = next[0] - prev[0], ty = next[1] - prev[1], tz = next[2] - prev[2];
+    const tlen = Math.hypot(tx, ty, tz) || 1;
+    tx /= tlen; ty /= tlen; tz /= tlen;
+    // Construct orthonormal frame around tangent
+    const up = Math.abs(ty) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+    let ux = up[1] * tz - up[2] * ty, uy = up[2] * tx - up[0] * tz, uz = up[0] * ty - up[1] * tx;
+    const ulen = Math.hypot(ux, uy, uz) || 1;
+    ux /= ulen; uy /= ulen; uz /= ulen;
+    const vx = ty * uz - tz * uy, vy = tz * ux - tx * uz, vz = tx * uy - ty * ux;
+    for (let s = 0; s <= segs; s++) {
+      const a = (s / segs) * Math.PI * 2;
+      const ca = Math.cos(a), sa = Math.sin(a);
+      const nx = ux * ca + vx * sa;
+      const ny = uy * ca + vy * sa;
+      const nz = uz * ca + vz * sa;
+      pos.push(px + nx * rad, py + ny * rad, pz + nz * rad);
+      norm.push(nx, ny, nz);
+    }
+  }
+  const stride = segs + 1;
+  for (let r = 0; r < rings - 1; r++) {
+    for (let s = 0; s < segs; s++) {
+      const a = r * stride + s, b = a + 1, c = a + stride, d = c + 1;
+      idx.push(a, b, c, b, d, c);
+    }
+  }
+  return { positions: new Float32Array(pos), normals: new Float32Array(norm), indices: new Uint16Array(idx) };
+}
+
+function makeWebbedWing(side = 1, scale = 1) {
+  const bones = [];
+  const mems = [];
+  const shoulder = [side * 0.34 * scale, 1.48 * scale, -0.18 * scale];
+  const wrist = [side * 1.15 * scale, 2.02 * scale, -0.42 * scale];
+  bones.push(makeCurvedLimb([shoulder, [side * 0.72 * scale, 1.82 * scale, -0.28 * scale], wrist], [0.07 * scale, 0.055 * scale, 0.045 * scale], 8));
+  const tips = [
+    [side * 1.82 * scale, 2.26 * scale, -0.52 * scale],
+    [side * 1.66 * scale, 1.62 * scale, -0.58 * scale],
+    [side * 1.18 * scale, 1.15 * scale, -0.45 * scale],
+  ];
+  for (const tip of tips) {
+    bones.push(makeCurvedLimb([wrist, [(wrist[0] + tip[0]) * 0.5, (wrist[1] + tip[1]) * 0.5 + 0.05 * scale, (wrist[2] + tip[2]) * 0.5], tip], [0.04 * scale, 0.025 * scale, 0.012 * scale], 7));
+  }
+  // Thin sculpted organic membrane sheets between wing fingers
+  const panels = [
+    [shoulder, wrist, tips[0], [side * 0.85 * scale, 1.45 * scale, -0.35 * scale]],
+    [wrist, tips[0], tips[1], [side * 0.9 * scale, 1.32 * scale, -0.38 * scale]],
+    [wrist, tips[1], tips[2], [side * 0.5 * scale, 1.1 * scale, -0.24 * scale]],
+  ];
+  for (const [p0, p1, p2, p3] of panels) {
+    mems.push(makeEllipsoid(0.45 * scale, 0.24 * scale, 0.022 * scale, 10, 6));
+    const cx = (p0[0] + p1[0] + p2[0] + p3[0]) * 0.25;
+    const cy = (p0[1] + p1[1] + p2[1] + p3[1]) * 0.25;
+    const cz = (p0[2] + p1[2] + p2[2] + p3[2]) * 0.25;
+    mems[mems.length - 1] = transformGeom(mems[mems.length - 1], { tx: cx, ty: cy, tz: cz, rz: side * 0.36, ry: side * 0.22 });
+  }
+  return { bones: mergeGeoms(bones), membrane: mergeGeoms(mems) };
+}
+
 function buildMonster(filename, kind) {
   const b = createBuilder();
   if (kind === 'bull' || kind === 'yeti' || kind === 'balrog') {
-    const color = kind === 'yeti' ? 0xcbd5e1 : kind === 'balrog' ? 0x991b1b : 0x7c2d12;
+    const color = kind === 'yeti' ? 0xdbeafe : kind === 'balrog' ? 0x7f1d1d : 0x78350f;
+    const furOrPlate = kind === 'yeti' ? 0x93c5fd : kind === 'balrog' ? 0x450a0a : 0x451a03;
     const accent = kind === 'yeti' ? 0x38bdf8 : kind === 'balrog' ? 0xf97316 : 0xfef3c7;
-    const scale = kind === 'balrog' ? 1.45 : kind === 'yeti' ? 1.2 : 1.0;
+    const eyeHex = kind === 'yeti' ? 0x67e8f9 : kind === 'balrog' ? 0xfbbf24 : 0xef4444;
+    const scale = kind === 'balrog' ? 1.42 : kind === 'yeti' ? 1.18 : 1.02;
+
+    // Articulated muscular legs + hooves/claws + hunchback chest + snout
     const legs = mergeGeoms([
-      transformGeom(makeTaperedCylinder(0.16 * scale, 0.22 * scale, 0.95 * scale, 10, 1), { tx: -0.24 * scale, ty: 0.48 * scale }),
-      transformGeom(makeTaperedCylinder(0.16 * scale, 0.22 * scale, 0.95 * scale, 10, 1), { tx: 0.24 * scale, ty: 0.48 * scale }),
+      makeCurvedLimb([[-0.24 * scale, 0.05 * scale, 0], [-0.28 * scale, 0.48 * scale, 0.08 * scale], [-0.22 * scale, 0.94 * scale, -0.02 * scale]], [0.14 * scale, 0.19 * scale, 0.23 * scale], 12),
+      makeCurvedLimb([[0.24 * scale, 0.05 * scale, 0], [0.28 * scale, 0.48 * scale, 0.08 * scale], [0.22 * scale, 0.94 * scale, -0.02 * scale]], [0.14 * scale, 0.19 * scale, 0.23 * scale], 12),
     ]);
-    const chest = transformGeom(makeEllipsoid(0.54 * scale, 0.62 * scale, 0.42 * scale, 12, 8), { ty: 1.38 * scale });
-    const head = transformGeom(makeEllipsoid(0.28 * scale, 0.3 * scale, 0.32 * scale, 10, 6), { ty: 2.02 * scale, tz: 0.1 * scale });
-    const hornL = transformGeom(makeTaperedCylinder(0.08 * scale, 0.015 * scale, 0.62 * scale, 8, 1), { tx: -0.32 * scale, ty: 2.25 * scale, rz: 0.65 });
-    const hornR = transformGeom(makeTaperedCylinder(0.08 * scale, 0.015 * scale, 0.62 * scale, 8, 1), { tx: 0.32 * scale, ty: 2.25 * scale, rz: -0.65 });
+    const torso = mergeGeoms([
+      transformGeom(makeEllipsoid(0.42 * scale, 0.36 * scale, 0.34 * scale, 14, 9), { ty: 1.04 * scale }),
+      transformGeom(makeEllipsoid(0.56 * scale, 0.48 * scale, 0.44 * scale, 16, 10), { ty: 1.48 * scale, tz: 0.04 * scale }),
+      transformGeom(makeEllipsoid(0.28 * scale, 0.26 * scale, 0.24 * scale, 12, 8), { tx: -0.44 * scale, ty: 1.72 * scale }),
+      transformGeom(makeEllipsoid(0.28 * scale, 0.26 * scale, 0.24 * scale, 12, 8), { tx: 0.44 * scale, ty: 1.72 * scale }),
+    ]);
+    const head = mergeGeoms([
+      transformGeom(makeEllipsoid(0.27 * scale, 0.28 * scale, 0.3 * scale, 14, 9), { ty: 1.98 * scale, tz: 0.2 * scale }),
+      transformGeom(makeEllipsoid(0.18 * scale, 0.15 * scale, 0.22 * scale, 12, 7), { ty: 1.88 * scale, tz: 0.42 * scale }),
+    ]);
     const arms = mergeGeoms([
-      transformGeom(makeTaperedCylinder(0.14 * scale, 0.2 * scale, 0.92 * scale, 10, 1), { tx: -0.62 * scale, ty: 1.32 * scale, rz: 0.22 }),
-      transformGeom(makeTaperedCylinder(0.14 * scale, 0.2 * scale, 0.92 * scale, 10, 1), { tx: 0.62 * scale, ty: 1.32 * scale, rz: -0.22 }),
+      makeCurvedLimb([[-0.52 * scale, 1.68 * scale, 0], [-0.68 * scale, 1.25 * scale, 0.1 * scale], [-0.58 * scale, 0.82 * scale, 0.24 * scale]], [0.2 * scale, 0.17 * scale, 0.14 * scale], 12),
+      makeCurvedLimb([[0.52 * scale, 1.68 * scale, 0], [0.68 * scale, 1.25 * scale, 0.1 * scale], [0.58 * scale, 0.82 * scale, 0.24 * scale]], [0.2 * scale, 0.17 * scale, 0.14 * scale], 12),
     ]);
-    b.addPart('beast_body', mergeGeoms([legs, chest, head, arms]), color, { metallic: 0.25, roughness: 0.65 });
+    const tail = makeCurvedLimb([[0, 1.02 * scale, -0.3 * scale], [0, 0.85 * scale, -0.62 * scale], [0.06 * scale, 0.62 * scale, -0.82 * scale]], [0.09 * scale, 0.05 * scale, 0.02 * scale], 8);
+    b.addPart('beast_body', mergeGeoms([legs, torso, head, arms, tail]), color, { metallic: 0.22, roughness: 0.62 });
+
+    // Mane / dorsal spine ridge
+    const dorsal = mergeGeoms([
+      transformGeom(makeEllipsoid(0.38 * scale, 0.22 * scale, 0.32 * scale, 12, 8), { ty: 1.84 * scale, tz: -0.14 * scale }),
+      transformGeom(makeTaperedCylinder(0.11 * scale, 0.02 * scale, 0.36 * scale, 8, 1), { ty: 1.75 * scale, tz: -0.38 * scale, rx: -0.8 }),
+      transformGeom(makeTaperedCylinder(0.1 * scale, 0.02 * scale, 0.32 * scale, 8, 1), { ty: 1.48 * scale, tz: -0.44 * scale, rx: -0.95 }),
+    ]);
+    b.addPart('beast_ridge', dorsal, furOrPlate, { metallic: 0.35, roughness: 0.55 });
+
+    // Curved sculpted horns + fangs/claws
+    const hornL = makeCurvedLimb([[-0.22 * scale, 2.12 * scale, 0.16 * scale], [-0.46 * scale, 2.34 * scale, 0.22 * scale], [-0.48 * scale, 2.58 * scale, 0.42 * scale]], [0.08 * scale, 0.055 * scale, 0.015 * scale], 10);
+    const hornR = makeCurvedLimb([[0.22 * scale, 2.12 * scale, 0.16 * scale], [0.46 * scale, 2.34 * scale, 0.22 * scale], [0.48 * scale, 2.58 * scale, 0.42 * scale]], [0.08 * scale, 0.055 * scale, 0.015 * scale], 10);
     b.addPart('beast_horns', mergeGeoms([hornL, hornR]), accent, {
-      metallic: 0.5, roughness: 0.35,
+      metallic: 0.48, roughness: 0.32,
       emissiveHex: kind === 'balrog' ? 0xf97316 : 0x000000,
       emissiveIntensity: kind === 'balrog' ? 0.85 : 0,
     });
+
+    const eyes = mergeGeoms([
+      transformGeom(makeEllipsoid(0.045 * scale, 0.032 * scale, 0.04 * scale, 8, 6), { tx: -0.11 * scale, ty: 2.02 * scale, tz: 0.45 * scale }),
+      transformGeom(makeEllipsoid(0.045 * scale, 0.032 * scale, 0.04 * scale, 8, 6), { tx: 0.11 * scale, ty: 2.02 * scale, tz: 0.45 * scale }),
+    ]);
+    b.addPart('beast_eyes', eyes, eyeHex, { metallic: 0.1, roughness: 0.2, emissiveHex: eyeHex, emissiveIntensity: 1.4 });
+
     if (kind === 'balrog') {
-      const wingL = transformGeom(makePrism(1.6, 1.0, 0.08, 0.2), { tx: -1.1, ty: 2.1, tz: -0.35, rz: 0.4, ry: 0.25 });
-      const wingR = transformGeom(makePrism(1.6, 1.0, 0.08, 0.2), { tx: 1.1, ty: 2.1, tz: -0.35, rz: -0.4, ry: -0.25 });
-      b.addPart('demon_wings', mergeGeoms([wingL, wingR]), 0x450a0a, { metallic: 0.3, roughness: 0.5, emissiveHex: 0xdc2626, emissiveIntensity: 0.35 });
+      const wL = makeWebbedWing(-1, scale);
+      const wR = makeWebbedWing(1, scale);
+      b.addPart('demon_wing_bones', mergeGeoms([wL.bones, wR.bones]), 0x1c1917, { metallic: 0.5, roughness: 0.4 });
+      b.addPart('demon_wings', mergeGeoms([wL.membrane, wR.membrane]), 0x7f1d1d, { metallic: 0.25, roughness: 0.45, emissiveHex: 0xef4444, emissiveIntensity: 0.55 });
     }
   } else if (kind === 'hound') {
-    const body = transformGeom(makeEllipsoid(0.32, 0.3, 0.72, 10, 6), { ty: 0.68 });
-    const head = transformGeom(makeTaperedCylinder(0.22, 0.1, 0.5, 8, 1), { ty: 0.85, tz: 0.78, rx: Math.PI / 2 });
+    const chest = transformGeom(makeEllipsoid(0.34, 0.34, 0.52, 14, 9), { ty: 0.78, tz: 0.24 });
+    const waist = transformGeom(makeEllipsoid(0.24, 0.25, 0.45, 12, 8), { ty: 0.72, tz: -0.28 });
+    const neck = makeCurvedLimb([[0, 0.85, 0.52], [0, 0.98, 0.74], [0, 1.02, 0.96]], [0.22, 0.18, 0.16], 12);
+    const snout = transformGeom(makeEllipsoid(0.14, 0.13, 0.28, 12, 8), { ty: 0.98, tz: 1.12 });
+    const earL = transformGeom(makeTaperedCylinder(0.07, 0.01, 0.26, 8, 1), { tx: -0.14, ty: 1.2, tz: 0.86, rz: 0.32 });
+    const earR = transformGeom(makeTaperedCylinder(0.07, 0.01, 0.26, 8, 1), { tx: 0.14, ty: 1.2, tz: 0.86, rz: -0.32 });
     const legs = mergeGeoms([
-      transformGeom(makeTaperedCylinder(0.07, 0.1, 0.55, 8, 1), { tx: -0.2, ty: 0.28, tz: 0.38 }),
-      transformGeom(makeTaperedCylinder(0.07, 0.1, 0.55, 8, 1), { tx: 0.2, ty: 0.28, tz: 0.38 }),
-      transformGeom(makeTaperedCylinder(0.07, 0.1, 0.55, 8, 1), { tx: -0.2, ty: 0.28, tz: -0.38 }),
-      transformGeom(makeTaperedCylinder(0.07, 0.1, 0.55, 8, 1), { tx: 0.2, ty: 0.28, tz: -0.38 }),
+      makeCurvedLimb([[-0.22, 0.04, 0.46], [-0.24, 0.38, 0.36], [-0.2, 0.72, 0.44]], [0.07, 0.085, 0.12], 10),
+      makeCurvedLimb([[0.22, 0.04, 0.46], [0.24, 0.38, 0.36], [0.2, 0.72, 0.44]], [0.07, 0.085, 0.12], 10),
+      makeCurvedLimb([[-0.2, 0.04, -0.46], [-0.24, 0.36, -0.56], [-0.18, 0.7, -0.38]], [0.07, 0.09, 0.13], 10),
+      makeCurvedLimb([[0.2, 0.04, -0.46], [0.24, 0.36, -0.56], [0.18, 0.7, -0.38]], [0.07, 0.09, 0.13], 10),
     ]);
-    b.addPart('hound_body', mergeGeoms([body, head, legs]), 0x7f1d1d, { metallic: 0.2, roughness: 0.68 });
+    const tail = makeCurvedLimb([[0, 0.76, -0.62], [0, 0.94, -0.92], [0.08, 1.16, -1.06]], [0.08, 0.05, 0.02], 8);
+    b.addPart('hound_body', mergeGeoms([chest, waist, neck, snout, earL, earR, legs, tail]), 0x7f1d1d, { metallic: 0.2, roughness: 0.65 });
+    const eyes = mergeGeoms([
+      transformGeom(makeEllipsoid(0.035, 0.028, 0.035, 8, 6), { tx: -0.09, ty: 1.07, tz: 1.06 }),
+      transformGeom(makeEllipsoid(0.035, 0.028, 0.035, 8, 6), { tx: 0.09, ty: 1.07, tz: 1.06 }),
+    ]);
+    b.addPart('hound_eyes', eyes, 0xfbbf24, { emissiveHex: 0xf97316, emissiveIntensity: 1.3 });
   } else if (kind === 'skeleton') {
-    const ribs = transformGeom(makeTaperedCylinder(0.22, 0.3, 0.82, 10, 2), { ty: 1.25 });
+    const pelvis = transformGeom(makeEllipsoid(0.24, 0.12, 0.16, 12, 6), { ty: 0.92 });
+    const spine = makeCurvedLimb([[0, 0.95, -0.03], [0, 1.35, -0.05], [0, 1.72, 0.02]], [0.06, 0.055, 0.05], 10);
+    const ribRings = [];
+    for (let r = 0; r < 4; r++) {
+      ribRings.push(transformGeom(makeEllipsoid(0.25 - r * 0.018, 0.045, 0.17 - r * 0.01, 12, 5), { ty: 1.24 + r * 0.11 }));
+    }
     const legs = mergeGeoms([
-      transformGeom(makeTaperedCylinder(0.06, 0.08, 0.85, 8, 1), { tx: -0.15, ty: 0.42 }),
-      transformGeom(makeTaperedCylinder(0.06, 0.08, 0.85, 8, 1), { tx: 0.15, ty: 0.42 }),
+      makeCurvedLimb([[-0.15, 0.04, 0], [-0.16, 0.48, 0.04], [-0.15, 0.9, 0]], [0.055, 0.05, 0.065], 9),
+      makeCurvedLimb([[0.15, 0.04, 0], [0.16, 0.48, 0.04], [0.15, 0.9, 0]], [0.055, 0.05, 0.065], 9),
     ]);
-    const skull = transformGeom(makeEllipsoid(0.2, 0.24, 0.22, 10, 6), { ty: 1.88 });
-    const sword = transformGeom(makePrism(0.1, 1.0, 0.04, 0.15), { tx: 0.42, ty: 1.25, tz: 0.35, rx: 0.65 });
-    b.addPart('skeleton_bones', mergeGeoms([ribs, legs, skull]), 0xe2e8f0, { metallic: 0.2, roughness: 0.55 });
-    b.addPart('skeleton_blade', sword, 0x94a3b8, { metallic: 0.85, roughness: 0.3 });
+    const arms = mergeGeoms([
+      makeCurvedLimb([[-0.28, 1.62, 0], [-0.36, 1.32, 0.08], [-0.34, 1.04, 0.22]], [0.05, 0.042, 0.04], 8),
+      makeCurvedLimb([[0.28, 1.62, 0], [0.38, 1.35, 0.12], [0.42, 1.12, 0.28]], [0.05, 0.042, 0.04], 8),
+    ]);
+    const skull = mergeGeoms([
+      transformGeom(makeEllipsoid(0.18, 0.21, 0.2, 14, 9), { ty: 1.9, tz: 0.04 }),
+      transformGeom(makeEllipsoid(0.11, 0.08, 0.13, 10, 6), { ty: 1.74, tz: 0.12 }),
+    ]);
+    const blade = makeCurvedLimb([[0.42, 1.12, 0.28], [0.44, 1.5, 0.56], [0.45, 1.9, 0.85]], [0.045, 0.05, 0.012], 8);
+    b.addPart('skeleton_bones', mergeGeoms([pelvis, spine, ...ribRings, legs, arms, skull]), 0xe2e8f0, { metallic: 0.18, roughness: 0.52 });
+    b.addPart('skeleton_blade', blade, 0x94a3b8, { metallic: 0.88, roughness: 0.24 });
+    const eyes = mergeGeoms([
+      transformGeom(makeEllipsoid(0.032, 0.03, 0.03, 8, 6), { tx: -0.065, ty: 1.9, tz: 0.2 }),
+      transformGeom(makeEllipsoid(0.032, 0.03, 0.03, 8, 6), { tx: 0.065, ty: 1.9, tz: 0.2 }),
+    ]);
+    b.addPart('skeleton_eyes', eyes, 0xa855f7, { emissiveHex: 0xa855f7, emissiveIntensity: 1.4 });
   } else if (kind === 'dragon') {
-    const body = transformGeom(makeEllipsoid(0.38, 0.34, 0.72, 10, 6), { ty: 1.2 });
-    const neck = transformGeom(makeTaperedCylinder(0.18, 0.12, 0.65, 8, 1), { ty: 1.55, tz: 0.55, rx: 0.65 });
-    const tail = transformGeom(makeTaperedCylinder(0.18, 0.03, 0.95, 8, 1), { ty: 1.05, tz: -0.82, rx: -1.1 });
-    const wL = transformGeom(makePrism(1.25, 0.65, 0.05, 0.2), { tx: -0.85, ty: 1.55, rz: 0.38 });
-    const wR = transformGeom(makePrism(1.25, 0.65, 0.05, 0.2), { tx: 0.85, ty: 1.55, rz: -0.38 });
-    b.addPart('dragon_scales', mergeGeoms([body, neck, tail, wL, wR]), 0xb91c1c, { metallic: 0.45, roughness: 0.42 });
-  } else if (kind === 'golem') {
-    const torso = transformGeom(makeTaperedCylinder(0.55, 0.72, 1.35, 7, 2), { ty: 1.35 });
-    const legs = mergeGeoms([
-      transformGeom(makeTaperedCylinder(0.24, 0.28, 0.82, 7, 1), { tx: -0.28, ty: 0.41 }),
-      transformGeom(makeTaperedCylinder(0.24, 0.28, 0.82, 7, 1), { tx: 0.28, ty: 0.41 }),
+    const body = transformGeom(makeEllipsoid(0.42, 0.36, 0.78, 16, 10), { ty: 1.18 });
+    const belly = transformGeom(makeEllipsoid(0.32, 0.24, 0.65, 12, 8), { ty: 1.02, tz: 0.04 });
+    const neck = makeCurvedLimb([[0, 1.24, 0.55], [0, 1.52, 0.86], [0, 1.78, 1.12]], [0.22, 0.16, 0.14], 12);
+    const head = mergeGeoms([
+      transformGeom(makeEllipsoid(0.2, 0.17, 0.32, 14, 8), { ty: 1.82, tz: 1.24 }),
+      transformGeom(makeTaperedCylinder(0.05, 0.01, 0.36, 8, 1), { tx: -0.11, ty: 2.02, tz: 1.08, rx: -0.6, rz: 0.2 }),
+      transformGeom(makeTaperedCylinder(0.05, 0.01, 0.36, 8, 1), { tx: 0.11, ty: 2.02, tz: 1.08, rx: -0.6, rz: -0.2 }),
     ]);
-    const head = transformGeom(makeEllipsoid(0.32, 0.28, 0.3, 7, 5), { ty: 2.15 });
-    b.addPart('golem_rock', mergeGeoms([torso, legs, head]), 0x475569, { metallic: 0.3, roughness: 0.82 });
-    const core = transformGeom(makeEllipsoid(0.24, 0.28, 0.22, 8, 5), { ty: 1.45, tz: 0.46 });
-    b.addPart('golem_core', core, 0x38bdf8, { metallic: 0.2, roughness: 0.2, emissiveHex: 0x38bdf8, emissiveIntensity: 0.9 });
+    const tail = makeCurvedLimb([[0, 1.1, -0.65], [0.12, 0.92, -1.1], [-0.08, 0.78, -1.55], [-0.22, 0.95, -1.85]], [0.2, 0.14, 0.08, 0.02], 10);
+    const legs = mergeGeoms([
+      makeCurvedLimb([[-0.3, 0.06, 0.26], [-0.34, 0.52, 0.16], [-0.28, 0.98, 0.24]], [0.1, 0.12, 0.15], 10),
+      makeCurvedLimb([[0.3, 0.06, 0.26], [0.34, 0.52, 0.16], [0.28, 0.98, 0.24]], [0.1, 0.12, 0.15], 10),
+      makeCurvedLimb([[-0.3, 0.06, -0.34], [-0.35, 0.52, -0.45], [-0.28, 0.98, -0.34]], [0.1, 0.13, 0.16], 10),
+      makeCurvedLimb([[0.3, 0.06, -0.34], [0.35, 0.52, -0.45], [0.28, 0.98, -0.34]], [0.1, 0.13, 0.16], 10),
+    ]);
+    const wL = makeWebbedWing(-1, 1.05);
+    const wR = makeWebbedWing(1, 1.05);
+    b.addPart('dragon_scales', mergeGeoms([body, neck, head, tail, legs, wL.bones, wR.bones]), 0x991b1b, { metallic: 0.45, roughness: 0.38 });
+    b.addPart('dragon_belly', mergeGeoms([belly, wL.membrane, wR.membrane]), 0xf59e0b, { metallic: 0.32, roughness: 0.45, emissiveHex: 0xd97706, emissiveIntensity: 0.25 });
+    const eyes = mergeGeoms([
+      transformGeom(makeEllipsoid(0.036, 0.028, 0.036, 8, 6), { tx: -0.11, ty: 1.88, tz: 1.4 }),
+      transformGeom(makeEllipsoid(0.036, 0.028, 0.036, 8, 6), { tx: 0.11, ty: 1.88, tz: 1.4 }),
+    ]);
+    b.addPart('dragon_eyes', eyes, 0xfef08a, { emissiveHex: 0xfbbf24, emissiveIntensity: 1.5 });
+  } else if (kind === 'golem') {
+    const torso = mergeGeoms([
+      transformGeom(makeEllipsoid(0.58, 0.62, 0.46, 12, 8), { ty: 1.45 }),
+      transformGeom(makeEllipsoid(0.36, 0.32, 0.34, 10, 7), { tx: -0.54, ty: 1.72 }),
+      transformGeom(makeEllipsoid(0.36, 0.32, 0.34, 10, 7), { tx: 0.54, ty: 1.72 }),
+    ]);
+    const legs = mergeGeoms([
+      makeCurvedLimb([[-0.28, 0.04, 0], [-0.3, 0.46, 0.04], [-0.26, 0.92, 0]], [0.22, 0.24, 0.27], 10),
+      makeCurvedLimb([[0.28, 0.04, 0], [0.3, 0.46, 0.04], [0.26, 0.92, 0]], [0.22, 0.24, 0.27], 10),
+    ]);
+    const arms = mergeGeoms([
+      makeCurvedLimb([[-0.62, 1.62, 0], [-0.74, 1.15, 0.1], [-0.68, 0.68, 0.22]], [0.22, 0.2, 0.24], 10),
+      makeCurvedLimb([[0.62, 1.62, 0], [0.74, 1.15, 0.1], [0.68, 0.68, 0.22]], [0.22, 0.2, 0.24], 10),
+    ]);
+    const head = transformGeom(makeEllipsoid(0.32, 0.28, 0.3, 12, 8), { ty: 2.16, tz: 0.08 });
+    b.addPart('golem_rock', mergeGeoms([torso, legs, arms, head]), 0x475569, { metallic: 0.35, roughness: 0.78 });
+    const core = mergeGeoms([
+      transformGeom(makeEllipsoid(0.24, 0.28, 0.16, 12, 8), { ty: 1.45, tz: 0.42 }),
+      transformGeom(makeEllipsoid(0.14, 0.05, 0.06, 8, 5), { ty: 2.18, tz: 0.34 }),
+    ]);
+    b.addPart('golem_core', core, 0x38bdf8, { metallic: 0.2, roughness: 0.2, emissiveHex: 0x38bdf8, emissiveIntensity: 1.1 });
   } else {
-    // hydra
-    const base = transformGeom(makeTaperedCylinder(0.62, 0.42, 0.9, 10, 1), { ty: 0.45 });
-    const n1 = transformGeom(makeTaperedCylinder(0.18, 0.12, 1.55, 8, 2), { ty: 1.45, rx: 0.2 });
-    const n2 = transformGeom(makeTaperedCylinder(0.15, 0.1, 1.35, 8, 2), { tx: -0.45, ty: 1.35, rz: 0.28 });
-    const n3 = transformGeom(makeTaperedCylinder(0.15, 0.1, 1.35, 8, 2), { tx: 0.45, ty: 1.35, rz: -0.28 });
-    b.addPart('hydra_scales', mergeGeoms([base, n1, n2, n3]), 0x0f766e, { metallic: 0.4, roughness: 0.4, emissiveHex: 0x14b8a6, emissiveIntensity: 0.25 });
+    // Organic 3-headed Hydra with sinuous curved necks, jaws, and glowing fins
+    const body = transformGeom(makeEllipsoid(0.68, 0.52, 0.72, 16, 10), { ty: 0.56 });
+    const n1 = makeCurvedLimb([[0, 0.85, 0.15], [0, 1.45, 0.38], [0, 1.98, 0.55]], [0.24, 0.18, 0.15], 12);
+    const n2 = makeCurvedLimb([[-0.28, 0.82, 0.12], [-0.58, 1.38, 0.28], [-0.72, 1.82, 0.44]], [0.2, 0.15, 0.13], 12);
+    const n3 = makeCurvedLimb([[0.28, 0.82, 0.12], [0.58, 1.38, 0.28], [0.72, 1.82, 0.44]], [0.2, 0.15, 0.13], 12);
+    const heads = mergeGeoms([
+      transformGeom(makeEllipsoid(0.22, 0.18, 0.32, 12, 8), { ty: 2.04, tz: 0.72 }),
+      transformGeom(makeEllipsoid(0.18, 0.15, 0.27, 12, 8), { tx: -0.74, ty: 1.86, tz: 0.58, ry: -0.25 }),
+      transformGeom(makeEllipsoid(0.18, 0.15, 0.27, 12, 8), { tx: 0.74, ty: 1.86, tz: 0.58, ry: 0.25 }),
+    ]);
+    const tail = makeCurvedLimb([[0, 0.48, -0.55], [0.25, 0.36, -1.05], [-0.15, 0.52, -1.52]], [0.28, 0.16, 0.04], 10);
+    b.addPart('hydra_scales', mergeGeoms([body, n1, n2, n3, heads, tail]), 0x0f766e, { metallic: 0.42, roughness: 0.38, emissiveHex: 0x0d9488, emissiveIntensity: 0.28 });
+    const eyes = mergeGeoms([
+      transformGeom(makeEllipsoid(0.036, 0.03, 0.036, 8, 6), { tx: -0.1, ty: 2.1, tz: 0.9 }),
+      transformGeom(makeEllipsoid(0.036, 0.03, 0.036, 8, 6), { tx: 0.1, ty: 2.1, tz: 0.9 }),
+      transformGeom(makeEllipsoid(0.032, 0.026, 0.032, 8, 6), { tx: -0.82, ty: 1.91, tz: 0.72 }),
+      transformGeom(makeEllipsoid(0.032, 0.026, 0.032, 8, 6), { tx: 0.82, ty: 1.91, tz: 0.72 }),
+    ]);
+    b.addPart('hydra_eyes', eyes, 0x5eead4, { emissiveHex: 0x2dd4bf, emissiveIntensity: 1.4 });
   }
   writeGlb(filename, b);
 }

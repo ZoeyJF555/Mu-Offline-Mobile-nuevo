@@ -2,14 +2,7 @@ export type HeroClass = 'DK' | 'DW' | 'ELF' | 'DL' | 'MG';
 
 export type CharacterSex = 'male' | 'female';
 
-export type MapId =
-  | 'flaris' | 'robledal' | 'puerto' | 'ceniza'
-  | 'lorencia'
-  | 'noria'
-  | 'devias'
-  | 'atlans'
-  | 'tarkan'
-  | 'vulcanus';
+export type MapId = 'flaris' | 'robledal' | 'puerto' | 'ceniza';
 
 export type WeatherKind =
   | 'none'
@@ -17,7 +10,6 @@ export type WeatherKind =
   | 'petals'
   | 'snowfall'
   | 'snow'
-  | 'rain'
   | 'underwater'
   | 'embers'
   | 'sandDust'
@@ -115,6 +107,8 @@ export interface MuItem {
   acquiredAt: string;
 }
 
+export type CharacterVariantKey = `${HeroClass}_${CharacterSex}`;
+
 export interface MuCharacter {
   id: string;
   accountId: string;
@@ -126,6 +120,12 @@ export interface MuCharacter {
   xp: number;
   xpToNext: number;
   unspentPoints: number;
+  skillPoints?: number;
+  skillLevels?: Record<string, number>;
+  specialization?: 'balanced' | 'berserk' | 'guardian' | 'arcane';
+  unlockedAchievements?: string[];
+  duelWins?: number;
+  duelLosses?: number;
   currentMapId: MapId;
   str: number;
   agi: number;
@@ -149,6 +149,9 @@ export interface MuCharacter {
   maxAg: number;
   kills: number;
   resets: number;
+  lastX?: number;
+  lastZ?: number;
+  lastRotY?: number;
   equipment: MuItem[];
   inventory: MuItem[];
   updatedAt: number;
@@ -164,6 +167,7 @@ export interface SkillDef {
   description: string;
   mpCost: number;
   agCost: number;
+  cooldownSec?: number;
   damageMultiplier: number;
   range: number;
   isAoe: boolean;
@@ -182,6 +186,7 @@ export type HudButtonId =
   | 'joystick'
   | 'attack'
   | 'combo'
+  | 'jump'
   | 'skillTray'
   | 'potion'
   | 'loot'
@@ -206,7 +211,104 @@ export interface GameSettings {
   musicEnabled: boolean;
   musicVolume: number; // 0 to 1
   free3dCamera: boolean;
+  cameraDistance?: number; // 4.5 to 14m third-person distance
+  autoAimAssist?: boolean; // 80% auto-aim toggle (default true)
   targetFps: 30 | 45 | 60;
+}
+
+export interface ActiveEffect {
+  id: string;
+  name: string;
+  kind: 'buff' | 'debuff';
+  statHint: string;
+  color: string;
+  remainingSec: number;
+  totalSec: number;
+  atkBonusPct?: number;
+  defBonusPct?: number;
+  critBonusPct?: number;
+  speedBonusPct?: number;
+}
+
+export interface MonsterPowerDef {
+  id: string;
+  name: string;
+  damageMultiplier: number;
+  range: number;
+  cooldownSec: number;
+  colorHex: string;
+  effectDebuff?: string;
+}
+
+export interface ScaledMonsterStats {
+  name: string;
+  archetype: MonsterArchetype;
+  baseLevel: number;
+  scaledLevel: number;
+  hp: number;
+  maxHp: number;
+  damage: number;
+  defense: number;
+  xp: number;
+  zen: number;
+  isBoss: boolean;
+  powers: MonsterPowerDef[];
+  damageTable: {
+    basicAttack: number;
+    specialPower: number;
+    criticalHit: number;
+    critChancePct: number;
+    critMultiplier: number;
+    playerEstNormal: number;
+    playerEstCrit: number;
+  };
+}
+
+export interface AchievementDef {
+  id: string;
+  title: string;
+  description: string;
+  category: 'combat' | 'progression' | 'forge' | 'multiplayer' | 'exploration';
+  targetValue: number;
+  rewardZen: number;
+  rewardBless: number;
+  rewardSkillPoints: number;
+  metricKey: 'kills' | 'level' | 'skillRanks' | 'duelWins' | 'trades' | 'enhanceMax' | 'events';
+}
+
+export interface AsyncDuelChallenge {
+  id: string;
+  challengerId: string;
+  challengerName: string;
+  variantKey: CharacterVariantKey;
+  level: number;
+  combatPower: number;
+  attack: number;
+  defense: number;
+  magic: number;
+  maxHp: number;
+  critChance: number;
+  avgSkillMult: number;
+  transport: TransportMode;
+  topWeapon: string;
+  createdAt: string;
+}
+
+export interface AsyncDuelRecord {
+  id: string;
+  challengerName: string;
+  opponentName: string;
+  opponentVariant: CharacterVariantKey;
+  opponentLevel: number;
+  transportMode: TransportMode;
+  won: boolean;
+  rounds: number;
+  damageDealt: number;
+  damageTaken: number;
+  rewardZen: number;
+  summary: string;
+  roundLog: string[];
+  createdAt: string;
 }
 
 export interface SharedLedgerEntry {
@@ -215,7 +317,7 @@ export interface SharedLedgerEntry {
   transportMode: TransportMode;
   partnerName: string;
   role: 'host' | 'guest';
-  direction: 'sent' | 'received' | 'event_reward';
+  direction: 'sent' | 'received' | 'event_reward' | 'duel_reward';
   itemId: string;
   itemName: string;
   itemSnapshotJson: string;
@@ -359,6 +461,7 @@ export interface MuMapConfig {
   targetMonsterCount: number; // <= 50,000 monsters outside capital city
   floraModel: string;
   minLevel: number;
+  maxLevel: number;
   warpZen: number;
   weather: WeatherKind;
   ambientBed: AmbientBedKind;

@@ -180,6 +180,53 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </button>
           </div>
 
+          {/* Third-Person Camera Distance (Close Character Height) */}
+          <div className="p-3.5 rounded-lg bg-[#141a28] border border-slate-800 space-y-2">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-semibold text-slate-100">
+                Distancia Cámara 3ra Persona (Altura del Héroe)
+              </span>
+              <span className="font-mono-tabular text-amber-300">
+                {(settings.cameraDistance ?? 6.4).toFixed(1)} m
+              </span>
+            </div>
+            <input
+              type="range"
+              min={4.5}
+              max={12}
+              step={0.3}
+              value={settings.cameraDistance ?? 6.4}
+              onChange={(e) =>
+                onUpdateSettings({ ...settings, cameraDistance: Number(e.target.value) })
+              }
+              className="w-full accent-amber-500 cursor-pointer"
+            />
+          </div>
+
+          {/* 80% Auto-Aim Toggle */}
+          <div className="p-3.5 rounded-lg bg-[#141a28] border border-slate-800 flex items-center justify-between gap-3">
+            <div>
+              <div className="text-xs font-semibold text-slate-100">
+                Autopuntado Táctico al 80% (10 Héroes)
+              </div>
+              <div className="text-[11px] text-slate-400 mt-0.5">
+                Orienta automáticamente tus ataques y habilidades hacia el enemigo más cercano.
+              </div>
+            </div>
+            <button
+              onClick={() =>
+                onUpdateSettings({ ...settings, autoAimAssist: !(settings.autoAimAssist ?? true) })
+              }
+              className={`min-h-[40px] px-3.5 rounded-lg text-xs font-bold whitespace-nowrap shrink-0 cursor-pointer ${
+                (settings.autoAimAssist ?? true)
+                  ? 'bg-amber-600 text-slate-950'
+                  : 'bg-slate-800 text-slate-300'
+              }`}
+            >
+              {(settings.autoAimAssist ?? true) ? '80% Activo' : 'Manual'}
+            </button>
+          </div>
+
           {/* FPS Target */}
           <div className="p-3.5 rounded-lg bg-[#141a28] border border-slate-800 flex items-center justify-between gap-3">
             <div>

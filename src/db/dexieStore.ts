@@ -7,6 +7,7 @@ import {
 } from '../data/muSkillsAndClasses';
 import { MU_CHAOS_WINGS_RECIPES } from '../data/muWorldData';
 import type {
+  AsyncDuelRecord,
   ButtonLayoutItem,
   CharacterComboConfig,
   ChatMessageRecord,
@@ -21,6 +22,14 @@ import type {
   SharedLedgerEntry,
   ShopItemDef,
 } from '../types/game';
+import {
+  MAX_HERO_LEVEL,
+  MAX_STAT_POINTS,
+  POINTS_PER_LEVEL,
+  getSkillRank,
+  getSkillUpgradeCost,
+} from '../game/combatAndProgression';
+import type { MapId } from '../types/game';
 
 interface KvSettingRow {
   key: string;
@@ -34,6 +43,7 @@ class MuLorenciaDexieDB extends Dexie {
   SharedLedger!: Table<SharedLedgerEntry, string>;
   EventSessions!: Table<EventSessionRecord, string>;
   ChatMessages!: Table<ChatMessageRecord, string>;
+  DuelRecords!: Table<AsyncDuelRecord, string>;
 
   constructor() {
     super('MuLorenciaOfflineDB');
@@ -44,6 +54,15 @@ class MuLorenciaDexieDB extends Dexie {
       SharedLedger: 'id, createdAt',
       EventSessions: 'id, startedAt',
       ChatMessages: 'id, createdAt',
+    });
+    this.version(2).stores({
+      Accounts: 'id, &username, updatedAt, isSynced',
+      Characters: 'id, accountId, name, class, level, updatedAt, isSynced',
+      KvSettings: 'key',
+      SharedLedger: 'id, createdAt',
+      EventSessions: 'id, startedAt',
+      ChatMessages: 'id, createdAt',
+      DuelRecords: 'id, createdAt',
     });
   }
 }
@@ -132,7 +151,13 @@ async function seedCharacterInternal(
     level: 1,
     xp: 0,
     xpToNext: 120,
-    unspentPoints: 15,
+    unspentPoints: POINTS_PER_LEVEL,
+    skillPoints: 2,
+    skillLevels: {},
+    specialization: 'balanced',
+    unlockedAchievements: [],
+    duelWins: 0,
+    duelLosses: 0,
     currentMapId: 'flaris',
     str: cls.baseStats.str,
     agi: cls.baseStats.agi,
@@ -166,9 +191,35 @@ async function seedCharacterInternal(
   return charObj;
 }
 
+const VALID_MAP_IDS = new Set<MapId>(['flaris', 'robledal', 'puerto', 'ceniza']);
+
+function stripBuggedStarterWings(items?: MuItem[]): MuItem[] {
+  if (!Array.isArray(items)) return [];
+  return items.filter(
+    (item) => !(item.slot === 'wings' && (item.id.endsWith('-wg1') || item.name === 'Alas de Ángel +7')),
+  );
+}
+
+export function normalizeCharacterRecord(c: MuCharacter): MuCharacter {
+  const safeMap: MapId = VALID_MAP_IDS.has(c.currentMapId as MapId) ? (c.currentMapId as MapId) : 'flaris';
+  return {
+    ...c,
+    currentMapId: safeMap,
+    sex: c.sex ?? 'male',
+    skillPoints: c.skillPoints ?? Math.max(2, c.level),
+    skillLevels: c.skillLevels ?? {},
+    specialization: c.specialization ?? 'balanced',
+    unlockedAchievements: c.unlockedAchievements ?? [],
+    duelWins: c.duelWins ?? 0,
+    duelLosses: c.duelLosses ?? 0,
+    equipment: stripBuggedStarterWings(c.equipment),
+    inventory: stripBuggedStarterWings(c.inventory),
+  };
+}
+
 function combineCharItems(c: MuCharacter): MuItem[] {
-  const eq = (c.equipment || []).map((i) => ({ ...i, isEquipped: true }));
-  const inv = (c.inventory || []).map((i) => ({ ...i, isEquipped: false }));
+  const eq = stripBuggedStarterWings(c.equipment).map((i) => ({ ...i, isEquipped: true }));
+  const inv = stripBuggedStarterWings(c.inventory).map((i) => ({ ...i, isEquipped: false }));
   return [...eq, ...inv];
 }
 
@@ -323,7 +374,7 @@ export async function recoverAccountLocal(
 export async function listCharactersByAccount(accountId: string): Promise<MuCharacter[]> {
   await initDexie();
   const chars = await db.Characters.where('accountId').equals(accountId).toArray();
-  return chars.sort((a, b) => b.updatedAt - a.updatedAt);
+  return chars.map(normalizeCharacterRecord).sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 export async function createCharacterForAccount(
@@ -438,26 +489,111 @@ export async function allocateStatPoint(
   stat: 'str' | 'agi' | 'vit' | 'ene' | 'cmd',
   amount = 1,
 ): Promise<{ ok: boolean; character: MuCharacter; message?: string }> {
-  if (char.unspentPoints < amount) {
+  const currentVal = char[stat] ?? 0;
+  if (currentVal >= MAX_STAT_POINTS) {
+    return { ok: false, character: char, message: `Este atributo ya llegó al máximo de ${MAX_STAT_POINTS.toLocaleString()} puntos.` };
+  }
+  const actualAmount = Math.min(amount, char.unspentPoints, MAX_STAT_POINTS - currentVal);
+  if (actualAmount <= 0) {
     return { ok: false, character: char, message: 'No tienes puntos libres suficientes.' };
   }
   const updated: MuCharacter = {
     ...char,
-    unspentPoints: char.unspentPoints - amount,
-    str: stat === 'str' ? char.str + amount : char.str,
-    agi: stat === 'agi' ? char.agi + amount : char.agi,
-    vit: stat === 'vit' ? char.vit + amount : char.vit,
-    ene: stat === 'ene' ? char.ene + amount : char.ene,
-    cmd: stat === 'cmd' ? char.cmd + amount : char.cmd,
-    maxHp: stat === 'vit' ? char.maxHp + amount * 6 : char.maxHp,
-    hp: stat === 'vit' ? char.hp + amount * 6 : char.hp,
-    maxMp: stat === 'ene' ? char.maxMp + amount * 5 : char.maxMp,
-    mp: stat === 'ene' ? char.mp + amount * 5 : char.mp,
-    maxSd: stat === 'vit' || stat === 'agi' ? char.maxSd + amount * 3 : char.maxSd,
-    sd: stat === 'vit' || stat === 'agi' ? char.sd + amount * 3 : char.sd,
+    unspentPoints: char.unspentPoints - actualAmount,
+    str: stat === 'str' ? Math.min(MAX_STAT_POINTS, char.str + actualAmount) : char.str,
+    agi: stat === 'agi' ? Math.min(MAX_STAT_POINTS, char.agi + actualAmount) : char.agi,
+    vit: stat === 'vit' ? Math.min(MAX_STAT_POINTS, char.vit + actualAmount) : char.vit,
+    ene: stat === 'ene' ? Math.min(MAX_STAT_POINTS, char.ene + actualAmount) : char.ene,
+    cmd: stat === 'cmd' ? Math.min(MAX_STAT_POINTS, char.cmd + actualAmount) : char.cmd,
+    maxHp: stat === 'vit' ? char.maxHp + actualAmount * 8 : char.maxHp,
+    hp: stat === 'vit' ? char.hp + actualAmount * 8 : char.hp,
+    maxMp: stat === 'ene' ? char.maxMp + actualAmount * 6 : char.maxMp,
+    mp: stat === 'ene' ? char.mp + actualAmount * 6 : char.mp,
+    maxSd: stat === 'vit' || stat === 'agi' ? char.maxSd + actualAmount * 4 : char.maxSd,
+    sd: stat === 'vit' || stat === 'agi' ? char.sd + actualAmount * 4 : char.sd,
   };
   const saved = await updateCharacter(updated);
-  return { ok: true, character: saved };
+  return { ok: true, character: normalizeCharacterRecord(saved) };
+}
+
+export async function performHeroReset(
+  char: MuCharacter,
+): Promise<{ ok: boolean; character: MuCharacter; message: string }> {
+  if (char.level < MAX_HERO_LEVEL) {
+    return {
+      ok: false,
+      character: char,
+      message: `Necesitas llegar a Nivel ${MAX_HERO_LEVEL} para hacer Reset (actual: Nv.${char.level}).`,
+    };
+  }
+  const nextResets = (char.resets ?? 0) + 1;
+  const resetBonusPoints = 15;
+  const updated: MuCharacter = {
+    ...char,
+    level: 1,
+    xp: 0,
+    xpToNext: 120,
+    resets: nextResets,
+    unspentPoints: (char.unspentPoints ?? 0) + resetBonusPoints,
+    hp: char.maxHp,
+    mp: char.maxMp,
+    sd: char.maxSd,
+    ag: char.maxAg,
+  };
+  const saved = await updateCharacter(updated);
+  return {
+    ok: true,
+    character: normalizeCharacterRecord(saved),
+    message: `¡Reset #${nextResets} completado! Volviste a Nivel 1 conservando todos tus atributos (+${resetBonusPoints} pts extra).`,
+  };
+}
+
+export async function upgradeSkillRank(
+  char: MuCharacter,
+  skillId: string,
+): Promise<{ ok: boolean; character: MuCharacter; message: string }> {
+  const norm = normalizeCharacterRecord(char);
+  const currentRank = getSkillRank(norm, skillId);
+  if (currentRank >= 10) {
+    return { ok: false, character: norm, message: 'Esta habilidad ya alcanzó el rango máximo (Nv.10).' };
+  }
+  const cost = getSkillUpgradeCost(currentRank);
+  if ((norm.skillPoints ?? 0) < cost.skillPoints) {
+    return {
+      ok: false,
+      character: norm,
+      message: `Necesitas ${cost.skillPoints} punto(s) de habilidad. Sube de nivel o completa logros.`,
+    };
+  }
+  if (norm.zen < cost.zenCost) {
+    return {
+      ok: false,
+      character: norm,
+      message: `Zen insuficiente (requiere ${cost.zenCost.toLocaleString()} Zen).`,
+    };
+  }
+  const nextRank = currentRank + 1;
+  const updated: MuCharacter = {
+    ...norm,
+    skillPoints: (norm.skillPoints ?? 0) - cost.skillPoints,
+    zen: norm.zen - cost.zenCost,
+    skillLevels: { ...(norm.skillLevels ?? {}), [skillId]: nextRank },
+  };
+  const saved = await updateCharacter(updated);
+  return {
+    ok: true,
+    character: normalizeCharacterRecord(saved),
+    message: `Habilidad mejorada a Rango ${nextRank}/10.`,
+  };
+}
+
+export async function setCharacterSpecialization(
+  char: MuCharacter,
+  specialization: NonNullable<MuCharacter['specialization']>,
+): Promise<MuCharacter> {
+  const norm = normalizeCharacterRecord(char);
+  const saved = await updateCharacter({ ...norm, specialization });
+  return normalizeCharacterRecord(saved);
 }
 
 export async function upgradeItemWithJewel(
@@ -742,6 +878,8 @@ const DEFAULT_SETTINGS: GameSettings = {
   musicEnabled: true,
   musicVolume: 0.45,
   free3dCamera: false,
+  cameraDistance: 6.4,
+  autoAimAssist: true,
   targetFps: 60,
 };
 
@@ -826,6 +964,18 @@ export async function saveChatMessage(msg: ChatMessageRecord): Promise<void> {
   await db.ChatMessages.put(msg);
 }
 
+export async function getAsyncDuels(): Promise<AsyncDuelRecord[]> {
+  await initDexie();
+  const all = await db.DuelRecords.toArray();
+  return all.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 50);
+}
+
+export async function recordAsyncDuel(rec: AsyncDuelRecord): Promise<void> {
+  await initDexie();
+  await db.DuelRecords.put(rec);
+  notifyMutated();
+}
+
 // --- Cloud Sync Helpers (Golden Rule: NEVER overwrite newer updatedAt) ---
 
 export async function getPendingSyncRecords(): Promise<{
@@ -880,18 +1030,36 @@ export async function countPendingSync(): Promise<number> {
 
 // --- Backup Export / Import (IndexedDB Dexie JSON) ---
 
+export async function getAllSyncRecordsForCloud(): Promise<{
+  accounts: MuAccount[];
+  characters: MuCharacter[];
+  ledger: SharedLedgerEntry[];
+  duels: AsyncDuelRecord[];
+  events: EventSessionRecord[];
+}> {
+  await initDexie();
+  const [pending, ledger, duels, events] = await Promise.all([
+    getPendingSyncRecords(),
+    db.SharedLedger.toArray(),
+    db.DuelRecords.toArray(),
+    db.EventSessions.toArray(),
+  ]);
+  return { ...pending, ledger, duels, events };
+}
+
 export async function getDatabaseStats(): Promise<{
   tables: Array<{ name: string; rows: number }>;
   byteSize: number;
 }> {
   await initDexie();
-  const [a, c, k, l, e, m] = await Promise.all([
+  const [a, c, k, l, e, m, d] = await Promise.all([
     db.Accounts.count(),
     db.Characters.count(),
     db.KvSettings.count(),
     db.SharedLedger.count(),
     db.EventSessions.count(),
     db.ChatMessages.count(),
+    db.DuelRecords.count(),
   ]);
   const snapshot = await exportDexieJsonString();
   return {
@@ -902,23 +1070,25 @@ export async function getDatabaseStats(): Promise<{
       { name: 'SharedLedger', rows: l },
       { name: 'EventSessions', rows: e },
       { name: 'ChatMessages', rows: m },
+      { name: 'DuelRecords', rows: d },
     ],
     byteSize: new Blob([snapshot]).size,
   };
 }
 
 async function exportDexieJsonString(): Promise<string> {
-  const [Accounts, Characters, KvSettings, SharedLedger, EventSessions, ChatMessages] = await Promise.all([
+  const [Accounts, Characters, KvSettings, SharedLedger, EventSessions, ChatMessages, DuelRecords] = await Promise.all([
     db.Accounts.toArray(),
     db.Characters.toArray(),
     db.KvSettings.toArray(),
     db.SharedLedger.toArray(),
     db.EventSessions.toArray(),
     db.ChatMessages.toArray(),
+    db.DuelRecords.toArray(),
   ]);
   return JSON.stringify({
     engine: 'dexie-indexeddb',
-    version: 1,
+    version: 2,
     exportedAt: new Date().toISOString(),
     Accounts,
     Characters,
@@ -926,6 +1096,7 @@ async function exportDexieJsonString(): Promise<string> {
     SharedLedger,
     EventSessions,
     ChatMessages,
+    DuelRecords,
   }, null, 2);
 }
 
@@ -945,10 +1116,11 @@ export async function importDatabaseFile(file: File): Promise<void> {
     SharedLedger?: SharedLedgerEntry[];
     EventSessions?: EventSessionRecord[];
     ChatMessages?: ChatMessageRecord[];
+    DuelRecords?: AsyncDuelRecord[];
   };
   await db.transaction(
     'rw',
-    [db.Accounts, db.Characters, db.KvSettings, db.SharedLedger, db.EventSessions, db.ChatMessages],
+    [db.Accounts, db.Characters, db.KvSettings, db.SharedLedger, db.EventSessions, db.ChatMessages, db.DuelRecords],
     async () => {
       if (Array.isArray(parsed.Accounts)) await db.Accounts.bulkPut(parsed.Accounts);
       if (Array.isArray(parsed.Characters)) await db.Characters.bulkPut(parsed.Characters);
@@ -956,6 +1128,7 @@ export async function importDatabaseFile(file: File): Promise<void> {
       if (Array.isArray(parsed.SharedLedger)) await db.SharedLedger.bulkPut(parsed.SharedLedger);
       if (Array.isArray(parsed.EventSessions)) await db.EventSessions.bulkPut(parsed.EventSessions);
       if (Array.isArray(parsed.ChatMessages)) await db.ChatMessages.bulkPut(parsed.ChatMessages);
+      if (Array.isArray(parsed.DuelRecords)) await db.DuelRecords.bulkPut(parsed.DuelRecords);
     },
   );
   notifyMutated();

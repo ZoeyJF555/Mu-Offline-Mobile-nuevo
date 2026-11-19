@@ -16,6 +16,7 @@ import {
   createCharacterForAccount,
   equipItem,
   executeChaosMixWing,
+  getAsyncDuels,
   getChatHistory,
   getEventSessions,
   getItemsForCharacter,
@@ -28,6 +29,9 @@ import {
   loadComboConfig,
   loadGameSettings,
   loginAccount,
+  normalizeCharacterRecord,
+  performHeroReset,
+  recordAsyncDuel,
   recordSharedLedger,
   recoverAccountLocal,
   registerAccount,
@@ -36,14 +40,31 @@ import {
   saveChatMessage,
   saveComboConfig,
   saveGameSettings,
+  setCharacterSpecialization,
   wearEquipment,
   repairEquipment,
   sellInventoryItem,
   updateCharacter,
   upgradeItemWithJewel,
+  upgradeSkillRank,
   upsertEventSession,
 } from './db/dexieStore';
-import { MuWorldEngine, type EngineCallbacks } from './game/MuWorldEngine';
+import {
+  MAX_HERO_LEVEL,
+  POINTS_PER_LEVEL,
+  aggregateActiveEffects,
+  buildAsyncDuelChallenge,
+  computeHeroDamageStats,
+  computeHeroDefenseMitigation,
+  createSkillBuffEffect,
+  decodeDuelToken,
+  encodeDuelToken,
+  evaluateAchievements,
+  getSkillCooldownSec,
+  getSkillRank,
+  resolveAsyncDuel,
+} from './game/combatAndProgression';
+import { MuWorldEngine, type EngineCallbacks, type TargetMonsterInfo } from './game/MuWorldEngine';
 import { soundSynth } from './game/soundSynth';
 import { cloudSyncManager } from './services/cloudSyncManager';
 import { LocalSyncManager } from './services/syncManager';
@@ -59,6 +80,9 @@ import { OfflineIndicator } from './components/PWAInstallButton';
 import { SettingsModal } from './components/SettingsModal';
 import { SyncLinkDrawer } from './components/SyncLinkDrawer';
 import type {
+  ActiveEffect,
+  AsyncDuelChallenge,
+  AsyncDuelRecord,
   ButtonLayoutItem,
   CharacterComboConfig,
   ChatMessageRecord,
@@ -78,6 +102,7 @@ import type {
   ShopItemDef,
   SkillDef,
   SyncStatusInfo,
+  TransportMode,
 } from './types/game';
 
 interface FloatingBanner {
@@ -93,6 +118,8 @@ const INITIAL_SETTINGS: GameSettings = {
   musicEnabled: true,
   musicVolume: 0.45,
   free3dCamera: false,
+  cameraDistance: 6.4,
+  autoAimAssist: true,
   targetFps: 60,
 };
 
@@ -122,13 +149,13 @@ export default function App() {
   const [editMode, setEditMode] = useState(false);
   const [measuredFps, setMeasuredFps] = useState(60);
   const [worldTelemetry, setWorldTelemetry] = useState<WorldTelemetryInfo>({
-    x: 0,
-    z: 8,
+    x: -200,
+    z: -255,
     inSafeCity: true,
-    totalMonsters: 24000,
+    totalMonsters: 1600,
     nearbyMonsters: 0,
-    mapName: 'Lorencia',
-    areaKm2: 1.0,
+    mapName: 'Flaris',
+    areaKm2: 9.44,
   });
   const [damageNumbers, setDamageNumbers] = useState<FloatingDamageNumber[]>([]);
   const [isPortraitMobile, setIsPortraitMobile] = useState(
@@ -147,7 +174,18 @@ export default function App() {
   const [roomState, setRoomState] = useState<RoomState | null>(null);
   const [btDeviceName, setBtDeviceName] = useState<string | null>(null);
   const [banners, setBanners] = useState<FloatingBanner[]>([]);
+  const [activeEffects, setActiveEffects] = useState<ActiveEffect[]>([]);
+  const [targetMonster, setTargetMonster] = useState<TargetMonsterInfo | null>(null);
+  const [skillCooldowns, setSkillCooldowns] = useState<Record<string, number>>({});
+  const [duelRecords, setDuelRecords] = useState<AsyncDuelRecord[]>([]);
+  const [serverChallenges, setServerChallenges] = useState<AsyncDuelChallenge[]>([]);
+  const [lastDuelResult, setLastDuelResult] = useState<AsyncDuelRecord | null>(null);
+  const [skillNotice, setSkillNotice] = useState<string | null>(null);
 
+  const autoStartedRef = useRef(false);
+  const ledgerRef = useRef<SharedLedgerEntry[]>([]);
+  const eventsRef = useRef<EventSessionRecord[]>([]);
+  const skillCooldownsRef = useRef<Record<string, number>>({});
   const charRef = useRef<MuCharacter | null>(null);
   const itemsRef = useRef<MuItem[]>([]);
   const roomRef = useRef<RoomState | null>(null);
@@ -160,6 +198,9 @@ export default function App() {
   settingsRef.current = gameSettings;
   screenStageRef.current = screenStage;
   currentAccRef.current = currentAccount;
+  ledgerRef.current = ledger;
+  eventsRef.current = eventHistory;
+  skillCooldownsRef.current = skillCooldowns;
 
   const pushBanner = useCallback((text: string, color = '#fbbf24') => {
     const id = Date.now() + Math.random();
@@ -213,31 +254,69 @@ export default function App() {
   }, []);
 
   const selectAndHydrateCharacter = useCallback(async (charObj: MuCharacter) => {
-    setCharacter(charObj);
-    engineRef.current?.updateHeroStats(charObj);
+    const norm = normalizeCharacterRecord(charObj);
+    setCharacter(norm);
+    engineRef.current?.updateHeroStats(norm);
     const [charItems, charCombo] = await Promise.all([
-      getItemsForCharacter(charObj.id),
-      loadComboConfig(charObj.id, charObj.classType),
+      getItemsForCharacter(norm.id),
+      loadComboConfig(norm.id, norm.classType),
     ]);
     setItems(charItems);
     setComboConfig(charCombo);
     engineRef.current?.syncHeroAppearance(
-      charObj.classType,
+      norm.classType,
       charItems.filter((i) => i.isEquipped),
-      charObj.sex,
+      norm.sex,
     ).catch(console.error);
+    return { char: norm, charItems };
   }, []);
+
+  const checkAndGrantAchievements = useCallback(
+    async (
+      charObj: MuCharacter,
+      charItems: MuItem[],
+      ledgerCount: number,
+      eventCount: number,
+    ): Promise<MuCharacter> => {
+      const res = evaluateAchievements(charObj, charItems, ledgerCount, eventCount);
+      if (res.newlyUnlocked.length === 0) return charObj;
+      let bonusZen = 0;
+      let bonusBless = 0;
+      let bonusSkillPts = 0;
+      const unlockedIds = new Set(charObj.unlockedAchievements || []);
+      for (const ach of res.newlyUnlocked) {
+        unlockedIds.add(ach.id);
+        bonusZen += ach.rewardZen;
+        bonusBless += ach.rewardBless;
+        bonusSkillPts += ach.rewardSkillPoints;
+        pushBanner(`Logro: ${ach.title} (+${ach.rewardZen} Zen, +${ach.rewardSkillPoints} SkillPt)`, '#34d399');
+      }
+      const saved = await updateCharacter({
+        ...charObj,
+        zen: charObj.zen + bonusZen,
+        bless: charObj.bless + bonusBless,
+        skillPoints: (charObj.skillPoints ?? 0) + bonusSkillPts,
+        unlockedAchievements: Array.from(unlockedIds),
+      });
+      const norm = normalizeCharacterRecord(saved);
+      setCharacter(norm);
+      return norm;
+    },
+    [pushBanner],
+  );
 
   const loadAllFromDexie = useCallback(
     async (preferAccountId?: string, preferCharId?: string) => {
       await initDexie();
-      const [accList, loadedSettings, loadedLayouts, led, evs, chats] = await Promise.all([
+      const [accList, loadedSettings, loadedLayouts, led, evs, chats, duels, challenges] = await Promise.all([
         listAccounts(),
         loadGameSettings(),
         loadButtonLayouts(),
         getSharedLedger(),
         getEventSessions(),
         getChatHistory(),
+        getAsyncDuels(),
+        cloudSyncManager.fetchDuelChallenges(),
       ]);
 
       setAccounts(accList);
@@ -246,6 +325,8 @@ export default function App() {
       setLedger(led);
       setEventHistory(evs);
       setChatMessages(chats);
+      setDuelRecords(duels);
+      setServerChallenges(challenges);
 
       const activeAccId = preferAccountId || currentAccRef.current?.id || accList[0]?.id;
       if (activeAccId) {
@@ -264,10 +345,58 @@ export default function App() {
     [selectAndHydrateCharacter],
   );
 
+  // Expose screenStage state attribute for accessibility and testing
+  useEffect(() => {
+    document.body.dataset.state = screenStage === 'login' ? 'title' : screenStage;
+  }, [screenStage]);
+
   // Sync engine hero stats snapshot whenever character changes
   useEffect(() => {
     engineRef.current?.updateHeroStats(character);
   }, [character]);
+
+  // Support ?autostart=1 and optional ?map=lorencia to jump directly into active gameplay
+  useEffect(() => {
+    if (autoStartedRef.current) return;
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has('autostart')) return;
+    if (!character || !engineRef.current || worldLoadRef.current) return;
+
+    autoStartedRef.current = true;
+    const requestedMap = params.get('map') as MapId | null;
+    const targetChar = requestedMap ? { ...character, currentMapId: requestedMap } : character;
+    if (requestedMap) {
+      setCharacter(targetChar);
+    }
+    if (accounts[0] && !currentAccount) {
+      setCurrentAccount(accounts[0]);
+      cloudSyncManager.setActiveAccountId(accounts[0].id);
+    }
+    (async () => {
+      worldLoadRef.current = true;
+      setWorldLoading(true);
+      try {
+        const engine = engineRef.current;
+        if (!engine) return;
+        engine.updateHeroStats(targetChar);
+        await engine.syncHeroAppearance(
+          targetChar.classType,
+          itemsRef.current.filter((i) => i.isEquipped),
+          targetChar.sex,
+        );
+        const savedPose =
+          !requestedMap && typeof targetChar.lastX === 'number' && typeof targetChar.lastZ === 'number'
+            ? { x: targetChar.lastX, z: targetChar.lastZ, rotY: targetChar.lastRotY }
+            : undefined;
+        await engine.loadMap(targetChar.currentMapId || 'flaris', true, savedPose);
+        engine.setMode('playing');
+        setScreenStage('playing');
+      } finally {
+        worldLoadRef.current = false;
+        setWorldLoading(false);
+      }
+    })();
+  }, [character, accounts, currentAccount]);
 
   // Boot Dexie IndexedDB & CloudSyncManager (Golden Rule timestamp sync)
   useEffect(() => {
@@ -304,8 +433,73 @@ export default function App() {
     soundSynth.setMusicConfig(gameSettings.musicEnabled, gameSettings.musicVolume);
     engineRef.current?.setBrightness(gameSettings.brightness);
     engineRef.current?.setFree3dMode(gameSettings.free3dCamera);
+    engineRef.current?.setCameraDistance(gameSettings.cameraDistance ?? 6.4);
+    engineRef.current?.setAutoAimAssist(gameSettings.autoAimAssist ?? true);
     engineRef.current?.setTargetFps(gameSettings.targetFps);
   }, [gameSettings]);
+
+  // Tick active effects & skill cooldowns every 250ms while playing
+  useEffect(() => {
+    if (screenStage !== 'playing') return;
+    const timer = window.setInterval(() => {
+      setActiveEffects((prev) => {
+        if (prev.length === 0) return prev;
+        const next = prev
+          .map((e) => ({ ...e, remainingSec: Number((e.remainingSec - 0.25).toFixed(2)) }))
+          .filter((e) => e.remainingSec > 0);
+        return next;
+      });
+      setSkillCooldowns((prev) => {
+        const keys = Object.keys(prev);
+        if (keys.length === 0) return prev;
+        let changed = false;
+        const next: Record<string, number> = {};
+        for (const k of keys) {
+          const rem = Number((prev[k] - 0.25).toFixed(2));
+          if (rem > 0) {
+            next[k] = rem;
+          }
+          changed = true;
+        }
+        return changed ? next : prev;
+      });
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [screenStage]);
+
+  useEffect(() => {
+    const agg = aggregateActiveEffects(activeEffects);
+    engineRef.current?.setActiveEffectBonuses({
+      atkBonusPct: agg.atkBonusPct,
+      speedBonusPct: agg.speedBonusPct,
+      critBonusPct: agg.critBonusPct,
+    });
+  }, [activeEffects]);
+
+  // Persist exact player coordinates continuously so re-entering resumes in the exact same spot
+  useEffect(() => {
+    if (screenStage !== 'playing') return;
+    const saveCurrentPose = () => {
+      const c = charRef.current;
+      const pose = engineRef.current?.getHeroPose();
+      if (!c || !pose) return;
+      const movedEnough =
+        typeof c.lastX !== 'number' ||
+        typeof c.lastZ !== 'number' ||
+        Math.hypot(pose.x - c.lastX, pose.z - c.lastZ) >= 0.75;
+      if (!movedEnough) return;
+      const next = { ...c, lastX: Number(pose.x.toFixed(2)), lastZ: Number(pose.z.toFixed(2)), lastRotY: Number(pose.rotY.toFixed(3)) };
+      charRef.current = next;
+      void updateCharacter(next);
+    };
+    const timer = window.setInterval(saveCurrentPose, 2400);
+    window.addEventListener('beforeunload', saveCurrentPose);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('beforeunload', saveCurrentPose);
+      saveCurrentPose();
+    };
+  }, [screenStage]);
 
   // Passive MU SD / MP / AG regeneration while playing
   useEffect(() => {
@@ -497,12 +691,19 @@ export default function App() {
           `Transferido ${payload.item.name} +${payload.item.enhanceLevel} a ${payload.toPeerName}. Guardado en IndexedDB.`,
         );
       },
+      onDuelChallenge: ({ fromPeerName, challenge }) => {
+        setServerChallenges((prev) => [challenge, ...prev.filter((c) => c.id !== challenge.id)].slice(0, 24));
+        pushBanner(`${fromPeerName} publicó un desafío de Duelo Asíncrono`, '#fb7185');
+      },
+      onDuelCompleted: ({ record }) => {
+        pushBanner(`Duelo en sala: ${record.summary}`, '#fbbf24');
+      },
       onRoomEnded: async (message) => {
         setRoomState(null);
         engineRef.current?.setEventActive(false);
         engineRef.current?.syncRemotePeers([], syncRef.current?.peerId || '');
         setSyncMessage(message);
-        pushBanner('Invitación finalizada · Ítems asegurados en IndexedDB', '#fbbf24');
+        pushBanner('Invitación finalizada · Ítems y duelos asegurados en IndexedDB', '#fbbf24');
       },
       onError: (message) => {
         setSyncMessage(message);
@@ -538,19 +739,29 @@ export default function App() {
         let nextMaxSd = c.maxSd;
         let nextMaxAg = c.maxAg;
         let unspentPoints = c.unspentPoints;
+        let skillPoints = c.skillPoints ?? 2;
         let leveledUp = false;
 
-        while (nextXp >= nextXpToNext) {
+        while (nextXp >= nextXpToNext && nextLevel < MAX_HERO_LEVEL) {
           nextXp -= nextXpToNext;
           nextLevel += 1;
-          nextXpToNext = Math.round(nextXpToNext * 1.25);
+          nextXpToNext = Math.round(nextXpToNext * 1.24);
           nextMaxHp += 28;
           nextMaxMp += 18;
           nextMaxSd += 22;
           nextMaxAg += 5;
-          unspentPoints += c.classType === 'MG' || c.classType === 'DL' ? 7 : 5;
+          unspentPoints += POINTS_PER_LEVEL;
+          skillPoints += 1;
           leveledUp = true;
-          pushBanner(`¡Subiste a Nivel ${nextLevel}! (+Puntos de Stats)`, '#fbbf24');
+          if (nextLevel >= MAX_HERO_LEVEL) {
+            nextXp = 0;
+            pushBanner(`¡Nivel Máximo ${MAX_HERO_LEVEL} alcanzado! Haz RESET en Atributos (C)`, '#f43f5e');
+          } else {
+            pushBanner(`¡Subiste a Nivel ${nextLevel}! (+${POINTS_PER_LEVEL} Pts Atributo & +1 SkillPt)`, '#fbbf24');
+          }
+        }
+        if (nextLevel >= MAX_HERO_LEVEL) {
+          nextXp = Math.min(nextXp, nextXpToNext);
         }
 
         if (leveledUp) {
@@ -563,6 +774,7 @@ export default function App() {
           xp: nextXp,
           xpToNext: nextXpToNext,
           unspentPoints,
+          skillPoints,
           maxHp: nextMaxHp,
           hp: leveledUp ? nextMaxHp : c.hp,
           maxMp: nextMaxMp,
@@ -574,8 +786,9 @@ export default function App() {
           zen: c.zen + zen,
           kills: c.kills + 1,
         };
-        const saved = await updateCharacter(updated);
+        const saved = normalizeCharacterRecord(await updateCharacter(updated));
         setCharacter(saved);
+        await checkAndGrantAchievements(saved, itemsRef.current, ledgerRef.current.length, eventsRef.current.length);
       },
       onPickupLoot: async (drop) => {
         const c = charRef.current;
@@ -601,17 +814,56 @@ export default function App() {
                 : '#fbbf24',
         );
       },
-      onPlayerDamaged: (amount) => {
-        setCharacter((prev) => {
-          if (!prev) return prev;
-          const sdAbsorb = Math.min(prev.sd, Math.round(amount * 0.7));
-          const hpDamage = Math.max(1, amount - sdAbsorb);
-          return {
-            ...prev,
-            sd: Math.max(0, prev.sd - sdAbsorb),
-            hp: Math.max(20, prev.hp - hpDamage),
+      onPlayerDamaged: (rawAmount, isCrit) => {
+        const cur = charRef.current;
+        if (!cur) return;
+        const { finalDamage } = computeHeroDefenseMitigation(rawAmount, Boolean(isCrit), cur, itemsRef.current);
+        const sdAbsorb = Math.min(cur.sd, Math.round(finalDamage * 0.55));
+        const hpDamage = Math.max(1, finalDamage - sdAbsorb);
+        const nextHp = Math.max(0, cur.hp - hpDamage);
+        const nextSd = Math.max(0, cur.sd - sdAbsorb);
+
+        if (nextHp <= 0) {
+          const respawnPose = engineRef.current?.respawnInCurrentCity();
+          const mapName = getMapById(cur.currentMapId).name;
+          const revived: MuCharacter = {
+            ...cur,
+            hp: cur.maxHp,
+            mp: cur.maxMp,
+            sd: cur.maxSd,
+            ag: cur.maxAg,
+            lastX: respawnPose?.x ?? cur.lastX,
+            lastZ: respawnPose?.z ?? cur.lastZ,
+            lastRotY: respawnPose?.rotY ?? cur.lastRotY,
           };
-        });
+          charRef.current = revived;
+          setCharacter(revived);
+          void updateCharacter(revived);
+          pushBanner(`¡Has muerto! Renaces en la ciudad de ${mapName}`, '#ef4444');
+          return;
+        }
+
+        setCharacter((prev) => (prev ? { ...prev, sd: nextSd, hp: nextHp } : prev));
+      },
+      onMonsterPowerHit: (power, damage) => {
+        if (power.effectDebuff) {
+          setActiveEffects((prev) => [
+            ...prev.filter((e) => e.id !== `debuff-${power.id}`),
+            {
+              id: `debuff-${power.id}`,
+              name: `${power.effectDebuff} (${power.name})`,
+              kind: 'debuff',
+              statHint: `-${damage} HP`,
+              color: power.colorHex,
+              remainingSec: 4,
+              totalSec: 4,
+            },
+          ]);
+        }
+        pushBanner(`${power.name} (-${damage})`, power.colorHex);
+      },
+      onTargetMonsterChange: (target) => {
+        setTargetMonster(target);
       },
       onHeroMoveSync: (x, z, rotY, action) => {
         if (roomRef.current && syncRef.current) {
@@ -651,6 +903,8 @@ export default function App() {
     engine.setBrightness(settingsRef.current.brightness);
     engine.setAudio(settingsRef.current.volume, settingsRef.current.muted);
     engine.setFree3dMode(settingsRef.current.free3dCamera);
+    engine.setCameraDistance(settingsRef.current.cameraDistance ?? 6.4);
+    engine.setAutoAimAssist(settingsRef.current.autoAimAssist ?? true);
     engine.setTargetFps(settingsRef.current.targetFps);
 
     if (charRef.current) {
@@ -667,15 +921,21 @@ export default function App() {
       engineRef.current = null;
       if (import.meta.env.DEV) delete (window as any).__muEngine;
     };
-  }, [pushBanner, pushDamageNumber]);
+  }, [checkAndGrantAchievements, pushBanner, pushDamageNumber]);
 
   const computeBonusStatPower = (c: MuCharacter) =>
-    Math.round((c.str + c.ene + c.agi + c.cmd) * 0.45);
+    computeHeroDamageStats(c, itemsRef.current).avgAttack;
 
   const handleCastSkill = useCallback(
     (skill: SkillDef) => {
       const c = charRef.current;
       if (!c || screenStageRef.current !== 'playing') return;
+
+      const remainingCd = skillCooldownsRef.current[skill.id] ?? 0;
+      if (remainingCd > 0) {
+        pushBanner(`${skill.shortName} en recarga (${remainingCd.toFixed(1)}s)`, '#94a3b8');
+        return;
+      }
 
       // Safe city blocks offensive skills cleanly without spending MP/AG
       if (engineRef.current?.isInSafeCity() && !skill.isBuff) {
@@ -690,6 +950,16 @@ export default function App() {
 
       if (useSkill.id !== skill.id) {
         pushBanner('MP/AG bajo · Ataque básico', '#f87171');
+      }
+
+      const cdSec = getSkillCooldownSec(useSkill);
+      if (cdSec > 0.4) {
+        setSkillCooldowns((prev) => ({ ...prev, [useSkill.id]: cdSec }));
+      }
+
+      if (useSkill.isBuff) {
+        const eff = createSkillBuffEffect(useSkill, getSkillRank(c, useSkill.id));
+        setActiveEffects((prev) => [...prev.filter((e) => e.id !== eff.id), eff]);
       }
 
       setCharacter((prev) => {
@@ -780,6 +1050,8 @@ export default function App() {
       if (e.code === 'Space') {
         e.preventDefault();
         handlePressAttack();
+      } else if (e.code === 'KeyJ') {
+        engineRef.current?.jump();
       } else if (e.code === 'Digit1' && skills[0]) {
         handleCastSkill(skills[0]);
       } else if (e.code === 'Digit2' && skills[1]) {
@@ -924,7 +1196,11 @@ export default function App() {
       if (window.innerWidth < 1024) await requestLandscapeFullscreen();
       engine.updateHeroStats(character);
       await engine.syncHeroAppearance(character.classType, items.filter(i => i.isEquipped), character.sex);
-      await engine.loadMap(character.currentMapId || 'lorencia', true);
+      const savedPose =
+        typeof character.lastX === 'number' && typeof character.lastZ === 'number'
+          ? { x: character.lastX, z: character.lastZ, rotY: character.lastRotY }
+          : undefined;
+      await engine.loadMap(character.currentMapId || 'flaris', true, savedPose);
       engine.setMode('playing'); setScreenStage('playing');
     } catch(error) {
       pushBanner(`No se pudo cargar el personaje o mapa: ${String(error)}`, '#f87171');
@@ -943,9 +1219,17 @@ export default function App() {
       await engine.loadMap(mapId, true);
       const latest = charRef.current;
       if (!latest || latest.id !== character.id) return;
-      const saved = await updateCharacter({ ...latest, zen: latest.zen - mapCfg.warpZen, currentMapId: mapId });
+      const pose = engine.getHeroPose();
+      const saved = await updateCharacter({
+        ...latest,
+        zen: latest.zen - mapCfg.warpZen,
+        currentMapId: mapId,
+        lastX: pose?.x ?? mapCfg.spawn?.x,
+        lastZ: pose?.z ?? mapCfg.spawn?.z,
+        lastRotY: pose?.rotY,
+      });
       setCharacter(saved); setActiveDrawer('none');
-      pushBanner(`Teletransportado a ${mapCfg.name} (${mapCfg.areaKm2.toFixed(2)} km²)`, '#38bdf8');
+      pushBanner(`Teletransportado a ${mapCfg.name} (Nv.${mapCfg.minLevel}–${mapCfg.maxLevel})`, '#38bdf8');
     } catch(error) {
       pushBanner(`No se pudo viajar: ${String(error)}`, '#f87171');
       try { await engine.loadMap(character.currentMapId, true); }
@@ -1021,6 +1305,111 @@ export default function App() {
     } else if (res.message) {
       pushBanner(res.message, '#f87171');
     }
+  };
+
+  const handlePerformReset = async () => {
+    if (!character) return;
+    const res = await performHeroReset(character);
+    if (res.ok) {
+      setCharacter(res.character);
+      soundSynth.playLevelUp();
+      pushBanner(res.message, '#fbbf24');
+    } else {
+      pushBanner(res.message, '#f87171');
+    }
+  };
+
+  const handleUpgradeSkill = async (skillId: string) => {
+    if (!character) return;
+    const res = await upgradeSkillRank(character, skillId);
+    setCharacter(res.character);
+    setSkillNotice(res.message);
+    soundSynth.playForge(res.ok);
+    if (res.ok) {
+      await checkAndGrantAchievements(res.character, items, ledger.length, eventHistory.length);
+    }
+  };
+
+  const handleSelectSpecialization = async (spec: NonNullable<MuCharacter['specialization']>) => {
+    if (!character) return;
+    const saved = await setCharacterSpecialization(character, spec);
+    setCharacter(saved);
+    setSkillNotice(`Especialización cambiada a ${spec.toUpperCase()}.`);
+    soundSynth.playTradeSync();
+  };
+
+  const handleGenerateDuelToken = (transport: TransportMode) => {
+    if (!character) return '';
+    const challenge = buildAsyncDuelChallenge(character, items, transport);
+    return encodeDuelToken(challenge);
+  };
+
+  const handlePublishDuelChallenge = async (transport: TransportMode) => {
+    if (!character) return;
+    const challenge = buildAsyncDuelChallenge(character, items, transport);
+    syncRef.current?.sendDuelChallenge(challenge);
+    const posted = await cloudSyncManager.publishDuelChallenge(challenge);
+    const refreshed = await cloudSyncManager.fetchDuelChallenges();
+    if (refreshed.length > 0) setServerChallenges(refreshed);
+    else setServerChallenges((prev) => [challenge, ...prev.filter((c) => c.id !== challenge.id)]);
+    setSyncMessage(
+      posted
+        ? `Desafío ${challenge.challengerName} publicado en la red (${transport.toUpperCase()}) y listo para duelos asíncronos.`
+        : `Desafío generado offline (${transport.toUpperCase()}). Usa el token MUDUEL1 para compartir por Bluetooth o Wi-Fi.`,
+    );
+  };
+
+  const handleRefreshDuelChallenges = async () => {
+    const list = await cloudSyncManager.fetchDuelChallenges();
+    setServerChallenges(list);
+    setSyncMessage(`Lista de desafíos actualizada (${list.length} disponibles).`);
+  };
+
+  const executeDuelAgainstChallenge = async (opponent: AsyncDuelChallenge, transport: TransportMode) => {
+    if (!character) return;
+    const myChallenge = buildAsyncDuelChallenge(character, items, transport);
+    const result = resolveAsyncDuel(myChallenge, opponent, transport);
+    await recordAsyncDuel(result);
+    await recordSharedLedger({
+      id: `led-duel-${result.id}`,
+      sessionId: opponent.id,
+      transportMode: transport,
+      partnerName: opponent.challengerName,
+      role: 'host',
+      direction: 'duel_reward',
+      itemId: result.id,
+      itemName: `${result.won ? 'Victoria' : 'Participación'} (+${result.rewardZen.toLocaleString()} Zen)`,
+      itemSnapshotJson: JSON.stringify(result),
+      status: 'committed',
+      createdAt: result.createdAt,
+    });
+
+    const updatedChar = normalizeCharacterRecord(
+      await updateCharacter({
+        ...character,
+        zen: character.zen + result.rewardZen,
+        duelWins: (character.duelWins ?? 0) + (result.won ? 1 : 0),
+        duelLosses: (character.duelLosses ?? 0) + (result.won ? 0 : 1),
+      }),
+    );
+    setCharacter(updatedChar);
+    const [nextDuels, nextLedger] = await Promise.all([getAsyncDuels(), getSharedLedger()]);
+    setDuelRecords(nextDuels);
+    setLedger(nextLedger);
+    setLastDuelResult(result);
+    syncRef.current?.sendDuelCompleted(result);
+    soundSynth.playForge(result.won);
+    setSyncMessage(`${result.summary} · +${result.rewardZen.toLocaleString()} Zen guardado en IndexedDB.`);
+    await checkAndGrantAchievements(updatedChar, items, nextLedger.length, eventHistory.length);
+  };
+
+  const handleFightAsyncDuelToken = async (token: string, transport: TransportMode) => {
+    const parsed = decodeDuelToken(token);
+    if (!parsed) {
+      setSyncMessage('Token de duelo inválido. Asegúrate de copiar el código completo MUDUEL1:...');
+      return;
+    }
+    await executeDuelAgainstChallenge(parsed, transport);
   };
 
   const handleBuyShopItem = async (shopItem: ShopItemDef) => {
@@ -1173,7 +1562,7 @@ export default function App() {
           )}
 
           {/* Floating Combat & Loot Feedback */}
-          <div className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-1">
+          <div className={`pointer-events-none fixed ${nearbyNpc ? 'top-36' : 'top-20 sm:top-28'} left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-1`}>
             {banners.map((b) => (
               <div
                 key={b.id}
@@ -1193,6 +1582,10 @@ export default function App() {
             editMode={editMode}
             measuredFps={measuredFps}
             free3dCamera={gameSettings.free3dCamera}
+            autoAimAssist={gameSettings.autoAimAssist ?? true}
+            activeEffects={activeEffects}
+            targetMonster={targetMonster}
+            skillCooldowns={skillCooldowns}
             nearbyNpc={nearbyNpc}
             worldTelemetry={worldTelemetry}
             damageNumbers={damageNumbers}
@@ -1285,8 +1678,17 @@ export default function App() {
             open={activeDrawer === 'stats'}
             character={character}
             items={items}
-            onClose={() => setActiveDrawer('none')}
+            ledgerCount={ledger.length}
+            eventCount={eventHistory.length}
+            skillNotice={skillNotice}
+            onClose={() => {
+              setActiveDrawer('none');
+              setSkillNotice(null);
+            }}
             onAllocateStat={handleAllocateStat}
+            onPerformReset={handlePerformReset}
+            onUpgradeSkill={handleUpgradeSkill}
+            onSelectSpecialization={handleSelectSpecialization}
           />
 
           <NpcShopModal
@@ -1315,6 +1717,9 @@ export default function App() {
             bluetoothDeviceName={btDeviceName}
             ledger={ledger}
             eventHistory={eventHistory}
+            duelRecords={duelRecords}
+            serverChallenges={serverChallenges}
+            lastDuelResult={lastDuelResult}
             statusMessage={syncMessage}
             onClose={() => setActiveDrawer('none')}
             onPairBluetooth={async () => {
@@ -1342,6 +1747,11 @@ export default function App() {
             onEndRoom={() => {
               syncRef.current?.endRoom();
             }}
+            onGenerateDuelToken={handleGenerateDuelToken}
+            onPublishDuelChallenge={handlePublishDuelChallenge}
+            onRefreshDuelChallenges={handleRefreshDuelChallenges}
+            onFightAsyncDuelToken={handleFightAsyncDuelToken}
+            onFightChallenge={executeDuelAgainstChallenge}
           />
 
           <OracleChatDrawer

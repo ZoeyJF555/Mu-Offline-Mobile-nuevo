@@ -779,7 +779,7 @@ export const ClassicLoginFlow: React.FC<ClassicLoginFlowProps> = ({
               </button>
               <div className="text-xs text-slate-300 font-mono-tabular flex items-center gap-1.5">
                 <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                6 Reinos MU + Madrigal (9,44 km²) · Capitales Seguras
+                4 Mundos de Madrigal: Flaris · Robledal · Puerto de Bruma · Cráter de Ceniza
               </div>
             </div>
           )}

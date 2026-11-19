@@ -26,6 +26,7 @@ import {
 import { DEFAULT_BUTTON_LAYOUTS, MU_SKILLS } from '../data/muSkillsAndClasses';
 import { getMapById } from '../data/muWorldData';
 import type {
+  ActiveEffect,
   ButtonLayoutItem,
   CharacterComboConfig,
   FloatingDamageNumber,
@@ -35,6 +36,8 @@ import type {
   SkillDef,
   SyncStatusInfo,
 } from '../types/game';
+import type { TargetMonsterInfo } from '../game/MuWorldEngine';
+import { getSkillRank } from '../game/combatAndProgression';
 import { PubgJoystick } from './PubgJoystick';
 
 export interface WorldTelemetryInfo {
@@ -55,6 +58,10 @@ interface MuHudOverlayProps {
   editMode: boolean;
   measuredFps: number;
   free3dCamera: boolean;
+  autoAimAssist: boolean;
+  activeEffects: ActiveEffect[];
+  targetMonster: TargetMonsterInfo | null;
+  skillCooldowns: Record<string, number>;
   nearbyNpc: NpcDef | null;
   worldTelemetry: WorldTelemetryInfo;
   damageNumbers: FloatingDamageNumber[];
@@ -87,6 +94,10 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
   editMode,
   measuredFps,
   free3dCamera,
+  autoAimAssist,
+  activeEffects,
+  targetMonster,
+  skillCooldowns,
   nearbyNpc,
   worldTelemetry,
   damageNumbers,
@@ -112,6 +123,7 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
 }) => {
   const [selectedEditId, setSelectedEditId] = useState<HudButtonId | null>('attack');
   const [showComboPicker, setShowComboPicker] = useState(false);
+  const lastActionFireRef = useRef<Record<string, number>>({});
   const dragState = useRef<{
     id: HudButtonId;
     pointerId: number;
@@ -120,6 +132,15 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
     origXPct: number;
     origYPct: number;
   } | null>(null);
+
+  const fireImmediateAction = (actionKey: string, cb: () => void) => {
+    if (editMode) return;
+    const now = performance.now();
+    const prev = lastActionFireRef.current[actionKey] ?? 0;
+    if (now - prev < 240) return;
+    lastActionFireRef.current[actionKey] = now;
+    cb();
+  };
 
   const classSkills = MU_SKILLS[character.classType] || MU_SKILLS.DK;
   const defaultSkill =
@@ -238,62 +259,124 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
         ))}
       </div>
 
-      <button onClick={onJump} aria-label="Saltar (J)" className="pointer-events-auto fixed bottom-28 right-3 z-30 min-h-[44px] px-4 rounded-full bg-slate-900/90 border border-amber-500 text-amber-200">Saltar · J</button>
       {/* TOP-LEFT: Compact Character, Safe Zone / Hunting Zone, Coords & FPS */}
-      <div className="pointer-events-none fixed top-2.5 left-3 z-20 rounded-lg bg-[#0d121c]/90 border border-amber-700/50 px-3 py-1.5 shadow-lg space-y-0.5">
-        <div className="flex items-center gap-2 text-xs flex-wrap">
-          <span className="font-display font-bold text-amber-300">{character.name}</span>
+      <div className="pointer-events-none fixed top-2.5 left-3 z-20 rounded-lg bg-[#0d121c]/92 border border-amber-700/50 px-2 lg:px-3 py-1 lg:py-1.5 shadow-lg space-y-0.5 max-w-[38vw] lg:max-w-[43vw]">
+        <div className="flex items-center gap-1.5 lg:gap-2 text-[10px] lg:text-xs flex-wrap">
+          <span className="font-display font-bold text-amber-300 truncate max-w-[110px] lg:max-w-none">{character.name}</span>
           <span className="font-mono-tabular text-slate-300">
             {character.classType} Nv.{character.level}
           </span>
           <span className="font-mono-tabular text-sky-300">
-            · {mapCfg.name} ({mapCfg.areaKm2.toFixed(2)} km²)
+            · {worldTelemetry.mapName || mapCfg.name} <span className="hidden lg:inline">({(worldTelemetry.areaKm2 || mapCfg.areaKm2).toFixed(2)} km²)</span>
           </span>
           <span className="font-mono-tabular text-emerald-300">{measuredFps} FPS</span>
+          {autoAimAssist && (
+            <span className="hidden xl:inline font-mono-tabular text-amber-300">· Auto-Aim 80%</span>
+          )}
           {free3dCamera && (
-            <span className="font-mono-tabular text-purple-300">· 3D Libre</span>
+            <span className="hidden xl:inline font-mono-tabular text-purple-300">· 3D Libre</span>
           )}
         </div>
-        <div className="flex items-center gap-2 text-[11px] font-mono-tabular">
+        <div className="flex items-center gap-1.5 lg:gap-2 text-[10px] lg:text-[11px] font-mono-tabular">
           {worldTelemetry.inSafeCity ? (
-            <span className="inline-flex items-center gap-1 text-emerald-300 font-semibold">
-              <Shield className="w-3 h-3" />
-              Capital Segura (Sin ataques ni monstruos)
+            <span className="inline-flex items-center gap-1 text-emerald-300 font-semibold truncate">
+              <Shield className="w-3 h-3 shrink-0" />
+              <span>Capital Segura<span className="hidden lg:inline"> (Sin ataques ni monstruos)</span></span>
             </span>
           ) : (
-            <span className="inline-flex items-center gap-1 text-rose-300 font-semibold">
-              <Swords className="w-3 h-3" />
-              Zona de Caza ({worldTelemetry.nearbyMonsters} cerca / {worldTelemetry.totalMonsters.toLocaleString()} mapa)
+            <span className="inline-flex items-center gap-1 text-rose-300 font-semibold truncate">
+              <Swords className="w-3 h-3 shrink-0" />
+              <span>Zona Exterior<span className="hidden lg:inline"> ({worldTelemetry.nearbyMonsters} cerca / {worldTelemetry.totalMonsters.toLocaleString()} mapa)</span></span>
             </span>
           )}
-          <span className="text-slate-400">
+          <span className="text-slate-400 shrink-0">
             ({worldTelemetry.x}, {worldTelemetry.z})
           </span>
         </div>
       </div>
 
-      {/* TOP-LEFT SECONDARY: Quick Oracle, APK / Cloud Sync Buttons */}
+      {/* TOP-LEFT SECONDARY: Quick Oracle, APK / Cloud Sync Buttons + Active Effects */}
       {!editMode && (
-        <div className="fixed top-[62px] left-3 z-20 flex items-center gap-1.5">
-          <button
-            onClick={onOpenOracle}
-            className="min-h-[34px] px-2.5 rounded-lg bg-[#0e1420]/90 border border-slate-700 hover:border-emerald-500/60 text-emerald-300 text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
-          >
-            <Bot className="w-3.5 h-3.5" />
-            Oráculo
-          </button>
-          <button
-            onClick={onOpenApk}
-            className="min-h-[34px] px-2.5 rounded-lg bg-[#0e1420]/90 border border-slate-700 hover:border-amber-500/60 text-amber-200 text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
-          >
-            <Smartphone className="w-3.5 h-3.5" />
-            APK / Sync
-            {syncStatus.isOnline ? (
-              <Cloud className="w-3 h-3 text-emerald-400 ml-0.5" />
-            ) : (
-              <CloudOff className="w-3 h-3 text-amber-400 ml-0.5" />
-            )}
-          </button>
+        <div className="fixed top-[54px] lg:top-[62px] left-3 z-20 flex flex-col gap-1.5 max-w-[44vw] lg:max-w-[56vw]">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <button
+              onClick={onOpenOracle}
+              className="min-h-[34px] px-2.5 rounded-lg bg-[#0e1420]/92 border border-slate-700 hover:border-emerald-500/60 text-emerald-300 text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+            >
+              <Bot className="w-3.5 h-3.5" />
+              Oráculo
+            </button>
+            <button
+              onClick={onOpenApk}
+              className="min-h-[34px] px-2.5 rounded-lg bg-[#0e1420]/92 border border-slate-700 hover:border-amber-500/60 text-amber-200 text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+            >
+              <Smartphone className="w-3.5 h-3.5" />
+              APK / Sync
+              {syncStatus.isOnline ? (
+                <Cloud className="w-3 h-3 text-emerald-400 ml-0.5" />
+              ) : (
+                <CloudOff className="w-3 h-3 text-amber-400 ml-0.5" />
+              )}
+            </button>
+          </div>
+
+          {activeEffects.length > 0 && (
+            <div className="flex items-center gap-1.5 flex-wrap pointer-events-none">
+              {activeEffects.map((eff) => (
+                <div
+                  key={eff.id}
+                  style={{ borderColor: eff.color }}
+                  className="px-2 py-1 rounded-md bg-[#0b1019]/92 border text-[10px] font-mono-tabular flex items-center gap-1.5 shadow"
+                >
+                  <span style={{ color: eff.color }} className="font-bold">
+                    {eff.kind === 'buff' ? '▲' : '▼'} {eff.name}
+                  </span>
+                  <span className="text-slate-300">{eff.statHint}</span>
+                  <span className="text-amber-300 font-bold">{Math.ceil(eff.remainingSec)}s</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* TARGET LOCKED MONSTER + DAMAGE TABLE (When outside Safe City) */}
+      {targetMonster && !editMode && (
+        <div className="pointer-events-none fixed top-16 sm:top-24 right-3 z-20 w-[min(270px,44vw)] rounded-lg bg-[#0d121d]/94 border border-rose-500/60 p-2.5 shadow-xl space-y-1.5">
+          <div className="flex items-center justify-between gap-1">
+            <div className="text-xs font-bold text-amber-300 truncate">
+              Nv.{targetMonster.stats.scaledLevel} {targetMonster.stats.name}
+            </div>
+            <span className="text-[10px] font-mono-tabular px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-200 shrink-0">
+              Aim {targetMonster.autoAimPct}% · {targetMonster.dist}m
+            </span>
+          </div>
+          <div className="h-2 w-full rounded bg-slate-900 overflow-hidden border border-slate-700">
+            <div
+              className="h-full bg-gradient-to-r from-rose-600 to-amber-500 transition-all"
+              style={{
+                width: `${Math.max(0, Math.min(100, Math.round((targetMonster.currentHp / Math.max(1, targetMonster.stats.maxHp)) * 100)))}%`,
+              }}
+            />
+          </div>
+          <div className="flex items-center justify-between text-[10px] font-mono-tabular text-slate-300">
+            <span>HP {targetMonster.currentHp}/{targetMonster.stats.maxHp}</span>
+            <span>DEF {targetMonster.stats.defense}</span>
+          </div>
+          <div className="grid grid-cols-2 gap-1 text-[10px] font-mono-tabular pt-1 border-t border-slate-800">
+            <div className="text-emerald-300">
+              Tu Daño: {targetMonster.stats.damageTable.playerEstNormal} ({targetMonster.stats.damageTable.playerEstCrit}c)
+            </div>
+            <div className="text-rose-300 text-right">
+              Golpe: {targetMonster.stats.damageTable.basicAttack} · Crit: {targetMonster.stats.damageTable.criticalHit} ({targetMonster.stats.damageTable.critChancePct}%)
+            </div>
+          </div>
+          {targetMonster.stats.powers[0] && (
+            <div className="text-[10px] text-amber-200/90 truncate">
+              Poder: {targetMonster.stats.powers[0].name} ({targetMonster.stats.damageTable.specialPower} dmg)
+              {targetMonster.stats.powers[0].effectDebuff ? ` · ${targetMonster.stats.powers[0].effectDebuff}` : ''}
+            </div>
+          )}
         </div>
       )}
 
@@ -356,10 +439,10 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
         'mapWarp',
         <button
           onClick={() => !editMode && onOpenMapWarp()}
-          className="min-h-[42px] px-2.5 rounded-lg bg-[#0f1522]/92 border border-emerald-600/50 hover:border-emerald-400 text-emerald-200 text-xs font-semibold inline-flex items-center gap-1.5 shadow-lg cursor-pointer whitespace-nowrap"
+          className="min-h-[38px] lg:min-h-[42px] px-2 lg:px-2.5 rounded-lg bg-[#0f1522]/92 border border-emerald-600/50 hover:border-emerald-400 text-emerald-200 text-[11px] lg:text-xs font-semibold inline-flex items-center gap-1 lg:gap-1.5 shadow-lg cursor-pointer whitespace-nowrap"
         >
-          <Compass className="w-4 h-4 text-emerald-400" />
-          Mapas / Madrigal
+          <Compass className="w-3.5 h-3.5 lg:w-4 lg:h-4 text-emerald-400" />
+          <span>Mapas<span className="hidden lg:inline"> / Madrigal</span></span>
         </button>,
       )}
 
@@ -367,13 +450,18 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
         'stats',
         <button
           onClick={() => !editMode && onOpenStats()}
-          className="relative min-h-[42px] px-2.5 rounded-lg bg-[#0f1522]/92 border border-purple-500/50 hover:border-purple-400 text-purple-200 text-xs font-semibold inline-flex items-center gap-1.5 shadow-lg cursor-pointer whitespace-nowrap"
+          className="relative min-h-[38px] lg:min-h-[42px] px-2 lg:px-2.5 rounded-lg bg-[#0f1522]/92 border border-purple-500/50 hover:border-purple-400 text-purple-200 text-[11px] lg:text-xs font-semibold inline-flex items-center gap-1 lg:gap-1.5 shadow-lg cursor-pointer whitespace-nowrap"
         >
-          <User className="w-4 h-4 text-purple-300" />
-          Stats
-          {character.unspentPoints > 0 && (
+          <User className="w-3.5 h-3.5 lg:w-4 lg:h-4 text-purple-300" />
+          <span>Héroe<span className="hidden lg:inline"> / Logros</span></span>
+          {character.level >= 99 && (
+            <span className="px-1.5 py-0.2 rounded bg-rose-500 text-white text-[10px] font-bold">
+              RESET
+            </span>
+          )}
+          {(character.unspentPoints + (character.skillPoints ?? 0)) > 0 && (
             <span className="px-1.5 py-0.2 rounded bg-amber-500 text-slate-950 text-[10px] font-bold">
-              +{character.unspentPoints}
+              +{character.unspentPoints + (character.skillPoints ?? 0)}
             </span>
           )}
         </button>,
@@ -383,9 +471,9 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
         'sync',
         <button
           onClick={() => !editMode && onOpenSync()}
-          className="min-h-[42px] px-2.5 rounded-lg bg-[#0f1522]/92 border border-sky-600/50 hover:border-sky-400 text-sky-200 text-xs font-semibold inline-flex items-center gap-1.5 shadow-lg cursor-pointer whitespace-nowrap"
+          className="min-h-[38px] lg:min-h-[42px] px-2 lg:px-2.5 rounded-lg bg-[#0f1522]/92 border border-sky-600/50 hover:border-sky-400 text-sky-200 text-[11px] lg:text-xs font-semibold inline-flex items-center gap-1 lg:gap-1.5 shadow-lg cursor-pointer whitespace-nowrap"
         >
-          <Wifi className="w-4 h-4 text-sky-400" />
+          <Wifi className="w-3.5 h-3.5 lg:w-4 lg:h-4 text-sky-400" />
           Wi-Fi / BT
         </button>,
       )}
@@ -394,9 +482,9 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
         'inventory',
         <button
           onClick={() => !editMode && onOpenInventory()}
-          className="min-h-[42px] px-2.5 rounded-lg bg-[#0f1522]/92 border border-amber-600/60 hover:border-amber-400 text-amber-200 text-xs font-semibold inline-flex items-center gap-1.5 shadow-lg cursor-pointer whitespace-nowrap"
+          className="min-h-[38px] lg:min-h-[42px] px-2 lg:px-2.5 rounded-lg bg-[#0f1522]/92 border border-amber-600/60 hover:border-amber-400 text-amber-200 text-[11px] lg:text-xs font-semibold inline-flex items-center gap-1 lg:gap-1.5 shadow-lg cursor-pointer whitespace-nowrap"
         >
-          <Backpack className="w-4 h-4 text-amber-400" />
+          <Backpack className="w-3.5 h-3.5 lg:w-4 lg:h-4 text-amber-400" />
           Inventario
         </button>,
       )}
@@ -424,51 +512,105 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
       {wrapButton(
         'potion',
         <button
-          onClick={() => !editMode && onHealPotion()}
-          className="w-12 h-12 rounded-full bg-[#1a0f14]/92 border-2 border-rose-500/70 text-rose-200 flex flex-col items-center justify-center shadow-lg active:scale-95 cursor-pointer"
+          onPointerDown={(e) => {
+            if (editMode) return;
+            e.stopPropagation();
+            fireImmediateAction('potion', onHealPotion);
+          }}
+          onClick={(e) => {
+            e.stopPropagation();
+            fireImmediateAction('potion', onHealPotion);
+          }}
+          className="w-12 h-12 rounded-full bg-[#1a0f14]/92 border-2 border-rose-500/70 text-rose-200 flex flex-col items-center justify-center shadow-lg active:scale-95 cursor-pointer touch-none select-none"
         >
-          <Heart className="w-4 h-4 text-rose-400" />
-          <span className="text-[9px] font-bold">HP/MP</span>
+          <Heart className="w-4 h-4 text-rose-400 pointer-events-none" />
+          <span className="text-[9px] font-bold pointer-events-none">HP/MP</span>
         </button>,
       )}
 
       {wrapButton(
         'loot',
         <button
-          onClick={() => !editMode && onPickupLoot()}
-          className="w-12 h-12 rounded-full bg-[#141a28]/92 border-2 border-amber-500/60 text-amber-200 flex flex-col items-center justify-center shadow-lg active:scale-95 cursor-pointer"
+          onPointerDown={(e) => {
+            if (editMode) return;
+            e.stopPropagation();
+            fireImmediateAction('loot', onPickupLoot);
+          }}
+          onClick={(e) => {
+            e.stopPropagation();
+            fireImmediateAction('loot', onPickupLoot);
+          }}
+          className="w-12 h-12 rounded-full bg-[#141a28]/92 border-2 border-amber-500/60 text-amber-200 flex flex-col items-center justify-center shadow-lg active:scale-95 cursor-pointer touch-none select-none"
         >
-          <Hand className="w-4 h-4 text-amber-300" />
-          <span className="text-[9px] font-bold">Recoger</span>
+          <Hand className="w-4 h-4 text-amber-300 pointer-events-none" />
+          <span className="text-[9px] font-bold pointer-events-none">Recoger</span>
+        </button>,
+      )}
+
+      {wrapButton(
+        'jump',
+        <button
+          onPointerDown={(e) => {
+            if (editMode) return;
+            e.stopPropagation();
+            fireImmediateAction('jump', onJump);
+          }}
+          onClick={(e) => {
+            e.stopPropagation();
+            fireImmediateAction('jump', onJump);
+          }}
+          aria-label="Saltar (J)"
+          className="w-14 h-14 rounded-full bg-[#131b2b]/95 border-2 border-amber-400/80 hover:border-amber-300 text-amber-200 flex flex-col items-center justify-center shadow-xl active:scale-95 cursor-pointer touch-none select-none"
+        >
+          <span className="text-[11px] font-extrabold leading-none pointer-events-none">SALTAR</span>
+          <span className="text-[9px] font-mono-tabular text-amber-400 mt-0.5 pointer-events-none">J</span>
         </button>,
       )}
 
       {/* MU Online 6-Skill Selector Mini-Windows */}
       {wrapButton(
         'skillTray',
-        <div className="flex items-center gap-1 rounded-lg bg-[#0b1019]/92 border border-amber-700/60 p-1 shadow-xl">
+        <div className="flex items-center gap-1 rounded-lg bg-[#0b1019]/92 border border-amber-700/60 p-1 shadow-xl touch-none select-none">
           {classSkills.map((sk) => {
             const isDefault = sk.id === defaultSkill.id;
             const comboIdx = comboConfig.comboSkillIds.indexOf(sk.id);
+            const rank = getSkillRank(character, sk.id);
+            const cdRemaining = skillCooldowns[sk.id] ?? 0;
             return (
               <button
                 key={sk.id}
-                onClick={() => !editMode && onCastSkill(sk)}
-                title={`${sk.name} (MP ${sk.mpCost})`}
+                onPointerDown={(e) => {
+                  if (editMode) return;
+                  e.stopPropagation();
+                  fireImmediateAction(`skill_${sk.id}`, () => onCastSkill(sk));
+                }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  fireImmediateAction(`skill_${sk.id}`, () => onCastSkill(sk));
+                }}
+                title={`${sk.name} Nv.${rank} (MP ${sk.mpCost})`}
                 style={{ borderColor: isDefault ? '#f59e0b' : 'rgba(71, 85, 105, 0.7)' }}
-                className="relative w-10 h-10 rounded bg-[#151c2c] hover:bg-[#1f2940] border flex flex-col items-center justify-center text-center cursor-pointer active:scale-95"
+                className="relative w-10 h-10 rounded bg-[#151c2c] hover:bg-[#1f2940] border flex flex-col items-center justify-center text-center cursor-pointer active:scale-95 overflow-hidden touch-none select-none"
               >
                 <span
                   style={{ backgroundColor: sk.badgeColor }}
-                  className="w-2 h-2 rounded-sm mb-0.5"
+                  className="w-2 h-2 rounded-sm mb-0.5 pointer-events-none"
                 />
-                <span className="text-[8px] font-bold text-slate-100 leading-none truncate max-w-[34px]">
+                <span className="text-[8px] font-bold text-slate-100 leading-none truncate max-w-[34px] pointer-events-none">
                   {sk.shortName}
                 </span>
+                <span className="text-[7px] font-mono-tabular text-amber-300/90 leading-none mt-0.5 pointer-events-none">
+                  R{rank}
+                </span>
                 {comboIdx >= 0 && (
-                  <span className="absolute -top-1 -right-1 px-1 rounded bg-rose-600 text-[8px] font-bold text-white">
+                  <span className="absolute -top-0.5 -right-0.5 px-1 rounded bg-rose-600 text-[7px] font-bold text-white pointer-events-none">
                     C{comboIdx + 1}
                   </span>
+                )}
+                {cdRemaining > 0.05 && (
+                  <div className="absolute inset-0 bg-slate-950/78 flex items-center justify-center text-[10px] font-mono-tabular font-bold text-amber-300 pointer-events-none">
+                    {cdRemaining.toFixed(1)}
+                  </div>
                 )}
               </button>
             );
@@ -487,15 +629,23 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
       {wrapButton(
         'combo',
         <button
-          onClick={() => !editMode && onToggleComboArmed()}
-          className={`w-16 h-16 rounded-full border-2 flex flex-col items-center justify-center shadow-xl active:scale-95 cursor-pointer transition-colors ${
+          onPointerDown={(e) => {
+            if (editMode) return;
+            e.stopPropagation();
+            fireImmediateAction('combo', onToggleComboArmed);
+          }}
+          onClick={(e) => {
+            e.stopPropagation();
+            fireImmediateAction('combo', onToggleComboArmed);
+          }}
+          className={`w-16 h-16 rounded-full border-2 flex flex-col items-center justify-center shadow-xl active:scale-95 cursor-pointer transition-colors touch-none select-none ${
             comboArmed
               ? 'bg-gradient-to-b from-rose-600 to-amber-600 border-amber-200 text-white'
               : 'bg-[#121826]/92 border-slate-500 text-slate-200'
           }`}
         >
-          <Flame className={`w-5 h-5 ${comboArmed ? 'text-amber-200' : 'text-slate-400'}`} />
-          <span className="text-[10px] font-bold leading-tight">
+          <Flame className={`w-5 h-5 pointer-events-none ${comboArmed ? 'text-amber-200' : 'text-slate-400'}`} />
+          <span className="text-[10px] font-bold leading-tight pointer-events-none">
             {comboArmed ? 'COMBO ON' : 'COMBO'}
           </span>
         </button>,
@@ -505,15 +655,23 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
       {wrapButton(
         'attack',
         <button
-          onClick={() => !editMode && onPressAttack()}
-          className={`w-20 h-20 rounded-full border-2 flex flex-col items-center justify-center shadow-2xl active:scale-95 cursor-pointer ${
+          onPointerDown={(e) => {
+            if (editMode) return;
+            e.stopPropagation();
+            fireImmediateAction('attack', onPressAttack);
+          }}
+          onClick={(e) => {
+            e.stopPropagation();
+            fireImmediateAction('attack', onPressAttack);
+          }}
+          className={`w-20 h-20 rounded-full border-2 flex flex-col items-center justify-center shadow-2xl active:scale-95 cursor-pointer touch-none select-none ${
             comboArmed
               ? 'bg-gradient-to-b from-amber-500 to-rose-700 border-amber-200 text-white'
               : 'bg-gradient-to-b from-amber-500 to-amber-700 border-amber-200 text-slate-950'
           }`}
         >
-          <Sword className="w-7 h-7" />
-          <span className="text-[10px] font-extrabold leading-tight mt-0.5 max-w-[68px] truncate">
+          <Sword className="w-7 h-7 pointer-events-none" />
+          <span className="text-[10px] font-extrabold leading-tight mt-0.5 max-w-[68px] truncate pointer-events-none">
             {comboArmed ? 'Atacar x3' : defaultSkill.shortName}
           </span>
         </button>,

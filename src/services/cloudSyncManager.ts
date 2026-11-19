@@ -1,6 +1,6 @@
 import {
   countPendingSync,
-  getPendingSyncRecords,
+  getAllSyncRecordsForCloud,
   hashPassword,
   hashSecretAnswer,
   markRecordsSynced,
@@ -8,13 +8,15 @@ import {
   upsertAccountFromCloud,
   upsertCharacterFromCloud,
 } from '../db/dexieStore';
-import type { MuAccount, MuCharacter, SyncStatusInfo } from '../types/game';
+import type { AsyncDuelChallenge, MuAccount, MuCharacter, SyncStatusInfo } from '../types/game';
 
 export interface CloudSyncResponse {
   acceptedAccountIds: string[];
   acceptedCharacterIds: string[];
   newerAccounts: MuAccount[];
   newerCharacters: MuCharacter[];
+  syncedLedgerCount?: number;
+  syncedDuelsCount?: number;
   serverTimestamp: number;
 }
 
@@ -147,13 +149,16 @@ export class CloudSyncManager {
     this.emitStatus({ isOnline: true, syncing: true });
 
     try {
-      const pending = await getPendingSyncRecords();
+      const pending = await getAllSyncRecordsForCloud();
       const res = await fetch('/api/cloud/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           accounts: pending.accounts,
           characters: pending.characters,
+          ledger: pending.ledger,
+          duels: pending.duels,
+          events: pending.events,
           activeAccountId: this.activeAccountId,
         }),
       });
@@ -277,6 +282,32 @@ export class CloudSyncManager {
       return { ok: true, account: data.account, charactersCount: restoredChars };
     } catch {
       return { ok: false, error: 'Error de red al recuperar cuenta desde la nube.' };
+    }
+  }
+
+  async publishDuelChallenge(challenge: AsyncDuelChallenge): Promise<boolean> {
+    if (!navigator.onLine) return false;
+    try {
+      const res = await fetch('/api/duels/challenge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(challenge),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  async fetchDuelChallenges(): Promise<AsyncDuelChallenge[]> {
+    if (!navigator.onLine) return [];
+    try {
+      const res = await fetch('/api/duels/challenges');
+      if (!res.ok) return [];
+      const data = (await res.json()) as { challenges?: AsyncDuelChallenge[] };
+      return data.challenges || [];
+    } catch {
+      return [];
     }
   }
 }

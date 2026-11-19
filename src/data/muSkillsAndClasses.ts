@@ -31,47 +31,47 @@ export const MU_CLASSES: ClassMeta[] = [
   {
     id: 'DK',
     name: 'Blade Knight (BK)',
-    muTitle: 'Dark Knight · S6 Ep3',
+    muTitle: 'Dark Knight · Principiante',
     role: 'Guerrero cuerpo a cuerpo y combos letales',
     accentColor: '#dc2626',
     armorHex: 0x991b1b,
-    baseStats: { str: 38, agi: 22, vit: 32, ene: 12, cmd: 0, maxHp: 320, maxMp: 90, maxSd: 240, maxAg: 100 },
+    baseStats: { str: 24, agi: 16, vit: 20, ene: 10, cmd: 10, maxHp: 220, maxMp: 80, maxSd: 160, maxAg: 80 },
   },
   {
     id: 'DW',
     name: 'Soul Master (Mago)',
-    muTitle: 'Dark Wizard · S6 Ep3',
+    muTitle: 'Dark Wizard · Principiante',
     role: 'Hechicero arcano de área masiva',
     accentColor: '#2563eb',
     armorHex: 0x1d4ed8,
-    baseStats: { str: 16, agi: 24, vit: 20, ene: 44, cmd: 0, maxHp: 230, maxMp: 210, maxSd: 190, maxAg: 100 },
+    baseStats: { str: 12, agi: 18, vit: 16, ene: 28, cmd: 10, maxHp: 175, maxMp: 160, maxSd: 140, maxAg: 80 },
   },
   {
     id: 'ELF',
     name: 'Muse Elf (Elfa)',
-    muTitle: 'Fairy Elf · S6 Ep3',
+    muTitle: 'Fairy Elf · Principiante',
     role: 'Arquera veloz con flechas múltiples y auras',
     accentColor: '#059669',
     armorHex: 0x047857,
-    baseStats: { str: 20, agi: 42, vit: 22, ene: 22, cmd: 0, maxHp: 250, maxMp: 140, maxSd: 210, maxAg: 100 },
+    baseStats: { str: 16, agi: 26, vit: 18, ene: 16, cmd: 10, maxHp: 190, maxMp: 110, maxSd: 150, maxAg: 80 },
   },
   {
     id: 'DL',
     name: 'Dark Lord (DL)',
-    muTitle: 'Lord Emperador · S6 Ep3',
-    role: 'Cetro oscuro, Capa Real y Cuervo de batalla',
+    muTitle: 'Lord Emperador · Principiante',
+    role: 'Cetro oscuro, liderazgo y comando de batalla',
     accentColor: '#7c3aed',
     armorHex: 0x4c1d95,
-    baseStats: { str: 30, agi: 22, vit: 26, ene: 24, cmd: 34, maxHp: 290, maxMp: 150, maxSd: 230, maxAg: 100 },
+    baseStats: { str: 20, agi: 16, vit: 18, ene: 16, cmd: 22, maxHp: 205, maxMp: 120, maxSd: 155, maxAg: 80 },
   },
   {
     id: 'MG',
     name: 'Magic Gladiator (MG)',
-    muTitle: 'Duel Master · S6 Ep3',
+    muTitle: 'Duel Master · Principiante',
     role: 'Híbrido espada y magia con doble filo',
     accentColor: '#d97706',
     armorHex: 0x312e81,
-    baseStats: { str: 34, agi: 28, vit: 24, ene: 30, cmd: 0, maxHp: 275, maxMp: 165, maxSd: 225, maxAg: 100 },
+    baseStats: { str: 22, agi: 20, vit: 18, ene: 20, cmd: 10, maxHp: 200, maxMp: 130, maxSd: 155, maxAg: 80 },
   },
 ];
 
@@ -584,14 +584,15 @@ export function getDefaultComboConfig(classType: HeroClass): CharacterComboConfi
 }
 
 export const DEFAULT_BUTTON_LAYOUTS: Record<HudButtonId, ButtonLayoutItem> = {
-  joystick: { id: 'joystick', label: 'Joystick PUBG', xPct: 12, yPct: 74, scale: 1.0 },
-  attack: { id: 'attack', label: 'Atacar', xPct: 89, yPct: 77, scale: 1.08 },
-  combo: { id: 'combo', label: 'Combo x3', xPct: 77, yPct: 80, scale: 1.0 },
-  skillTray: { id: 'skillTray', label: 'Ventana Ataques', xPct: 81, yPct: 57, scale: 0.96 },
-  potion: { id: 'potion', label: 'Poción', xPct: 91, yPct: 42, scale: 0.92 },
-  loot: { id: 'loot', label: 'Recoger (E)', xPct: 77, yPct: 68, scale: 0.92 },
-  mapWarp: { id: 'mapWarp', label: '6 Mapas (M)', xPct: 51, yPct: 9, scale: 0.96 },
-  stats: { id: 'stats', label: 'Stats (C)', xPct: 62, yPct: 9, scale: 0.96 },
+  joystick: { id: 'joystick', label: 'Joystick PUBG', xPct: 11, yPct: 74, scale: 1.0 },
+  attack: { id: 'attack', label: 'Atacar', xPct: 90, yPct: 78, scale: 1.06 },
+  combo: { id: 'combo', label: 'Combo x3', xPct: 78, yPct: 81, scale: 0.98 },
+  jump: { id: 'jump', label: 'Saltar (J)', xPct: 90, yPct: 58, scale: 0.94 },
+  skillTray: { id: 'skillTray', label: 'Ventana Ataques', xPct: 50, yPct: 76, scale: 0.92 },
+  potion: { id: 'potion', label: 'Poción', xPct: 91, yPct: 39, scale: 0.9 },
+  loot: { id: 'loot', label: 'Recoger (E)', xPct: 78, yPct: 63, scale: 0.9 },
+  mapWarp: { id: 'mapWarp', label: 'Mapas (M)', xPct: 51, yPct: 9, scale: 0.96 },
+  stats: { id: 'stats', label: 'Héroe/Skills (C)', xPct: 62, yPct: 9, scale: 0.96 },
   sync: { id: 'sync', label: 'Wi-Fi / BT', xPct: 73, yPct: 9, scale: 0.96 },
   inventory: { id: 'inventory', label: 'Inventario', xPct: 84, yPct: 9, scale: 0.96 },
   settings: { id: 'settings', label: 'Ajustes', xPct: 94, yPct: 9, scale: 1.0 },
@@ -639,67 +640,66 @@ export function getStarterItemsForMuClass(
   });
 
   const starterJewelry: MuItem[] = [
-    item('pend1', 'Pendant of Lightning', 'pendant', 'jewelry', 'Lightning', 'excellent', 7, 12, 18, 0, 14, 'Daño Excelente +10%', true),
-    item('rng1', 'Ring of Ice', 'ring1', 'jewelry', 'Ice', 'excellent', 7, 0, 0, 14, 0, 'HP +4% · Reducción +4%', true),
-    item('pet1', 'Guardian Angel', 'pet', 'pet', 'Helper', 'normal', 5, 0, 0, 20, 0, 'Absorbe 20% Daño', true),
+    item('pend1', 'Colgante de Aprendiz', 'pendant', 'jewelry', 'Principiante', 'normal', 1, 3, 6, 0, 4, 'Fuerza/Energía Inicial +2%', true),
+    item('rng1', 'Anillo de Bronce Izq', 'ring1', 'jewelry', 'Principiante', 'normal', 1, 0, 0, 5, 0, 'Vitalidad Inicial +2%', true),
+    item('rng2', 'Anillo de Bronce Der', 'ring2', 'jewelry', 'Principiante', 'normal', 1, 0, 0, 5, 0, 'Agilidad Inicial +2%', true),
   ];
 
   if (classType === 'DK') {
     return [
-      item('w1', 'Espada del Dragón', 'weapon', 'weapon', 'Dragon', 'excellent', 7, 46, 72, 0, 0, 'Daño Excelente +10%', true),
-      item('s1', 'Escudo Dragón', 'shield', 'armor', 'Dragon', 'normal', 6, 0, 0, 26, 0, 'Defensa +5%', true),
-      item('a1', 'Armadura Dragón Carmesí', 'armor', 'armor', 'Dragon', 'excellent', 7, 0, 0, 48, 0, 'Reducción de Daño +4%', true),
-      item('h1', 'Yelmo Dragón', 'helm', 'armor', 'Dragon', 'normal', 6, 0, 0, 28, 0, '', true),
-      item('p1', 'Pantalón Dragón', 'pants', 'armor', 'Dragon', 'normal', 5, 0, 0, 24, 0, '', true),
-      item('g1', 'Guantes Dragón', 'gloves', 'armor', 'Dragon', 'normal', 5, 0, 0, 18, 0, '', true),
-      item('b1', 'Botas Dragón', 'boots', 'armor', 'Dragon', 'normal', 5, 0, 0, 20, 0, '', true),
-      item('wg1', 'Wings of Satan', 'wings', 'wings', 'Satan Wings', 'excellent', 7, 22, 22, 26, 0, 'Absorbe 25% de Daño', true),
-      item('w2', 'Espada del Arcángel', 'weapon', 'weapon', 'Archangel', 'ancient', 9, 68, 98, 0, 0, 'Velocidad Ataque +7 · Intercambiable', false),
+      item('w1', 'Espada Corta de Principiante', 'weapon', 'weapon', 'Leather', 'normal', 1, 14, 24, 0, 0, 'Arma de Principiante DK', true),
+      item('s1', 'Broquel de Cuero', 'shield', 'armor', 'Leather', 'normal', 1, 0, 0, 10, 0, 'Escudo Inicial', true),
+      item('a1', 'Peto de Cuero Curado', 'armor', 'armor', 'Leather', 'normal', 1, 0, 0, 16, 0, 'Defensa Inicial +2%', true),
+      item('h1', 'Yelmo de Cuero', 'helm', 'armor', 'Leather', 'normal', 1, 0, 0, 9, 0, '', true),
+      item('p1', 'Pantalón de Cuero', 'pants', 'armor', 'Leather', 'normal', 1, 0, 0, 11, 0, '', true),
+      item('g1', 'Guantes de Cuero', 'gloves', 'armor', 'Leather', 'normal', 1, 0, 0, 7, 0, '', true),
+      item('b1', 'Botas de Cuero', 'boots', 'armor', 'Leather', 'normal', 1, 0, 0, 8, 0, '', true),
       ...starterJewelry,
     ];
   }
   if (classType === 'DW') {
     return [
-      item('w1', 'Báculo Legendario', 'weapon', 'weapon', 'Legendary', 'excellent', 7, 24, 38, 0, 78, 'Poder Mágico +10%', true),
-      item('s1', 'Escudo Legendario', 'shield', 'armor', 'Legendary', 'normal', 6, 0, 0, 22, 12, '', true),
-      item('a1', 'Túnica Legendaria', 'armor', 'armor', 'Legendary', 'excellent', 7, 0, 0, 38, 16, 'MP Máximo +4%', true),
-      item('h1', 'Capucha Legendaria', 'helm', 'armor', 'Legendary', 'normal', 5, 0, 0, 22, 8, '', true),
-      item('p1', 'Pantalón Legendario', 'pants', 'armor', 'Legendary', 'normal', 5, 0, 0, 20, 6, '', true),
-      item('wg1', 'Wings of Heaven', 'wings', 'wings', 'Heaven Wings', 'excellent', 7, 0, 0, 24, 32, 'Recuperación MP +5%', true),
-      item('w2', 'Báculo de Kundun', 'weapon', 'weapon', 'Kundun', 'ancient', 9, 34, 52, 0, 114, 'Ignora Defensa 3%', false),
+      item('w1', 'Vara de Madera Arcana', 'weapon', 'weapon', 'Pad', 'normal', 1, 8, 14, 0, 24, 'Báculo de Principiante DW', true),
+      item('s1', 'Tomo Protector', 'shield', 'armor', 'Pad', 'normal', 1, 0, 0, 8, 6, '', true),
+      item('a1', 'Túnica de Tela Pad', 'armor', 'armor', 'Pad', 'normal', 1, 0, 0, 13, 6, 'MP Máximo +2%', true),
+      item('h1', 'Capucha Pad', 'helm', 'armor', 'Pad', 'normal', 1, 0, 0, 8, 3, '', true),
+      item('p1', 'Pantalón Pad', 'pants', 'armor', 'Pad', 'normal', 1, 0, 0, 9, 3, '', true),
+      item('g1', 'Guantes Pad', 'gloves', 'armor', 'Pad', 'normal', 1, 0, 0, 6, 3, '', true),
+      item('b1', 'Botas Pad', 'boots', 'armor', 'Pad', 'normal', 1, 0, 0, 7, 3, '', true),
       ...starterJewelry,
     ];
   }
   if (classType === 'ELF') {
     return [
-      item('w1', 'Arco Celestial', 'weapon', 'weapon', 'Guardian', 'excellent', 7, 42, 66, 0, 0, 'Velocidad Ataque +7', true),
-      item('a1', 'Armadura Guardián', 'armor', 'armor', 'Guardian', 'excellent', 7, 0, 0, 40, 0, 'Evasión +10%', true),
-      item('h1', 'Diadema Guardián', 'helm', 'armor', 'Guardian', 'normal', 5, 0, 0, 24, 0, '', true),
-      item('p1', 'Falda Guardián', 'pants', 'armor', 'Guardian', 'normal', 5, 0, 0, 22, 0, '', true),
-      item('wg1', 'Wings of Elf', 'wings', 'wings', 'Elf Wings', 'excellent', 7, 18, 18, 24, 0, 'Velocidad +15%', true),
-      item('w2', 'Ballesta de Cristal', 'weapon', 'weapon', 'Celestial', 'ancient', 9, 60, 90, 0, 0, 'Crítico +15%', false),
+      item('w1', 'Arco Corto de Madera', 'weapon', 'weapon', 'Vine', 'normal', 1, 13, 22, 0, 0, 'Arco de Principiante ELF', true),
+      item('a1', 'Cota de Hiedra Vine', 'armor', 'armor', 'Vine', 'normal', 1, 0, 0, 14, 0, 'Evasión Inicial +3%', true),
+      item('h1', 'Diadema Vine', 'helm', 'armor', 'Vine', 'normal', 1, 0, 0, 8, 0, '', true),
+      item('p1', 'Falda Vine', 'pants', 'armor', 'Vine', 'normal', 1, 0, 0, 10, 0, '', true),
+      item('g1', 'Brazales Vine', 'gloves', 'armor', 'Vine', 'normal', 1, 0, 0, 7, 0, '', true),
+      item('b1', 'Botas Vine', 'boots', 'armor', 'Vine', 'normal', 1, 0, 0, 8, 0, '', true),
       ...starterJewelry,
     ];
   }
   if (classType === 'DL') {
     return [
-      item('w1', 'Cetro del Señor Oscuro', 'weapon', 'weapon', 'Dark Steel', 'excellent', 7, 48, 76, 0, 32, 'Daño Crítico +10%', true),
-      item('s1', 'Escudo de Hierro Oscuro', 'shield', 'armor', 'Dark Steel', 'normal', 6, 0, 0, 26, 0, '', true),
-      item('a1', 'Armadura Dark Steel', 'armor', 'armor', 'Dark Steel', 'excellent', 7, 0, 0, 46, 0, 'Reducción de Daño +4%', true),
-      item('h1', 'Corona Dark Steel', 'helm', 'armor', 'Dark Steel', 'normal', 6, 0, 0, 26, 0, '', true),
-      item('wg1', 'Cape of Lord', 'wings', 'wings', 'Lord Cape', 'excellent', 7, 24, 24, 28, 0, 'Comando +15 · Cuervo Activo', true),
-      item('w2', 'Cetro Solemnidad', 'weapon', 'weapon', 'Sunlight', 'ancient', 9, 66, 95, 0, 48, 'Ignora Defensa 5%', false),
+      item('w1', 'Cetro de Hierro Inicial', 'weapon', 'weapon', 'Light Plate', 'normal', 1, 15, 25, 0, 12, 'Cetro de Principiante DL', true),
+      item('s1', 'Escudo de Hierro', 'shield', 'armor', 'Light Plate', 'normal', 1, 0, 0, 10, 0, '', true),
+      item('a1', 'Coraza Light Plate', 'armor', 'armor', 'Light Plate', 'normal', 1, 0, 0, 15, 0, 'Comando Inicial +5', true),
+      item('h1', 'Corona Ligera', 'helm', 'armor', 'Light Plate', 'normal', 1, 0, 0, 9, 0, '', true),
+      item('p1', 'Grebas Light Plate', 'pants', 'armor', 'Light Plate', 'normal', 1, 0, 0, 10, 0, '', true),
+      item('g1', 'Guanteletes Light Plate', 'gloves', 'armor', 'Light Plate', 'normal', 1, 0, 0, 7, 0, '', true),
+      item('b1', 'Botas Light Plate', 'boots', 'armor', 'Light Plate', 'normal', 1, 0, 0, 8, 0, '', true),
       ...starterJewelry,
     ];
   }
   // MG
   return [
-    item('w1', 'Espada Rúnica', 'weapon', 'weapon', 'Hurricane', 'excellent', 7, 50, 78, 0, 45, 'Híbrido Fuerza/Magia +10%', true),
-    item('s1', 'Espada Relámpago (Izq)', 'shield', 'weapon', 'Hurricane', 'excellent', 6, 36, 54, 14, 24, 'Doble Filo MG', true),
-    item('a1', 'Armadura Hurricane', 'armor', 'armor', 'Hurricane', 'excellent', 7, 0, 0, 44, 18, 'HP +4%', true),
-    item('p1', 'Pantalón Hurricane', 'pants', 'armor', 'Hurricane', 'normal', 6, 0, 0, 24, 10, '', true),
-    item('wg1', 'Wings of Darkness', 'wings', 'wings', 'Darkness Wings', 'excellent', 7, 22, 22, 26, 22, 'Daño +25%', true),
-    item('w2', 'Espada Dancer Oscura', 'weapon', 'weapon', 'Valiant', 'ancient', 9, 72, 102, 0, 64, 'Daño Excelente +15%', false),
+    item('w1', 'Gladius de Aprendiz', 'weapon', 'weapon', 'Storm Crow', 'normal', 1, 15, 24, 0, 14, 'Espada Rúnica Inicial', true),
+    item('s1', 'Daga Rúnica Izquierda', 'shield', 'weapon', 'Storm Crow', 'normal', 1, 10, 16, 6, 8, 'Doble Empuñadura MG', true),
+    item('a1', 'Coraza Storm Crow Inicial', 'armor', 'armor', 'Storm Crow', 'normal', 1, 0, 0, 15, 6, 'Híbrido Inicial', true),
+    item('p1', 'Pantalón Storm Crow', 'pants', 'armor', 'Storm Crow', 'normal', 1, 0, 0, 10, 4, '', true),
+    item('g1', 'Guantes Storm Crow', 'gloves', 'armor', 'Storm Crow', 'normal', 1, 0, 0, 7, 3, '', true),
+    item('b1', 'Botas Storm Crow', 'boots', 'armor', 'Storm Crow', 'normal', 1, 0, 0, 8, 3, '', true),
     ...starterJewelry,
   ];
 }

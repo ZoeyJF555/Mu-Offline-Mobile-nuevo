@@ -26,20 +26,39 @@ import type {
   HeroClass,
   MapId,
   MonsterArchetype,
+  MonsterPowerDef,
   MuCharacter,
   MuItem,
   MuMapConfig,
   NpcDef,
   RoomPeer,
+  ScaledMonsterStats,
   SkillDef,
   WeatherKind,
 } from '../types/game';
+import {
+  findAutoAimTarget,
+  getEffectiveSkillMultiplier,
+  getSkillRank,
+  getVariantKey,
+  getVariantProfile,
+  rollMonsterAttack,
+  scaleMonsterForPlayerLevel,
+} from './combatAndProgression';
 import { FlyffContent } from './FlyffContent';
 import { getStarterItemsForMuClass } from '../data/muSkillsAndClasses';
 import { MuAssetManager } from './MuAssetManager';
 import { soundSynth } from './soundSynth';
 
 export type EngineCameraMode = 'title' | 'character_select' | 'playing';
+
+export interface TargetMonsterInfo {
+  index: number;
+  stats: ScaledMonsterStats;
+  currentHp: number;
+  dist: number;
+  autoAimPct: number;
+}
 
 export interface LootDrop {
   id: string;
@@ -97,16 +116,20 @@ interface ActiveMonsterSlot {
   root: TransformNode;
   hpBarBg: Mesh;
   hpBarFill: Mesh;
+  hpFillMat: StandardMaterial;
+  plate: Mesh;
+  plateTex: DynamicTexture;
+  lastLabel: string;
   hitFlash: number;
-  attackCooldown: number;
-  archetype: MonsterArchetype;
 }
 
 export interface EngineCallbacks {
   onEquipmentWear?: (slot: string, durability: number) => void;
   onKillMonster: (xp: number, zen: number, isBoss: boolean) => void;
   onPickupLoot: (drop: { kind: LootDrop['kind']; label: string; amount: number }) => void;
-  onPlayerDamaged: (amount: number) => void;
+  onPlayerDamaged: (amount: number, isCrit?: boolean) => void;
+  onMonsterPowerHit?: (power: MonsterPowerDef, damage: number) => void;
+  onTargetMonsterChange?: (target: TargetMonsterInfo | null) => void;
   onHeroMoveSync: (x: number, z: number, rotY: number, action: 'idle' | 'move' | 'attack' | 'skill') => void;
   onBossHitInEvent: (damage: number) => void;
   onFloatingText: (text: string, color: string) => void;
@@ -155,7 +178,7 @@ function createGroundCanvasTexture(
   repeatCount: number,
 ): DynamicTexture {
   const size = 512;
-  const tex = new DynamicTexture(`groundTex_${theme}`, { width: size, height: size }, scene, true);
+  const tex = new DynamicTexture(`groundTex_${theme}_${tintHex}`, { width: size, height: size }, scene, true);
   const ctx = tex.getContext();
 
   const r = (tintHex >> 16) & 255;
@@ -167,49 +190,120 @@ function createGroundCanvasTexture(
 
   if (theme === 'cobble' || theme === 'dungeon' || theme === 'arena' || theme === 'tower' || theme === 'kanturu') {
     const step = 64;
+    ctx.fillStyle = `rgb(${Math.max(18, r - 24)}, ${Math.max(18, g - 24)}, ${Math.max(20, b - 22)})`;
+    ctx.fillRect(0, 0, size, size);
     for (let y = 0; y < size; y += step) {
       const offset = (Math.floor(y / step) % 2) * (step / 2);
       for (let x = -step; x < size + step; x += step) {
-        const delta = ((x * 13 + y * 29) % 20) - 10;
-        ctx.fillStyle = `rgb(${Math.max(12, Math.min(245, r + delta))}, ${Math.max(12, Math.min(245, g + delta))}, ${Math.max(12, Math.min(245, b + delta + 4))})`;
+        const hash = Math.abs(Math.sin(x * 12.9898 + y * 78.233) * 43758.5453) % 1;
+        const delta = Math.round((hash - 0.5) * 26);
+        const sr = Math.max(24, Math.min(242, r + delta));
+        const sg = Math.max(24, Math.min(242, g + delta));
+        const sb = Math.max(26, Math.min(245, b + delta + 3));
+        ctx.fillStyle = `rgb(${sr}, ${sg}, ${sb})`;
         ctx.fillRect(x + offset + 3, y + 3, step - 6, step - 6);
-        ctx.strokeStyle = 'rgba(255, 220, 160, 0.08)';
-        ctx.lineWidth = 2;
+        // Soft weathered stone highlights & inner edge
+        ctx.fillStyle = 'rgba(255, 240, 210, 0.08)';
+        ctx.fillRect(x + offset + 5, y + 5, step - 10, 6);
+        ctx.strokeStyle = 'rgba(215, 195, 155, 0.14)';
+        ctx.lineWidth = 1.5;
         ctx.strokeRect(x + offset + 4, y + 4, step - 8, step - 8);
       }
     }
+    for (let i = 0; i < 320; i++) {
+      const sx = (i * 89) % size;
+      const sy = (i * 137) % size;
+      ctx.fillStyle = i % 2 === 0 ? 'rgba(255,255,255,0.06)' : 'rgba(20,16,12,0.09)';
+      ctx.fillRect(sx, sy, 4, 3);
+    }
   } else if (theme === 'vulcanus') {
-    for (let i = 0; i < 180; i++) {
+    for (let i = 0; i < 240; i++) {
       const x = (i * 97) % size;
       const y = (i * 53) % size;
-      ctx.fillStyle = i % 5 === 0 ? 'rgba(249, 115, 22, 0.35)' : 'rgba(15, 6, 6, 0.45)';
-      ctx.fillRect(x, y, 26, 7);
+      ctx.fillStyle = i % 4 === 0 ? 'rgba(249, 115, 22, 0.42)' : 'rgba(18, 7, 7, 0.48)';
+      ctx.fillRect(x, y, 28, 8);
+    }
+    ctx.strokeStyle = 'rgba(251, 146, 60, 0.28)';
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 16; i++) {
+      ctx.beginPath();
+      ctx.moveTo((i * 73) % size, 0);
+      ctx.lineTo(((i * 73 + 95) % size), size);
+      ctx.stroke();
     }
   } else if (theme === 'snow' || theme === 'raklion') {
-    for (let i = 0; i < 320; i++) {
+    for (let i = 0; i < 380; i++) {
       const x = (i * 71) % size;
       const y = (i * 113) % size;
-      ctx.fillStyle = i % 2 === 0 ? 'rgba(255, 255, 255, 0.22)' : 'rgba(147, 197, 253, 0.16)';
+      ctx.fillStyle = i % 2 === 0 ? 'rgba(255, 255, 255, 0.25)' : 'rgba(147, 197, 253, 0.18)';
       ctx.fillRect(x, y, 18, 10);
     }
   } else if (theme === 'underwater') {
-    for (let i = 0; i < 220; i++) {
+    for (let i = 0; i < 260; i++) {
       const x = (i * 83) % size;
       const y = (i * 47) % size;
-      ctx.fillStyle = i % 3 === 0 ? 'rgba(94, 234, 212, 0.14)' : 'rgba(8, 51, 68, 0.25)';
+      ctx.fillStyle = i % 3 === 0 ? 'rgba(94, 234, 212, 0.18)' : 'rgba(8, 51, 68, 0.26)';
       ctx.beginPath();
       ctx.arc(x, y, 14 + (i % 10), 0, Math.PI * 2);
       ctx.fill();
     }
   } else {
-    for (let i = 0; i < 480; i++) {
+    for (let i = 0; i < 640; i++) {
       const x = (i * 67) % size;
       const y = (i * 127) % size;
-      ctx.fillStyle = theme === 'sand' ? 'rgba(253, 224, 71, 0.12)' : 'rgba(134, 239, 172, 0.09)';
-      ctx.fillRect(x, y, 9, 9);
+      ctx.fillStyle = theme === 'sand'
+        ? (i % 3 === 0 ? 'rgba(253, 224, 71, 0.20)' : 'rgba(180, 120, 40, 0.14)')
+        : (i % 5 === 0 ? 'rgba(163, 230, 53, 0.16)' : i % 2 === 0 ? 'rgba(74, 222, 128, 0.12)' : 'rgba(20, 62, 32, 0.22)');
+      ctx.fillRect(x, y, 12, 5);
+    }
+    if (theme === 'grass') {
+      for (let i = 0; i < 90; i++) {
+        const px = (i * 109) % size;
+        const py = (i * 163) % size;
+        ctx.fillStyle = 'rgba(101, 163, 13, 0.14)';
+        ctx.beginPath();
+        ctx.arc(px, py, 8 + (i % 6), 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
   }
 
+  tex.update();
+  tex.wrapU = DynamicTexture.WRAP_ADDRESSMODE;
+  tex.wrapV = DynamicTexture.WRAP_ADDRESSMODE;
+  tex.uScale = repeatCount;
+  tex.vScale = repeatCount;
+  return tex;
+}
+
+function createGroundBumpTexture(scene: Scene, theme: GroundTheme, repeatCount: number): DynamicTexture {
+  const size = 256;
+  const tex = new DynamicTexture(`groundBump_${theme}`, { width: size, height: size }, scene, true);
+  const ctx = tex.getContext();
+  ctx.fillStyle = 'rgb(128,128,128)';
+  ctx.fillRect(0, 0, size, size);
+
+  if (theme === 'cobble' || theme === 'dungeon' || theme === 'arena' || theme === 'tower' || theme === 'kanturu') {
+    const step = 32;
+    ctx.strokeStyle = 'rgb(75,75,75)';
+    ctx.lineWidth = 3;
+    for (let y = 0; y < size; y += step) {
+      const offset = (Math.floor(y / step) % 2) * (step / 2);
+      for (let x = -step; x < size + step; x += step) {
+        ctx.fillStyle = ((x + y) % 64 === 0) ? 'rgb(156,156,156)' : 'rgb(140,140,140)';
+        ctx.fillRect(x + offset + 2, y + 2, step - 4, step - 4);
+        ctx.strokeRect(x + offset + 2, y + 2, step - 4, step - 4);
+      }
+    }
+  } else {
+    for (let i = 0; i < 400; i++) {
+      const x = (i * 53) % size;
+      const y = (i * 89) % size;
+      const v = i % 2 === 0 ? 158 : 102;
+      ctx.fillStyle = `rgb(${v},${v},${v})`;
+      ctx.fillRect(x, y, 6, 4);
+    }
+  }
   tex.update();
   tex.wrapU = DynamicTexture.WRAP_ADDRESSMODE;
   tex.wrapV = DynamicTexture.WRAP_ADDRESSMODE;
@@ -260,7 +354,7 @@ export class MuWorldEngine {
   private heroSex: 'male' | 'female' = 'male';
   private callbacks: EngineCallbacks;
   private mode: EngineCameraMode = 'title';
-  private currentMap: MuMapConfig = getMapById('lorencia');
+  private currentMap: MuMapConfig = getMapById('flaris');
   private disposed = false;
 
   private hemiLight!: HemisphericLight;
@@ -279,10 +373,9 @@ export class MuWorldEngine {
   private heroRoot: TransformNode;
   private heroModelRoot: TransformNode | null = null;
   private heroWeaponNode: TransformNode | null = null;
-  private heroWingsNode: TransformNode | null = null;
-  private heroX = 0;
-  private heroZ = 8;
-  private heroRotY = Math.PI;
+  private heroX = -200;
+  private heroZ = -255;
+  private heroRotY = 0;
   private heroAction: 'idle' | 'move' | 'attack' | 'skill' = 'idle';
   private attackSwingTimer = 0;
 
@@ -293,15 +386,16 @@ export class MuWorldEngine {
   private transientFx: TransientFx[] = [];
   private remotePeers = new Map<string, { root: TransformNode; content: FlyffContent; targetX: number; targetZ: number; rotY: number; action: RoomPeer['action'] }>();
   private loadingMap = false;
-  private accessoryGeneration = 0;
-  private heroAccessories: TransformNode[] = [];
 
-  // --- Up to 50,000 Monster Spatial Simulation ---
+  // --- Spatial Simulation with 18x15 3m Camps + Dispersed Monsters ---
   private totalMonsters = 0;
   private monX = new Float32Array(0);
   private monZ = new Float32Array(0);
   private monHomeX = new Float32Array(0);
   private monHomeZ = new Float32Array(0);
+  private monCampX = new Float32Array(0);
+  private monCampZ = new Float32Array(0);
+  private monLeash = new Float32Array(0);
   private monHp = new Float32Array(0);
   private monMaxHp = new Float32Array(0);
   private monDmg = new Float32Array(0);
@@ -311,9 +405,18 @@ export class MuWorldEngine {
   private monAlive = new Uint8Array(0);
   private monLevel = new Uint16Array(0);
   private monDefIdx = new Uint8Array(0);
+  private monAttackCd = new Float32Array(0);
+  private monPowerCd = new Float32Array(0);
   private spatialGrid = new Map<number, number[]>();
   private thinMasterMeshes = new Map<string, { mesh: Mesh; matrices: number[] }>();
+  private monShadowMesh: Mesh | null = null;
+  private monShadowMatrices: number[] = [];
   private activeMonsterSlots: ActiveMonsterSlot[] = [];
+  private autoAimRing: Mesh | null = null;
+  private skyDome: Mesh | null = null;
+  private lockedTargetIdx = -1;
+  private lastScaledHeroLevel = 1;
+  private enemyProjectiles: Array<{ mesh: Mesh; x: number; y: number; z: number; vx: number; vz: number; life: number }> = [];
 
   // Weather
   private weatherMesh: Mesh | null = null;
@@ -321,12 +424,20 @@ export class MuWorldEngine {
   private weatherMatrices: Float32Array | null = null;
   private weatherKind: WeatherKind = 'leaves';
 
-  // Controls & Camera
+  // Controls & Free 360° Camera Look
   private keys = new Set<string>();
   private joystickVec = { x: 0, y: 0 };
-  private free3dMode = false;
+  private free3dMode = true;
+  private cameraDistance = 6.4;
+  private camDragPointerId: number | null = null;
+  private camDragLastX = 0;
+  private camDragLastY = 0;
+  private autoAimAssist = true;
+  private activeEffectBonuses = { atkBonusPct: 0, speedBonusPct: 0, critBonusPct: 0 };
   private userBrightness = 1.08;
   private targetFps: 30 | 45 | 60 = 60;
+  private isSoftwareGl = false;
+  private lastRenderTime = 0;
   private lastTime = performance.now();
   private lastTelemetryTime = 0;
   private lastMoveSyncTime = 0;
@@ -363,6 +474,22 @@ export class MuWorldEngine {
       powerPreference: 'high-performance',
     });
 
+    try {
+      const gl = (this.engine as unknown as { _gl?: WebGLRenderingContext })._gl;
+      if (gl) {
+        const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+        const rendererStr = String(
+          (dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)) ?? '',
+        );
+        if (/swiftshader|llvmpipe|software/i.test(rendererStr)) {
+          this.isSoftwareGl = true;
+          this.engine.setHardwareScalingLevel(1.3);
+        }
+      }
+    } catch {
+      // Ignore WebGL probe failures
+    }
+
     this.scene = new Scene(this.engine);
     this.scene.clearColor = new Color4(0.05, 0.07, 0.12, 1);
     this.scene.fogMode = Scene.FOGMODE_EXP2;
@@ -378,16 +505,17 @@ export class MuWorldEngine {
     this.camera = new ArcRotateCamera(
       'muCamera',
       -Math.PI / 2,
-      Math.PI / 3.1,
-      20,
-      new Vector3(0, 1.5, 8),
+      1.22,
+      this.cameraDistance,
+      new Vector3(this.heroX, 1.32, this.heroZ),
       this.scene,
     );
-    this.camera.lowerBetaLimit = 0.28;
-    this.camera.upperBetaLimit = 1.42;
-    this.camera.lowerRadiusLimit = 2.5;
-    this.camera.upperRadiusLimit = 44;
-    this.camera.wheelPrecision = 20;
+    this.camera.lowerBetaLimit = 0.32;
+    this.camera.upperBetaLimit = 1.48;
+    this.camera.lowerRadiusLimit = 3.2;
+    this.camera.upperRadiusLimit = 20;
+    this.camera.wheelPrecision = 24;
+    this.canvas.style.touchAction = 'none';
 
     this.hemiLight = new HemisphericLight('hemi', new Vector3(0, 1, 0), this.scene);
     this.sunLight = new DirectionalLight('sun', new Vector3(-0.45, -1, -0.35), this.scene);
@@ -407,7 +535,26 @@ export class MuWorldEngine {
     this.heroLight.range = 16;
 
     this.bindInputListeners();
-    this.preloadAssetsAndStart().catch(this.flyff.onError);
+    this.startRenderLoop();
+    this.preloadAssetsAndStart().catch((err) => {
+      if (!this.disposed) this.flyff.onError(err);
+    });
+  }
+
+  private startRenderLoop() {
+    this.engine.runRenderLoop(() => {
+      if (this.disposed) return;
+      const now = performance.now();
+      const minIntervalMs = this.isSoftwareGl ? 42 : this.targetFps < 60 ? 1000 / this.targetFps : 0;
+      if (minIntervalMs > 0 && now - this.lastRenderTime < minIntervalMs) {
+        return;
+      }
+      this.lastRenderTime = now;
+      const dt = Math.min(0.05, (now - this.lastTime) / 1000);
+      this.lastTime = now;
+      this.update(dt, now);
+      this.scene.render();
+    });
   }
 
   private async preloadAssetsAndStart() {
@@ -425,7 +572,6 @@ export class MuWorldEngine {
       'weapon_bow.glb',
       'weapon_scepter.glb',
       'shield_dragon.glb',
-      'wings_angel.glb',
       'house_medieval.glb',
       'tavern_baret.glb',
       'shop_smithy.glb',
@@ -433,23 +579,23 @@ export class MuWorldEngine {
       'city_gate.glb',
       'fountain_plaza.glb',
     ]);
+    if (this.disposed) return;
     await this.rebuildHeroModel();
-    if (this.loadSeq === 0) await this.loadMap('lorencia', true);
-
-    this.engine.runRenderLoop(() => {
-      if (this.disposed) return;
-      const now = performance.now();
-      const dt = Math.min(0.05, (now - this.lastTime) / 1000);
-      this.lastTime = now;
-      this.update(dt, now);
-      this.scene.render();
-    });
+    if (this.disposed) return;
+    if (this.loadSeq === 0) {
+      await this.loadMap('flaris', true);
+    }
   }
 
   private bindInputListeners() {
     window.addEventListener('resize', this.handleResize);
     window.addEventListener('keydown', this.handleKeyDown);
     window.addEventListener('keyup', this.handleKeyUp);
+    this.canvas.addEventListener('pointerdown', this.handleCanvasPointerDown);
+    window.addEventListener('pointermove', this.handleWindowPointerMove);
+    window.addEventListener('pointerup', this.handleWindowPointerUp);
+    window.addEventListener('pointercancel', this.handleWindowPointerUp);
+    this.canvas.addEventListener('wheel', this.handleCanvasWheel, { passive: true });
     this.canvas.addEventListener('webglcontextlost', this.handleContextLost);
   }
 
@@ -461,11 +607,41 @@ export class MuWorldEngine {
     e.preventDefault();
   };
 
+  private handleCanvasPointerDown = (e: PointerEvent) => {
+    if (this.mode !== 'playing') return;
+    if (this.camDragPointerId === null) {
+      this.camDragPointerId = e.pointerId;
+      this.camDragLastX = e.clientX;
+      this.camDragLastY = e.clientY;
+    }
+  };
+
+  private handleWindowPointerMove = (e: PointerEvent) => {
+    if (this.mode !== 'playing' || e.pointerId !== this.camDragPointerId) return;
+    const dx = e.clientX - this.camDragLastX;
+    const dy = e.clientY - this.camDragLastY;
+    this.camDragLastX = e.clientX;
+    this.camDragLastY = e.clientY;
+    this.camera.alpha -= dx * 0.0085;
+    this.camera.beta = Math.max(0.32, Math.min(1.48, this.camera.beta - dy * 0.0065));
+  };
+
+  private handleWindowPointerUp = (e: PointerEvent) => {
+    if (e.pointerId === this.camDragPointerId) {
+      this.camDragPointerId = null;
+    }
+  };
+
+  private handleCanvasWheel = (e: WheelEvent) => {
+    if (this.mode !== 'playing') return;
+    this.cameraDistance = Math.max(3.6, Math.min(16, this.cameraDistance + Math.sign(e.deltaY) * 0.6));
+  };
+
   private handleKeyDown = (e: KeyboardEvent) => {
     const target = e.target as HTMLElement | null;
     if (target?.isContentEditable || ['INPUT','TEXTAREA','SELECT'].includes(target?.tagName ?? '')) return;
     this.keys.add(e.code);
-    if (e.code === 'KeyJ' && this.mode === 'playing') { e.preventDefault(); this.jump(); }
+    if ((e.code === 'KeyJ' || e.code === 'Space') && this.mode === 'playing') { e.preventDefault(); this.jump(); }
     if (e.code === 'KeyE' && this.mode === 'playing') {
       this.pickupNearestLoot();
     }
@@ -482,19 +658,24 @@ export class MuWorldEngine {
   setMode(mode: EngineCameraMode) {
     this.mode = mode;
     if (mode !== 'playing') {
-      this.camera.detachControl();
-    } else if (this.free3dMode) {
-      this.camera.attachControl(this.canvas, true);
+      this.camDragPointerId = null;
     }
   }
 
   setFree3dMode(enabled: boolean) {
     this.free3dMode = enabled;
-    if (enabled && this.mode === 'playing') {
-      this.camera.attachControl(this.canvas, true);
-    } else {
-      this.camera.detachControl();
-    }
+  }
+
+  setCameraDistance(dist: number) {
+    this.cameraDistance = Math.max(4.5, Math.min(12.5, dist));
+  }
+
+  setAutoAimAssist(enabled: boolean) {
+    this.autoAimAssist = enabled;
+  }
+
+  setActiveEffectBonuses(bonuses: { atkBonusPct: number; speedBonusPct: number; critBonusPct: number }) {
+    this.activeEffectBonuses = bonuses;
   }
 
   setBrightness(val: number) {
@@ -505,7 +686,7 @@ export class MuWorldEngine {
 
   setTargetFps(fps: 30 | 45 | 60) {
     this.targetFps = fps;
-    this.engine.setHardwareScalingLevel(fps === 30 ? 1.35 : fps === 45 ? 1.15 : 1.0);
+    this.engine.setHardwareScalingLevel(this.isSoftwareGl ? 1.35 : fps === 30 ? 1.35 : fps === 45 ? 1.15 : 1.0);
   }
 
   setJoystickVector(x: number, y: number) {
@@ -517,11 +698,82 @@ export class MuWorldEngine {
   }
 
   updateHeroStats(char: MuCharacter | null) {
+    const prevLevel = this.heroStatsSnapshot?.level ?? 1;
     this.heroStatsSnapshot = char;
+    const nextLevel = char?.level ?? 1;
+    if (nextLevel !== prevLevel && nextLevel !== this.lastScaledHeroLevel && this.totalMonsters > 0) {
+      this.rescaleMonstersForHero(nextLevel);
+    }
+  }
+
+  private getPlayerAvgAttackEstimate(): number {
+    const c = this.heroStatsSnapshot;
+    const eqDmg = this.heroEquippedItems
+      .filter((i) => i.isEquipped && (i.durability ?? 100) > 0)
+      .reduce((acc, i) => acc + i.minDmg + i.maxDmg + i.magicPower, 0);
+    return Math.round(30 + ((c?.str ?? 30) + (c?.ene ?? 22)) * 0.65 + eqDmg * 0.5);
+  }
+
+  private rescaleMonstersForHero(heroLevel: number) {
+    this.lastScaledHeroLevel = heroLevel;
+    const avgAtk = this.getPlayerAvgAttackEstimate();
+    const defs = this.currentMap.monsters;
+    const mapRange = { minLevel: this.currentMap.minLevel, maxLevel: this.currentMap.maxLevel };
+    for (let i = 0; i < this.totalMonsters; i++) {
+      const def = defs[this.monDefIdx[i]];
+      if (!def) continue;
+      const scaled = scaleMonsterForPlayerLevel(def, heroLevel, avgAtk, mapRange);
+      const hpRatio = this.monMaxHp[i] > 0 ? this.monHp[i] / this.monMaxHp[i] : 1;
+      this.monMaxHp[i] = scaled.maxHp;
+      this.monHp[i] = Math.max(1, Math.round(scaled.maxHp * hpRatio));
+      this.monDmg[i] = scaled.damage;
+      this.monXp[i] = scaled.xp;
+      this.monZen[i] = scaled.zen;
+      this.monLevel[i] = scaled.scaledLevel;
+    }
   }
 
   isInSafeCity(x = this.heroX, z = this.heroZ): boolean {
-    return this.currentMap.assetWorld ? this.flyff.safe(x, z) : Math.hypot(x, z) < this.currentMap.cityRadius;
+    const sx = this.currentMap.spawn?.x ?? 0;
+    const sz = this.currentMap.spawn?.z ?? 0;
+    const inMapCity = Math.hypot(x - sx, z - sz) < this.currentMap.cityRadius;
+    return this.currentMap.assetWorld ? (inMapCity || this.flyff.safe(x, z)) : inMapCity;
+  }
+
+  getHeroPose(): { x: number; z: number; rotY: number } {
+    return {
+      x: Number(this.heroX.toFixed(2)),
+      z: Number(this.heroZ.toFixed(2)),
+      rotY: Number(this.heroRotY.toFixed(3)),
+    };
+  }
+
+  respawnInCurrentCity(): { x: number; z: number; rotY: number } {
+    const spawn = this.currentMap.spawn ?? { x: 0, z: 0 };
+    const maxR = Math.max(18, Math.min(72, this.currentMap.cityRadius * 0.42));
+    let rx = spawn.x;
+    let rz = spawn.z;
+    for (let attempt = 0; attempt < 28; attempt++) {
+      const ang = Math.random() * Math.PI * 2;
+      const dist = 10 + Math.random() * maxR;
+      const cx = spawn.x + Math.cos(ang) * dist;
+      const cz = spawn.z + Math.sin(ang) * dist;
+      const surface = this.flyff.world?.surfaceAt(cx + 1536, cz + 1536) ?? 'land';
+      if (surface !== 'water' && (!this.currentMap.assetWorld || this.flyff.safe(cx, cz))) {
+        rx = cx;
+        rz = cz;
+        break;
+      }
+    }
+    this.heroX = rx;
+    this.heroZ = rz;
+    this.heroRotY = Math.random() * Math.PI * 2;
+    this.lockedTargetIdx = -1;
+    const hy = this.getTerrainHeight(rx, rz);
+    this.heroRoot.position.set(rx, hy, rz);
+    this.camera.target.set(rx, hy + 1.32, rz);
+    this.callbacks.onTargetMonsterChange?.(null);
+    return this.getHeroPose();
   }
 
   private getTerrainHeight(x: number, z: number): number {
@@ -536,36 +788,28 @@ export class MuWorldEngine {
   }
 
   async syncHeroAppearance(classType: HeroClass, equippedItems: MuItem[], sex?: 'male' | 'female') {
-    this.heroClass = classType;this.heroSex = sex ?? this.heroStatsSnapshot?.sex ?? 'male';
+    this.heroClass = classType; this.heroSex = sex ?? this.heroStatsSnapshot?.sex ?? 'male';
     this.heroEquippedItems = equippedItems;
-    try { await this.rebuildHeroModel(); } catch(error) { this.flyff.onError(error); throw error; }
+    try { await this.rebuildHeroModel(); } catch (error) { this.flyff.onError(error); throw error; }
   }
 
   private async rebuildHeroModel() {
     await this.flyff.character(this.heroClass, this.heroSex, this.heroEquippedItems, this.heroRoot);
     if (this.disposed) return;
     this.heroModelRoot = this.flyff.actor?.root ?? null;
-    const generation = ++this.accessoryGeneration, actor = this.flyff.actor;
-    this.heroAccessories.forEach(n => n.dispose()); this.heroAccessories = [];
-    if (!actor) return;
-    for (const [slot, file, scale] of [['wings', 'wings_angel.glb', 0.45]] as const) {
-      if (!this.heroEquippedItems.some(i => i.slot === slot && i.isEquipped && (i.durability ?? 100) > 0)) continue;
-      const accessory = await this.assetManager.instantiateModel(file, `hero_${slot}`, actor.root, { scale });
-      if (generation !== this.accessoryGeneration || this.disposed || actor !== this.flyff.actor) { accessory.root.dispose(); return; }
-      accessory.root.position.set(0, 1.02, 0.15);
-      this.heroWingsNode = accessory.root;
-      this.heroAccessories.push(accessory.root);
-    }
   }
 
-  async loadMap(mapId: MapId, resetHeroPosition = true) {
+  async loadMap(mapId: MapId, resetHeroPosition = true, initialPose?: { x: number; z: number; rotY?: number }) {
+    if (this.disposed) return;
     const mySeq = ++this.loadSeq;
     this.loadingMap = true;
-    this.keys.clear();this.joystickVec = {x:0,y:0};
+    this.keys.clear(); this.joystickVec = { x: 0, y: 0 };
     try {
     const mapCfg = getMapById(mapId);
     this.currentMap = mapCfg;
-    this.flyff.clearWorld();
+    if (!mapCfg.assetWorld) {
+      this.flyff.clearWorld();
+    }
     this.totalMonsters = 0;
 
     soundSynth.playMapMusic(mapCfg.musicTheme, mapCfg.ambientBed);
@@ -582,8 +826,22 @@ export class MuWorldEngine {
     this.friendlyBots = [];
     this.lootDrops = [];
     this.projectiles = [];
+    this.enemyProjectiles = [];
     this.transientFx = [];
+    for (const slot of this.activeMonsterSlots) {
+      slot.root.dispose();
+    }
     this.activeMonsterSlots = [];
+    if (this.autoAimRing) {
+      this.autoAimRing.dispose();
+      this.autoAimRing = null;
+    }
+    if (this.skyDome) {
+      this.skyDome.dispose();
+      this.skyDome = null;
+    }
+    this.lockedTargetIdx = -1;
+    this.callbacks.onTargetMonsterChange?.(null);
     this.thinMasterMeshes.clear();
     this.spatialGrid.clear();
 
@@ -592,12 +850,34 @@ export class MuWorldEngine {
       this.weatherMesh = null;
     }
 
-    // Atmosphere & Lighting
+    // Atmosphere, SkyDome & Lighting
+    const skyTop = Color3.FromHexString(`#${mapCfg.skyTopHex.toString(16).padStart(6, '0')}`);
     const horizon = Color3.FromHexString(`#${mapCfg.skyHorizonHex.toString(16).padStart(6, '0')}`);
     const fogColor = Color3.FromHexString(`#${mapCfg.fogHex.toString(16).padStart(6, '0')}`);
     this.scene.clearColor = new Color4(horizon.r * 0.45, horizon.g * 0.45, horizon.b * 0.45, 1);
     this.scene.fogColor = fogColor;
     this.scene.fogDensity = mapCfg.fogDensity;
+
+    const skyTex = new DynamicTexture(`skyTex_${mapCfg.id}`, { width: 64, height: 256 }, this.scene, false);
+    const skyCtx = skyTex.getContext();
+    const grad = skyCtx.createLinearGradient(0, 0, 0, 256);
+    grad.addColorStop(0, `rgb(${Math.round(skyTop.r * 255)}, ${Math.round(skyTop.g * 255)}, ${Math.round(skyTop.b * 255)})`);
+    grad.addColorStop(0.58, `rgb(${Math.round(horizon.r * 255)}, ${Math.round(horizon.g * 255)}, ${Math.round(horizon.b * 255)})`);
+    grad.addColorStop(1, `rgb(${Math.round(fogColor.r * 255)}, ${Math.round(fogColor.g * 255)}, ${Math.round(fogColor.b * 255)})`);
+    skyCtx.fillStyle = grad;
+    skyCtx.fillRect(0, 0, 64, 256);
+    skyTex.update();
+    const skyDome = MeshBuilder.CreateSphere(`skyDome_${mapCfg.id}`, { diameter: 2200, segments: 12 }, this.scene);
+    const skyMat = new StandardMaterial(`skyMat_${mapCfg.id}`, this.scene);
+    skyMat.emissiveTexture = skyTex;
+    skyMat.diffuseColor = Color3.Black();
+    skyMat.disableLighting = true;
+    skyMat.backFaceCulling = false;
+    skyDome.material = skyMat;
+    skyDome.isPickable = false;
+    skyDome.infiniteDistance = true;
+    skyDome.parent = this.worldRoot;
+    this.skyDome = skyDome;
 
     const ambColor = Color3.FromHexString(`#${mapCfg.ambientLightHex.toString(16).padStart(6, '0')}`);
     const sunColor = Color3.FromHexString(`#${mapCfg.sunLightHex.toString(16).padStart(6, '0')}`);
@@ -607,13 +887,33 @@ export class MuWorldEngine {
     this.setBrightness(this.userBrightness);
 
     if (mapCfg.assetWorld && mapCfg.spawn) {
-      await this.flyff.loadWorld(mapCfg.spawn.x, mapCfg.spawn.z);
+      // Subtle textured terrain disc underneath so distant edges beyond streamed tiles never show black void
+      const baseDisc = MeshBuilder.CreateDisc(
+        `assetFallbackGround_${mapCfg.id}`,
+        { radius: mapCfg.sizeMeters * 0.72, tessellation: 48 },
+        this.scene,
+      );
+      baseDisc.rotation.x = Math.PI / 2;
+      baseDisc.position.y = -0.35;
+      const baseMat = new StandardMaterial(`assetFallbackMat_${mapCfg.id}`, this.scene);
+      baseMat.diffuseTexture = createGroundCanvasTexture(this.scene, mapCfg.groundTheme, mapCfg.groundTintHex, 36);
+      baseMat.specularColor = new Color3(0.05, 0.05, 0.05);
+      baseDisc.material = baseMat;
+      baseDisc.isPickable = false;
+      baseDisc.parent = this.worldRoot;
+
+      const targetX = initialPose && Number.isFinite(initialPose.x) ? initialPose.x : mapCfg.spawn.x;
+      const targetZ = initialPose && Number.isFinite(initialPose.z) ? initialPose.z : mapCfg.spawn.z;
+      await this.flyff.loadWorld(targetX, targetZ);
       if (mySeq !== this.loadSeq || this.disposed) return;
-      if (resetHeroPosition) {
-        this.heroX = mapCfg.spawn.x; this.heroZ = mapCfg.spawn.z;
+      if (resetHeroPosition || initialPose) {
+        this.heroX = targetX;
+        this.heroZ = targetZ;
+        this.heroRotY = initialPose && typeof initialPose.rotY === 'number' ? initialPose.rotY : 0;
         const spawnY = this.getTerrainHeight(this.heroX, this.heroZ);
         this.heroRoot.position.set(this.heroX, spawnY, this.heroZ);
-        this.camera.target.set(this.heroX, spawnY + 1.6, this.heroZ);
+        this.camera.alpha = -Math.PI / 2;
+        this.camera.target.set(this.heroX, spawnY + 1.32, this.heroZ);
       }
       for (const npcDef of mapCfg.npcs) {
         const inst = await this.assetManager.instantiateModel(npcDef.role === 'chaos_goblin' ? 'npc_goblin.glb' : 'npc_merchant.glb', `npc_${npcDef.id}`, this.cityRoot);
@@ -624,11 +924,12 @@ export class MuWorldEngine {
         this.activeNpcs.push({ def: npcDef, root: inst.root });
       }
       await this.populateMonsters(mapCfg, mySeq);
-      if(mySeq === this.loadSeq) this.initWeatherParticles(mapCfg.weather);
+      this.initMonsterHudSlots();
+      if (mySeq === this.loadSeq) this.initWeatherParticles(mapCfg.weather);
       return;
     }
 
-    // 1. Huge 1.00 - 1.60 km² Terrain Ground
+    // 1. Huge 1.00 - 1.60 km² Terrain Ground with Diffuse + Bump Textures
     const groundSize = mapCfg.sizeMeters;
     const ground = MeshBuilder.CreateGround(
       `terrain_${mapCfg.id}`,
@@ -644,12 +945,14 @@ export class MuWorldEngine {
       ground.createNormals(false);
     }
     const gMat = new StandardMaterial(`groundMat_${mapCfg.id}`, this.scene);
-    gMat.diffuseTexture = createGroundCanvasTexture(this.scene, mapCfg.groundTheme, mapCfg.groundTintHex, 44);
+    gMat.diffuseTexture = createGroundCanvasTexture(this.scene, mapCfg.groundTheme, mapCfg.groundTintHex, 48);
+    gMat.bumpTexture = createGroundBumpTexture(this.scene, mapCfg.groundTheme, 48);
+    gMat.bumpTexture.level = 0.45;
     gMat.specularColor = new Color3(0.08, 0.08, 0.08);
     ground.material = gMat;
     ground.parent = this.worldRoot;
 
-    // 2. Central Capital City Plaza Floor (Cobblestone / Marble)
+    // 2. Central Capital City Plaza Floor (Cobblestone / Marble with Bump)
     const cityDisc = MeshBuilder.CreateDisc(
       `cityPlaza_${mapCfg.id}`,
       { radius: mapCfg.cityRadius, tessellation: 48 },
@@ -658,17 +961,20 @@ export class MuWorldEngine {
     cityDisc.rotation.x = Math.PI / 2;
     cityDisc.position.y = 0.04;
     const cMat = new StandardMaterial(`cityMat_${mapCfg.id}`, this.scene);
-    cMat.diffuseTexture = createGroundCanvasTexture(this.scene, 'cobble', mapCfg.cityGroundTintHex, 14);
+    cMat.diffuseTexture = createGroundCanvasTexture(this.scene, 'cobble', mapCfg.cityGroundTintHex, 16);
+    cMat.bumpTexture = createGroundBumpTexture(this.scene, 'cobble', 16);
+    cMat.bumpTexture.level = 0.55;
     cMat.specularColor = new Color3(0.12, 0.12, 0.12);
     cityDisc.material = cMat;
     cityDisc.parent = this.cityRoot;
 
     if (resetHeroPosition) {
       this.heroX = 0;
-      this.heroZ = 8;
-      this.heroRotY = Math.PI;
-      this.heroRoot.position = new Vector3(0, 0, 8);
-      this.camera.target.set(0, 1.6, 8);
+      this.heroZ = 14;
+      this.heroRotY = 0;
+      this.heroRoot.position = new Vector3(0, 0, 14);
+      this.camera.alpha = -Math.PI / 2;
+      this.camera.target.set(0, 1.32, 14);
     }
 
     // Build Capital City Medieval Architecture, NPCs, Bots, Outskirts Flora, and <= 50,000 Monsters
@@ -679,6 +985,7 @@ export class MuWorldEngine {
     ]);
 
     if (mySeq !== this.loadSeq) return;
+    this.initMonsterHudSlots();
     this.initWeatherParticles(mapCfg.weather);
     } finally { if (mySeq === this.loadSeq) this.loadingMap = false; }
   }
@@ -894,6 +1201,9 @@ export class MuWorldEngine {
     this.monZ = new Float32Array(count);
     this.monHomeX = new Float32Array(count);
     this.monHomeZ = new Float32Array(count);
+    this.monCampX = new Float32Array(count);
+    this.monCampZ = new Float32Array(count);
+    this.monLeash = new Float32Array(count);
     this.monHp = new Float32Array(count);
     this.monMaxHp = new Float32Array(count);
     this.monDmg = new Float32Array(count);
@@ -903,58 +1213,119 @@ export class MuWorldEngine {
     this.monAlive = new Uint8Array(count);
     this.monLevel = new Uint16Array(count);
     this.monDefIdx = new Uint8Array(count);
+    this.monAttackCd = new Float32Array(count);
+    this.monPowerCd = new Float32Array(count);
     this.spatialGrid.clear();
 
-    const half = mapCfg.sizeMeters / 2 - 16;
-    const minSafeDist = mapCfg.cityRadius + 14; // Strictly outside capital city!
+    const heroLevel = this.heroStatsSnapshot?.level ?? 1;
+    this.lastScaledHeroLevel = heroLevel;
+    const avgAtk = this.getPlayerAvgAttackEstimate();
+    const mapRange = { minLevel: mapCfg.minLevel, maxLevel: mapCfg.maxLevel };
+
+    const half = mapCfg.sizeMeters / 2 - 24;
+    const spawnX = mapCfg.spawn?.x ?? 0;
+    const spawnZ = mapCfg.spawn?.z ?? 0;
+    const minSafeDist = mapCfg.cityRadius + 24;
     const defs = mapCfg.monsters;
-    let seed = (mapCfg.worldIndex + 1) * 7919;
+    let seed = (mapCfg.worldIndex + 1) * 7919 + 41;
     const rand = () => {
       seed = (seed * 1664525 + 1013904223) >>> 0;
       return seed / 4294967296;
     };
 
+    const isValidOutsideSpot = (x: number, z: number): boolean => {
+      if (Math.abs(x) > half || Math.abs(z) > half) return false;
+      if (this.isInSafeCity(x, z)) return false;
+      if (Math.hypot(x - spawnX, z - spawnZ) < minSafeDist) return false;
+      if (mapCfg.assetWorld && this.flyff.world) {
+        if (this.flyff.world.surfaceAt(x + 1536, z + 1536) === 'water') return false;
+        if (this.flyff.height(x, z) < 1.5) return false;
+      }
+      return true;
+    };
+
+    // 18 puntos aleatorios con 15 monstruos cada uno en un rango estricto de 3 metros (<= 3.0m) fuera de la ciudad
+    const CAMP_COUNT = 18;
+    const MONSTERS_PER_CAMP = 15;
+    const camps: Array<{ x: number; z: number }> = [];
+    for (let c = 0; c < CAMP_COUNT; c++) {
+      let cx = spawnX + minSafeDist + 35;
+      let cz = spawnZ + 20;
+      for (let attempt = 0; attempt < 80; attempt++) {
+        const ang = rand() * Math.PI * 2;
+        const r = c < 12 ? minSafeDist + 16 + rand() * 210 : minSafeDist + 230 + rand() * 340;
+        const tx = spawnX + Math.cos(ang) * r;
+        const tz = spawnZ + Math.sin(ang) * r;
+        if (isValidOutsideSpot(tx, tz) && camps.every((k) => Math.hypot(k.x - tx, k.z - tz) > 22)) {
+          cx = tx;
+          cz = tz;
+          break;
+        }
+      }
+      camps.push({ x: cx, z: cz });
+    }
+
+    const campTotal = CAMP_COUNT * MONSTERS_PER_CAMP; // 270 monstruos en los 18 puntos de 3m
     for (let i = 0; i < count; i++) {
       let x = 0;
       let z = 0;
-      // First 180 monsters cluster near the 4 city gates (just outside city walls) for immediate hunting action
-      if (i < 180) {
-        const angle = rand() * Math.PI * 2;
-        const r = minSafeDist + 6 + rand() * 55;
-        x = Math.cos(angle) * r;
-        z = Math.sin(angle) * r;
+      let campX = 0;
+      let campZ = 0;
+      let leash = 18;
+
+      if (i < campTotal) {
+        const camp = camps[Math.floor(i / MONSTERS_PER_CAMP)];
+        const ang = rand() * Math.PI * 2;
+        const rad = Math.sqrt(rand()) * 2.8;
+        campX = camp.x;
+        campZ = camp.z;
+        x = camp.x + Math.cos(ang) * rad;
+        z = camp.z + Math.sin(ang) * rad;
+        leash = 3.0;
       } else {
-        for (let attempt = 0; attempt < 6; attempt++) {
-          x = (rand() * 2 - 1) * half;
-          z = (rand() * 2 - 1) * half;
-          if (!this.isInSafeCity(x, z) && Math.hypot(x, z) >= minSafeDist) break;
+        let found = false;
+        for (let attempt = 0; attempt < 40; attempt++) {
+          const tx = (rand() * 2 - 1) * half;
+          const tz = (rand() * 2 - 1) * half;
+          if (isValidOutsideSpot(tx, tz)) {
+            x = tx;
+            z = tz;
+            found = true;
+            break;
+          }
         }
-        if (Math.hypot(x, z) < minSafeDist) {
+        if (!found) {
           const ang = rand() * Math.PI * 2;
-          x = Math.cos(ang) * (minSafeDist + 20);
-          z = Math.sin(ang) * (minSafeDist + 20);
+          const r = minSafeDist + 30 + rand() * 140;
+          x = Math.max(-half, Math.min(half, spawnX + Math.cos(ang) * r));
+          z = Math.max(-half, Math.min(half, spawnZ + Math.sin(ang) * r));
         }
+        campX = x;
+        campZ = z;
+        leash = 18.0;
       }
 
-      if (mapCfg.assetWorld && this.isInSafeCity(x, z)) {
-        // Rejection sampling guarantees all three cities stay free of monsters.
-        for (let attempt = 0; attempt < 100 && this.isInSafeCity(x, z); attempt++) { x=(rand()*2-1)*half;z=(rand()*2-1)*half; }
-      }
       const defIdx = i % defs.length;
       const def = defs[defIdx];
+      const scaled = scaleMonsterForPlayerLevel(def, heroLevel, avgAtk, mapRange);
       this.monX[i] = x;
       this.monZ[i] = z;
       this.monHomeX[i] = x;
       this.monHomeZ[i] = z;
-      this.monHp[i] = def.hp;
-      this.monMaxHp[i] = def.hp;
-      this.monDmg[i] = def.damage;
-      this.monXp[i] = def.xp;
-      this.monZen[i] = def.zen;
+      this.monCampX[i] = campX;
+      this.monCampZ[i] = campZ;
+      this.monLeash[i] = leash;
+      this.monHp[i] = scaled.maxHp;
+      this.monMaxHp[i] = scaled.maxHp;
+      this.monDmg[i] = scaled.damage;
+      this.monXp[i] = scaled.xp;
+      this.monZen[i] = scaled.zen;
       this.monAlive[i] = 1;
       this.monRespawn[i] = 0;
-      this.monLevel[i] = def.level;
+      this.monLevel[i] = scaled.scaledLevel;
       this.monDefIdx[i] = defIdx;
+      this.monAttackCd[i] = 0.6 + rand() * 1.4;
+      this.monPowerCd[i] = 2.0 + rand() * 3.0;
 
       const key = this.cellKey(x, z);
       let bucket = this.spatialGrid.get(key);
@@ -964,6 +1335,20 @@ export class MuWorldEngine {
       }
       bucket.push(i);
     }
+
+    // Ground contact shadows for active nearby monsters (1 batched draw call)
+    const shadowDisc = MeshBuilder.CreateDisc(`monShadow_${mapCfg.id}`, { radius: 0.92, tessellation: 18 }, this.scene);
+    shadowDisc.rotation.x = Math.PI / 2;
+    const shadowMat = new StandardMaterial(`monShadowMat_${mapCfg.id}`, this.scene);
+    shadowMat.diffuseColor = Color3.Black();
+    shadowMat.emissiveColor = new Color3(0.02, 0.02, 0.03);
+    shadowMat.alpha = 0.36;
+    shadowMat.disableLighting = true;
+    shadowDisc.material = shadowMat;
+    shadowDisc.isPickable = false;
+    shadowDisc.parent = this.monsterRoot;
+    this.monShadowMesh = shadowDisc;
+    this.monShadowMatrices = [];
 
     // Prepare ThinInstance master meshes for every monster archetype in this map
     const uniqueGlbs = new Set<string>();
@@ -977,6 +1362,79 @@ export class MuWorldEngine {
         this.thinMasterMeshes.set(glb, { mesh: master, matrices: [] });
       }
     }
+  }
+
+  private initMonsterHudSlots() {
+    for (let i = 0; i < 10; i++) {
+      const root = new TransformNode(`monSlot_${i}`, this.scene);
+      root.parent = this.fxRoot;
+      root.setEnabled(false);
+
+      const hpBarBg = MeshBuilder.CreatePlane(`monHpBg_${i}`, { width: 1.9, height: 0.2 }, this.scene);
+      const bgMat = new StandardMaterial(`monHpBgMat_${i}`, this.scene);
+      bgMat.diffuseColor = Color3.Black();
+      bgMat.emissiveColor = new Color3(0.08, 0.08, 0.12);
+      bgMat.disableLighting = true;
+      hpBarBg.material = bgMat;
+      hpBarBg.billboardMode = Mesh.BILLBOARDMODE_ALL;
+      hpBarBg.position.y = 2.55;
+      hpBarBg.isPickable = false;
+      hpBarBg.parent = root;
+
+      const hpBarFill = MeshBuilder.CreatePlane(`monHpFill_${i}`, { width: 1.82, height: 0.13 }, this.scene);
+      const hpFillMat = new StandardMaterial(`monHpFillMat_${i}`, this.scene);
+      hpFillMat.diffuseColor = Color3.Black();
+      hpFillMat.emissiveColor = new Color3(0.92, 0.25, 0.25);
+      hpFillMat.disableLighting = true;
+      hpBarFill.material = hpFillMat;
+      hpBarFill.billboardMode = Mesh.BILLBOARDMODE_ALL;
+      hpBarFill.position.y = 2.55;
+      hpBarFill.position.z = -0.02;
+      hpBarFill.isPickable = false;
+      hpBarFill.parent = root;
+
+      const plateTex = new DynamicTexture(`monPlateTex_${i}`, { width: 384, height: 64 }, this.scene, true);
+      plateTex.hasAlpha = true;
+      const plate = MeshBuilder.CreatePlane(`monPlate_${i}`, { width: 2.3, height: 0.38 }, this.scene);
+      const plateMat = new StandardMaterial(`monPlateMat_${i}`, this.scene);
+      plateMat.diffuseTexture = plateTex;
+      plateMat.emissiveTexture = plateTex;
+      plateMat.opacityTexture = plateTex;
+      plateMat.disableLighting = true;
+      plateMat.backFaceCulling = false;
+      plate.material = plateMat;
+      plate.billboardMode = Mesh.BILLBOARDMODE_ALL;
+      plate.position.y = 2.86;
+      plate.isPickable = false;
+      plate.parent = root;
+
+      this.activeMonsterSlots.push({
+        poolIdx: -1,
+        root,
+        hpBarBg,
+        hpBarFill,
+        hpFillMat,
+        plate,
+        plateTex,
+        lastLabel: '',
+        hitFlash: 0,
+      });
+    }
+
+    const ring = MeshBuilder.CreateTorus(
+      'autoAimRing',
+      { diameter: 2.3, thickness: 0.12, tessellation: 24 },
+      this.scene,
+    );
+    const ringMat = new StandardMaterial('autoAimRingMat', this.scene);
+    ringMat.emissiveColor = new Color3(0.98, 0.72, 0.15);
+    ringMat.diffuseColor = Color3.Black();
+    ringMat.disableLighting = true;
+    ring.material = ringMat;
+    ring.isPickable = false;
+    ring.setEnabled(false);
+    ring.parent = this.fxRoot;
+    this.autoAimRing = ring;
   }
 
   private cellKey(x: number, z: number): number {
@@ -1068,15 +1526,45 @@ export class MuWorldEngine {
               ? 28 + (str + ene) * 0.65 + eqDmg * 0.55
               : 30 + str * 1.1 + eqDmg * 0.55;
 
-    const totalBase = (base + bonusStatPower * 0.6) * skill.damageMultiplier;
+    const variantKey = getVariantKey(this.heroClass, this.heroSex);
+    const profile = getVariantProfile(this.heroClass, this.heroSex);
+    const rank = getSkillRank(c, skill.id);
+    const effectiveMult = getEffectiveSkillMultiplier(
+      skill.damageMultiplier,
+      rank,
+      variantKey,
+      c?.specialization ?? 'balanced',
+    );
+    const buffAtkMult = 1 + this.activeEffectBonuses.atkBonusPct / 100;
+
+    const totalBase = (base + bonusStatPower * 0.6) * effectiveMult * buffAtkMult;
+    const critRate = Math.min(0.55, (profile.critBasePct + this.activeEffectBonuses.critBonusPct) / 100);
     const isExcellent = Math.random() < 0.16;
-    const isCritical = !isExcellent && Math.random() < 0.24;
+    const isCritical = !isExcellent && Math.random() < critRate;
     const mult = isExcellent ? 1.55 : isCritical ? 1.32 : 0.92 + Math.random() * 0.18;
     return {
       damage: Math.max(12, Math.round(totalBase * mult)),
       isCritical,
       isExcellent,
     };
+  }
+
+  private getAutoAimCandidateList(maxRange: number) {
+    const nearby = this.queryNearbyMonsterIndices(this.heroX, this.heroZ, maxRange);
+    const candidates = [];
+    for (const idx of nearby) {
+      if (this.monAlive[idx] !== 1) continue;
+      const dist = Math.hypot(this.monX[idx] - this.heroX, this.monZ[idx] - this.heroZ);
+      const def = this.currentMap.monsters[this.monDefIdx[idx]];
+      candidates.push({
+        index: idx,
+        x: this.monX[idx],
+        z: this.monZ[idx],
+        dist,
+        isBoss: Boolean(def?.isBoss),
+      });
+    }
+    return candidates;
   }
 
   executeSkill(skill: SkillDef, _comboMultiplier = 1, bonusStatPower = 0) {
@@ -1092,19 +1580,37 @@ export class MuWorldEngine {
       return;
     }
 
+    // 80% Auto-Aim assist across all 10 hero variants (works mid-run & mid-jump!)
+    const aimRange = Math.max(skill.range + 6, 16);
+    const aimResult = this.autoAimAssist
+      ? findAutoAimTarget(
+          this.heroX,
+          this.heroZ,
+          this.heroRotY,
+          aimRange,
+          this.getAutoAimCandidateList(aimRange),
+          0.8,
+        )
+      : null;
+
+    if (aimResult) {
+      this.heroRotY = aimResult.blendedAngle;
+      this.lockedTargetIdx = aimResult.targetIndex;
+    }
+
     this.heroAction = 'skill';
-    this.attackSwingTimer = 0.38;
+    this.attackSwingTimer = 0.34;
     this.flyff.cast(skill);
+    this.spawnSkillVfx(skill);
 
     const { damage, isCritical, isExcellent } = this.computeHeroDamage(skill, bonusStatPower);
-    // Native effects are driven by the same accepted game skill. Damage remains authoritative here.
 
     if (skill.isBuff) {
       this.callbacks.onFloatingText(`+${skill.shortName} Activo`, '#4ade80');
       return;
     }
 
-    // Ranged projectile skills
+    // Ranged projectile skills aimed with 80% auto-aim blend
     if (
       skill.vfx === 'bolt' ||
       skill.vfx === 'arrow' ||
@@ -1113,10 +1619,11 @@ export class MuWorldEngine {
       skill.vfx === 'fire_scream'
     ) {
       const count = skill.vfx === 'triple_shot' ? 3 : 1;
+      const baseAngle = aimResult ? aimResult.blendedAngle : this.heroRotY;
       for (let i = 0; i < count; i++) {
-        const spread = (i - (count - 1) / 2) * 0.24;
-        const ang = this.heroRotY + spread;
-        const orb = MeshBuilder.CreateSphere('proj', { diameter: 0.42, segments: 8 }, this.scene);
+        const spread = (i - (count - 1) / 2) * 0.22;
+        const ang = baseAngle + spread;
+        const orb = MeshBuilder.CreateSphere('proj', { diameter: 0.44, segments: 8 }, this.scene);
         const mat = new StandardMaterial('projMat', this.scene);
         mat.emissiveColor = Color3.FromHexString(`#${skill.colorHex.toString(16).padStart(6, '0')}`);
         mat.disableLighting = true;
@@ -1132,9 +1639,9 @@ export class MuWorldEngine {
           x: orb.position.x,
           y: orb.position.y,
           z: orb.position.z,
-          vx: Math.sin(ang) * 28,
-          vz: Math.cos(ang) * 28,
-          life: 0.85,
+          vx: Math.sin(ang) * 29,
+          vz: Math.cos(ang) * 29,
+          life: 0.9,
           damage,
           isCritical,
           isExcellent,
@@ -1143,8 +1650,15 @@ export class MuWorldEngine {
       return;
     }
 
-    // Melee / AoE instant area hit against nearby monsters
-    const nearby = this.queryNearbyMonsterIndices(this.heroX, this.heroZ, skill.range + 1.5);
+    // Melee / AoE instant area hit (prioritizes 80% auto-aimed target first!)
+    const nearby = this.queryNearbyMonsterIndices(this.heroX, this.heroZ, skill.range + 2.2);
+    if (aimResult && nearby.includes(aimResult.targetIndex)) {
+      const i = nearby.indexOf(aimResult.targetIndex);
+      if (i > 0) {
+        nearby.splice(i, 1);
+        nearby.unshift(aimResult.targetIndex);
+      }
+    }
     let hits = 0;
     for (const idx of nearby) {
       if (this.monAlive[idx] !== 1) continue;
@@ -1404,16 +1918,25 @@ export class MuWorldEngine {
 
       const mag = Math.hypot(mx, mz);
       if (mag > 0.08) {
-        const nx = mx / Math.max(1, mag);
-        const nz = mz / Math.max(1, mag);
-        const speed = 13.5;
+        const lx = mx / Math.max(1, mag);
+        const lz = mz / Math.max(1, mag);
+        // Camera-relative movement so rotating 360° left/right/up/down while running steers seamlessly
+        const fwdX = -Math.cos(this.camera.alpha);
+        const fwdZ = -Math.sin(this.camera.alpha);
+        const rightX = -Math.sin(this.camera.alpha);
+        const rightZ = Math.cos(this.camera.alpha);
+        const nx = rightX * lx + fwdX * lz;
+        const nz = rightZ * lx + fwdZ * lz;
+        const speed = 13.5 * (1 + this.activeEffectBonuses.speedBonusPct / 100);
         const limit = this.currentMap.sizeMeters / 2 - 14;
         const nextX = Math.max(-limit, Math.min(limit, this.heroX + nx * speed * dt));
         const nextZ = Math.max(-limit, Math.min(limit, this.heroZ + nz * speed * dt));
         if (this.flyff.canMove(nextX, this.heroZ, this.heroX, this.heroZ, this.heroRoot.position.y + (this.flyff.actor?.root.position.y ?? 0))) this.heroX = nextX;
         if (this.flyff.canMove(this.heroX, nextZ, this.heroX, this.heroZ, this.heroRoot.position.y + (this.flyff.actor?.root.position.y ?? 0))) this.heroZ = nextZ;
-        this.heroRotY = Math.atan2(nx, nz);
-        if (this.attackSwingTimer <= 0) this.heroAction = 'move';
+        if (this.attackSwingTimer <= 0) {
+          this.heroRotY = Math.atan2(nx, nz);
+          this.heroAction = 'move';
+        }
       } else if (this.attackSwingTimer <= 0) {
         this.heroAction = 'idle';
       }
@@ -1438,19 +1961,9 @@ export class MuWorldEngine {
         this.heroWeaponNode.rotation.x = 0.45;
       }
 
-      if (this.heroWingsNode) {
-        this.heroWingsNode.rotation.y = Math.sin(now * 0.008) * 0.14;
-      }
-
-      // Smooth chase camera when not in free 3D orbit
-      if (!this.free3dMode) {
-        this.camera.target = Vector3.Lerp(this.camera.target, new Vector3(this.heroX, hy + 1.6, this.heroZ), 0.14);
-        this.camera.alpha += (-Math.PI / 2 - this.camera.alpha) * 0.05;
-        this.camera.beta += (1.02 - this.camera.beta) * 0.05;
-        this.camera.radius += (19 - this.camera.radius) * 0.08;
-      } else {
-        this.camera.target = Vector3.Lerp(this.camera.target, new Vector3(this.heroX, hy + 1.6, this.heroZ), 0.14);
-      }
+      // Free 360° third-person camera: follows character height smoothly while preserving user drag angles at all times
+      this.camera.target = Vector3.Lerp(this.camera.target, new Vector3(this.heroX, hy + 1.32, this.heroZ), 0.22);
+      this.camera.radius += (this.cameraDistance - this.camera.radius) * 0.14;
 
       // Sync peer location
       if (now - this.lastMoveSyncTime > 120) {
@@ -1547,6 +2060,19 @@ export class MuWorldEngine {
       }
     }
 
+    // Update Enemy Projectiles (Monster Powers)
+    for (let i = this.enemyProjectiles.length - 1; i >= 0; i--) {
+      const ep = this.enemyProjectiles[i];
+      ep.life -= dt;
+      ep.x += ep.vx * dt;
+      ep.z += ep.vz * dt;
+      ep.mesh.position.set(ep.x, ep.y, ep.z);
+      if (ep.life <= 0) {
+        ep.mesh.dispose();
+        this.enemyProjectiles.splice(i, 1);
+      }
+    }
+
     // Update Transient VFX
     for (let i = this.transientFx.length - 1; i >= 0; i--) {
       const fx = this.transientFx[i];
@@ -1586,7 +2112,7 @@ export class MuWorldEngine {
       this.weatherMesh.thinInstanceBufferUpdated('matrix');
     }
 
-    // Telemetry callback to HUD (~4x/sec)
+    // Telemetry + 80% Auto-Aim Target Lock callback to HUD (~4x/sec)
     if (now - this.lastTelemetryTime > 260) {
       this.lastTelemetryTime = now;
       this.callbacks.onWorldTelemetry?.({
@@ -1598,7 +2124,79 @@ export class MuWorldEngine {
         mapName: this.currentMap.name,
         areaKm2: this.currentMap.areaKm2,
       });
+
+      const aim = this.autoAimAssist
+        ? findAutoAimTarget(
+            this.heroX,
+            this.heroZ,
+            this.heroRotY,
+            18,
+            this.getAutoAimCandidateList(18),
+            0.8,
+          )
+        : null;
+      if (aim && !this.isInSafeCity()) {
+        this.lockedTargetIdx = aim.targetIndex;
+        const def = this.currentMap.monsters[this.monDefIdx[aim.targetIndex]];
+        const heroLv = this.heroStatsSnapshot?.level ?? 1;
+        const scaled = scaleMonsterForPlayerLevel(def, heroLv, this.getPlayerAvgAttackEstimate(), {
+          minLevel: this.currentMap.minLevel,
+          maxLevel: this.currentMap.maxLevel,
+        });
+        this.callbacks.onTargetMonsterChange?.({
+          index: aim.targetIndex,
+          stats: {
+            ...scaled,
+            hp: Math.round(this.monHp[aim.targetIndex]),
+            maxHp: Math.round(this.monMaxHp[aim.targetIndex]),
+          },
+          currentHp: Math.round(this.monHp[aim.targetIndex]),
+          dist: Number(aim.dist.toFixed(1)),
+          autoAimPct: aim.coveragePct,
+        });
+      } else {
+        this.lockedTargetIdx = -1;
+        this.callbacks.onTargetMonsterChange?.(null);
+      }
     }
+  }
+
+  private spawnMonsterPowerFx(mx: number, mz: number, power: MonsterPowerDef) {
+    const color = Color3.FromHexString(power.colorHex);
+    const my = this.getTerrainHeight(mx, mz) + 1.25;
+    const dx = this.heroX - mx;
+    const dz = this.heroZ - mz;
+    const dist = Math.max(0.5, Math.hypot(dx, dz));
+
+    const orb = MeshBuilder.CreateSphere('monPowerOrb', { diameter: 0.55, segments: 8 }, this.scene);
+    const mat = new StandardMaterial('monPowerMat', this.scene);
+    mat.emissiveColor = color;
+    mat.diffuseColor = Color3.Black();
+    mat.disableLighting = true;
+    orb.material = mat;
+    orb.position.set(mx, my, mz);
+    orb.parent = this.fxRoot;
+
+    this.enemyProjectiles.push({
+      mesh: orb,
+      x: mx,
+      y: my,
+      z: mz,
+      vx: (dx / dist) * 16,
+      vz: (dz / dist) * 16,
+      life: Math.min(0.65, dist / 16 + 0.08),
+    });
+
+    const ringNode = new TransformNode(`monTelegraph_${Date.now()}`, this.scene);
+    ringNode.position.set(this.heroX, this.getTerrainHeight(this.heroX, this.heroZ) + 0.2, this.heroZ);
+    ringNode.parent = this.fxRoot;
+    const ring = MeshBuilder.CreateTorus('monTeleRing', { diameter: 2.2, thickness: 0.1, tessellation: 18 }, this.scene);
+    const rMat = new StandardMaterial('monTeleMat', this.scene);
+    rMat.emissiveColor = color;
+    rMat.disableLighting = true;
+    ring.material = rMat;
+    ring.parent = ringNode;
+    this.transientFx.push({ node: ringNode, life: 0.45, maxLife: 0.45, expandRate: 1.5, spinSpeed: 4, riseSpeed: 0.2 });
   }
 
   private updateNearbyMonsters(dt: number, now: number): number[] {
@@ -1606,11 +2204,14 @@ export class MuWorldEngine {
     const renderRadius = 96;
     const nearby = this.queryNearbyMonsterIndices(this.heroX, this.heroZ, renderRadius);
     const heroInCity = this.isInSafeCity();
-    const minBarrierR = this.currentMap.cityRadius + 5;
+    const heroLv = this.heroStatsSnapshot?.level ?? 1;
+    const mapRange = { minLevel: this.currentMap.minLevel, maxLevel: this.currentMap.maxLevel };
+    const closestForHud: Array<{ idx: number; dist: number }> = [];
 
     for (const entry of this.thinMasterMeshes.values()) {
       entry.matrices.length = 0;
     }
+    this.monShadowMatrices.length = 0;
 
     for (let k = 0; k < nearby.length; k++) {
       const idx = nearby[k];
@@ -1618,7 +2219,14 @@ export class MuWorldEngine {
         this.monRespawn[idx] -= dt;
         if (this.monRespawn[idx] <= 0) {
           this.monAlive[idx] = 1;
-          this.monHp[idx] = this.monMaxHp[idx];
+          const def = this.currentMap.monsters[this.monDefIdx[idx]];
+          const scaled = scaleMonsterForPlayerLevel(def, heroLv, this.getPlayerAvgAttackEstimate(), mapRange);
+          this.monMaxHp[idx] = scaled.maxHp;
+          this.monHp[idx] = scaled.maxHp;
+          this.monDmg[idx] = scaled.damage;
+          this.monLevel[idx] = scaled.scaledLevel;
+          this.monXp[idx] = scaled.xp;
+          this.monZen[idx] = scaled.zen;
           this.monX[idx] = this.monHomeX[idx];
           this.monZ[idx] = this.monHomeZ[idx];
         }
@@ -1631,44 +2239,146 @@ export class MuWorldEngine {
       const dz = this.heroZ - mz;
       const distToHero = Math.hypot(dx, dz);
 
+      if (distToHero < 28) {
+        closestForHud.push({ idx, dist: distToHero });
+      }
+
+      if (this.monAttackCd[idx] > 0) this.monAttackCd[idx] -= dt;
+      if (this.monPowerCd[idx] > 0) this.monPowerCd[idx] -= dt;
+
       let rotY = 0;
-      if (this.mode === 'playing' && !heroInCity && distToHero < 26 && distToHero > 2.2) {
+      let isMovingMon = false;
+      const leashR = this.monLeash[idx] || 3.0;
+      const campX = this.monCampX[idx];
+      const campZ = this.monCampZ[idx];
+
+      if (this.mode === 'playing' && !heroInCity && distToHero < 22 && distToHero > 2.15) {
         const moveX = mx + (dx / distToHero) * 3.8 * dt;
         const moveZ = mz + (dz / distToHero) * 3.8 * dt;
-        // STRICT CITY BARRIER: Monsters CANNOT enter the capital city!
-        if ((this.currentMap.assetWorld ? !this.isInSafeCity(moveX, moveZ) : Math.hypot(moveX, moveZ) >= minBarrierR) && this.flyff.canMove(moveX, moveZ, mx, mz)) {
+        const withinCamp = Math.hypot(moveX - campX, moveZ - campZ) <= leashR;
+        // STRICT CITY & 3m CAMP BARRIER: Monsters stay outside cities AND inside their 3m camp radius!
+        if (withinCamp && !this.isInSafeCity(moveX, moveZ) && this.flyff.canMove(moveX, moveZ, mx, mz)) {
           mx = moveX;
           mz = moveZ;
           this.monX[idx] = mx;
           this.monZ[idx] = mz;
+          isMovingMon = true;
         }
         rotY = Math.atan2(dx, dz);
       } else {
-        // Gentle idle patrol around home outside the city
-        rotY = Math.sin(now * 0.001 + idx) * 1.2;
-      }
-
-      // Monster attacks hero when within melee range outside the safe city
-      if (this.mode === 'playing' && !heroInCity && distToHero <= 2.6) {
-        if (Math.random() < dt * 0.75) {
-          const damage = Math.max(4, Math.round(this.monDmg[idx] * 0.85));
-          this.flyff.hurt(damage);
-          this.callbacks.onPlayerDamaged(damage);
-        }
+        rotY = Math.sin(now * 0.001 + idx) * 1.1;
       }
 
       const def = this.currentMap.monsters[this.monDefIdx[idx]];
+      // Monster Special Powers, Melee & Critical Attacks
+      if (this.mode === 'playing' && !heroInCity) {
+        const scaled = scaleMonsterForPlayerLevel(def, heroLv, this.getPlayerAvgAttackEstimate(), mapRange);
+        const power = scaled.powers[0];
+        if (distToHero <= (power ? Math.max(power.range, 2.7) : 2.7) && this.monAttackCd[idx] <= 0 && this.monPowerCd[idx] <= 0) {
+          const rolled = rollMonsterAttack(scaled);
+          if (rolled.isPower && power) {
+            this.monPowerCd[idx] = power.cooldownSec;
+            this.monAttackCd[idx] = 1.4;
+            this.spawnMonsterPowerFx(mx, mz, power);
+            this.flyff.hurt(rolled.damage);
+            this.callbacks.onPlayerDamaged(rolled.damage, false);
+            this.callbacks.onMonsterPowerHit?.(power, rolled.damage);
+          } else if (distToHero <= 2.75) {
+            this.monAttackCd[idx] = 1.55;
+            this.flyff.hurt(rolled.damage);
+            this.callbacks.onPlayerDamaged(rolled.damage, rolled.isCrit);
+            if (rolled.isCrit) {
+              const hy = this.getTerrainHeight(this.heroX, this.heroZ) + 2.2;
+              this.emitDamageNumber(new Vector3(this.heroX, hy, this.heroZ), `CRIT -${rolled.damage}!`, '#ef4444', true);
+              this.callbacks.onFloatingText(`CRIT ${def.name}: -${rolled.damage}`, '#ef4444');
+            }
+          }
+        }
+      }
+
       const glb = ARCHETYPE_TO_GLB[def.archetype] || 'mon_bull.glb';
       const bucket = this.thinMasterMeshes.get(glb);
       if (bucket) {
         const my = this.getTerrainHeight(mx, mz);
-        const s = def.isBoss ? 1.45 : 1.05;
+        const baseScale = def.isBoss ? 1.45 : 1.05;
+        const phase = now * (isMovingMon ? 0.011 : 0.0032) + idx * 0.7;
+        const bobY = isMovingMon ? Math.abs(Math.sin(phase)) * 0.14 : 0;
+        const breath = isMovingMon ? 0 : Math.sin(phase) * 0.032;
+        const pitch = isMovingMon ? 0.09 : Math.sin(phase) * 0.03;
+        const roll = isMovingMon ? Math.sin(phase) * 0.06 : 0;
         const mat = Matrix.Compose(
-          new Vector3(s, s, s),
-          Quaternion.RotationYawPitchRoll(rotY, 0, 0),
-          new Vector3(mx, my, mz),
+          new Vector3(baseScale * (1 + breath), baseScale * (1 - breath * 0.75), baseScale * (1 + breath)),
+          Quaternion.RotationYawPitchRoll(rotY, pitch, roll),
+          new Vector3(mx, my + bobY, mz),
         );
         bucket.matrices.push(...mat.m);
+        if (this.monShadowMesh) {
+          const sScale = def.isBoss ? 1.5 : 1.05;
+          const flatShadow = Matrix.Compose(
+            new Vector3(sScale, sScale, 1),
+            Quaternion.RotationYawPitchRoll(0, Math.PI / 2, 0),
+            new Vector3(mx, my + 0.04, mz),
+          );
+          this.monShadowMatrices.push(...flatShadow.m);
+        }
+      }
+    }
+
+    // Update 3D overhead HP/level bars for up to 10 closest living monsters
+    closestForHud.sort((a, b) => a.dist - b.dist);
+    for (let sIdx = 0; sIdx < this.activeMonsterSlots.length; sIdx++) {
+      const slot = this.activeMonsterSlots[sIdx];
+      const item = closestForHud[sIdx];
+      if (!item) {
+        slot.poolIdx = -1;
+        slot.root.setEnabled(false);
+        continue;
+      }
+      const idx = item.idx;
+      slot.poolIdx = idx;
+      slot.root.setEnabled(true);
+      const mx = this.monX[idx];
+      const mz = this.monZ[idx];
+      const my = this.getTerrainHeight(mx, mz);
+      slot.root.position.set(mx, my, mz);
+
+      const ratio = Math.max(0.02, Math.min(1, this.monHp[idx] / Math.max(1, this.monMaxHp[idx])));
+      slot.hpBarFill.scaling.x = ratio;
+      slot.hpBarFill.position.x = -(1 - ratio) * 0.91;
+      if (slot.hitFlash > 0) {
+        slot.hitFlash -= dt;
+        slot.hpFillMat.emissiveColor.set(1, 0.85, 0.25);
+      } else {
+        slot.hpFillMat.emissiveColor.set(idx === this.lockedTargetIdx ? 1 : 0.9, idx === this.lockedTargetIdx ? 0.6 : 0.2, 0.2);
+      }
+
+      const def = this.currentMap.monsters[this.monDefIdx[idx]];
+      const label = `Nv.${this.monLevel[idx]} ${def?.name || 'Monstruo'}`;
+      if (slot.lastLabel !== label) {
+        slot.lastLabel = label;
+        const ctx = slot.plateTex.getContext() as unknown as CanvasRenderingContext2D;
+        ctx.clearRect(0, 0, 384, 64);
+        ctx.fillStyle = 'rgba(10, 14, 24, 0.78)';
+        ctx.fillRect(8, 8, 368, 48);
+        ctx.font = 'bold 24px Plus Jakarta Sans, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = def?.isBoss ? '#fbbf24' : '#f8fafc';
+        ctx.fillText(label.slice(0, 22), 192, 32);
+        slot.plateTex.update();
+      }
+    }
+
+    // Update 80% Auto-Aim Target Lock Ring
+    if (this.autoAimRing) {
+      if (this.lockedTargetIdx >= 0 && this.monAlive[this.lockedTargetIdx] === 1 && !heroInCity) {
+        const tx = this.monX[this.lockedTargetIdx];
+        const tz = this.monZ[this.lockedTargetIdx];
+        this.autoAimRing.setEnabled(true);
+        this.autoAimRing.position.set(tx, this.getTerrainHeight(tx, tz) + 0.14, tz);
+        this.autoAimRing.rotation.y += dt * 3.5;
+      } else {
+        this.autoAimRing.setEnabled(false);
       }
     }
 
@@ -1678,6 +2388,14 @@ export class MuWorldEngine {
       } else {
         entry.mesh.thinInstanceSetBuffer('matrix', new Float32Array(entry.matrices), 16, false);
         entry.mesh.thinInstanceCount = entry.matrices.length / 16;
+      }
+    }
+    if (this.monShadowMesh) {
+      if (this.monShadowMatrices.length === 0) {
+        this.monShadowMesh.thinInstanceCount = 0;
+      } else {
+        this.monShadowMesh.thinInstanceSetBuffer('matrix', new Float32Array(this.monShadowMatrices), 16, false);
+        this.monShadowMesh.thinInstanceCount = this.monShadowMatrices.length / 16;
       }
     }
 
@@ -1700,6 +2418,11 @@ export class MuWorldEngine {
     window.removeEventListener('resize', this.handleResize);
     window.removeEventListener('keydown', this.handleKeyDown);
     window.removeEventListener('keyup', this.handleKeyUp);
+    this.canvas.removeEventListener('pointerdown', this.handleCanvasPointerDown);
+    window.removeEventListener('pointermove', this.handleWindowPointerMove);
+    window.removeEventListener('pointerup', this.handleWindowPointerUp);
+    window.removeEventListener('pointercancel', this.handleWindowPointerUp);
+    this.canvas.removeEventListener('wheel', this.handleCanvasWheel);
     this.canvas.removeEventListener('webglcontextlost', this.handleContextLost);
     this.assetManager.dispose();
     this.scene.dispose();

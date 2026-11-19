@@ -18,7 +18,7 @@ export class FlyffCharacter {
   jumping:boolean; velocityY:number;
   groundAt?: (x:number,z:number,ceiling?:number)=>number;
   onEvent?: (event: any)=>void;
-  play(name:string,loop?:boolean):void; seek(time:number):void; equip(slot:string,enabled:boolean):void;
+  play(name:string,loop?:boolean):void; playAction(name:string,duration?:number):void; seek(time:number):void; equip(slot:string,enabled:boolean):void;
   detach(slot:string):void; updateVisibility():void;
   receiveHit(damage:number,slot?:string,wear?:number):void;
   jump(height:number):boolean; update(dt:number, options?:any):void; dispose():void;
@@ -34,5 +34,6 @@ export class FlyffWorld {
   heightAt(x:number,z:number):number;
   surfaceAt(x:number,z:number):string;
   stream(x:number,z:number,radius?:number,distance?:number):Promise<void>;
+  update(dt:number):void;
   dispose():void;
 }

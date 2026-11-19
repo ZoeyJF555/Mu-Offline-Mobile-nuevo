@@ -96,7 +96,11 @@ export class FlyffContent {
   cast(skill:SkillDef) {
     const index=MU_SKILLS[skill.classType].findIndex(s=>s.id===skill.id),recipe=RECIPES[skill.classType][index];
     if(!this.actor||!recipe)return;
-    this.actor.play(index===0?'attack':'cast_release',false);
+    if (typeof (this.actor as any).playAction === 'function') {
+      (this.actor as any).playAction(index===0?'attack':'cast_release', index===0?0.34:0.44);
+    } else {
+      this.actor.play(index===0?'attack':'cast_release',false);
+    }
     const point=this.actor.root.getAbsolutePosition().add(new Vector3(0,.5,0));
     void this.effects.spawn(`efectos/${recipe[0]}.json`,point,.65).catch(this.onError);
     void this.audio?.play(recipe[1],.5).catch(this.onError);
@@ -108,13 +112,28 @@ export class FlyffContent {
     void this.audio?.play('hit_sword',.3).catch(this.onError);
   }
   async loadWorld(x:number,z:number) {
-    const generation=++this.worldGeneration;this.clearWorld(false);this.loadingWorld=true;
+    const generation=++this.worldGeneration;this.loadingWorld=true;
     try {
-    const next=await FlyffWorld.load(this.scene,this.base);
-    if(this.disposed||generation!==this.worldGeneration){next.dispose();return;}
-    this.world=next;this.origin=new TransformNode('madrigal_origin',this.scene);this.origin.position.set(-ORIGIN,0,-ORIGIN);next.lava.parent=this.origin;next.rootParent=this.origin;
-    await next.stream(x+ORIGIN,z+ORIGIN,0,100);
-    if(generation===this.worldGeneration)this.refreshCollision();
+      let next=this.world;
+      if(!next||this.disposed) {
+        this.clearWorld(false);
+        next=await FlyffWorld.load(this.scene,this.base);
+        if(this.disposed||generation!==this.worldGeneration){next.dispose();return;}
+        this.world=next;
+        this.origin=new TransformNode('madrigal_origin',this.scene);
+        this.origin.position.set(-ORIGIN,0,-ORIGIN);
+        next.lava.parent=this.origin;
+        next.rootParent=this.origin;
+      }
+      await next.stream(x+ORIGIN,z+ORIGIN,0,100);
+      if(!this.disposed&&generation===this.worldGeneration) {
+        for(const tile of next.tiles.values())tile.root.parent=this.origin;
+        this.refreshCollision();
+      }
+    } catch (err) {
+      if (!this.disposed && generation === this.worldGeneration && !(err instanceof Error && err.message === 'World disposed')) {
+        throw err;
+      }
     } finally { if(generation===this.worldGeneration)this.loadingWorld=false; }
   }
   clearWorld(invalidate=true) {
@@ -122,10 +141,14 @@ export class FlyffContent {
     this.world?.dispose();this.world=null;this.origin?.dispose();this.origin=null;this.collision.rebuild([]);this.collisionTiles="";
   }
   private async stream(x:number,z:number) {
-    const world=this.world;if(!world||this.streaming)return;
+    const world=this.world;const generation=this.worldGeneration;if(!world||this.streaming||this.disposed)return;
     this.streaming=true;
     try {await world.stream(x+ORIGIN,z+ORIGIN,0,100);
-      if(world===this.world){for(const tile of world.tiles.values())tile.root.parent=this.origin;this.refreshCollision();}
+      if(world===this.world&&!this.disposed&&generation===this.worldGeneration){for(const tile of world.tiles.values())tile.root.parent=this.origin;this.refreshCollision();}
+    } catch (err) {
+      if (!this.disposed && generation === this.worldGeneration && !(err instanceof Error && err.message === 'World disposed')) {
+        throw err;
+      }
     } finally {this.streaming=false;}
   }
   height(x:number,z:number) {return this.world?.heightAt(x+ORIGIN,z+ORIGIN)??0;}
@@ -151,7 +174,7 @@ export class FlyffContent {
     return target;
   }
   update(dt:number,x:number,z:number,moving:boolean,rotation:number) {
-    this.effects.update(dt);this.worldClock+=dt;
+    this.effects.update(dt);this.world?.update(dt);this.worldClock+=dt;
     if(this.world&&!this.loadingWorld&&this.worldClock>this.streamClock){this.worldClock=0;void this.stream(x,z).catch(this.onError);}
     if(this.actor){this.actor.root.rotation.y=rotation;
       this.actor.update(dt,{moving,running:true,height:0,surface:this.world?.surfaceAt(x+ORIGIN,z+ORIGIN)??'land'});
