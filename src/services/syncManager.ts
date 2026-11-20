@@ -1,4 +1,5 @@
 import type {
+  ActiveEffect,
   AsyncDuelChallenge,
   AsyncDuelRecord,
   EventType,
@@ -36,6 +37,7 @@ export interface SyncCallbacks {
   }) => void;
   onDuelChallenge?: (payload: { fromPeerName: string; challenge: AsyncDuelChallenge }) => void;
   onDuelCompleted?: (payload: { record: AsyncDuelRecord }) => void;
+  onBuffShared?: (payload: { fromPeerName: string; effect: ActiveEffect }) => void;
   onRoomEnded: (message: string) => void;
   onError: (message: string) => void;
   onConnectionChange: (connected: boolean) => void;
@@ -94,6 +96,9 @@ export class LocalSyncManager {
               break;
             case 'duel:completed':
               this.callbacks.onDuelCompleted?.(msg);
+              break;
+            case 'buff:shared':
+              this.callbacks.onBuffShared?.(msg);
               break;
             case 'room:ended':
               this.callbacks.onRoomEnded(msg.message);
@@ -189,6 +194,10 @@ export class LocalSyncManager {
 
   sendDuelCompleted(record: AsyncDuelRecord) {
     this.send({ type: 'duel:completed', record });
+  }
+
+  sendSharedBuff(effect: ActiveEffect) {
+    this.send({ type: 'buff:share', effect });
   }
 
   endRoom() {

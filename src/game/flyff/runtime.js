@@ -100,18 +100,20 @@ export class FlyffCharacter {
     this.onEvent?.(e);
   }
   sound(id, volume) { this.emit('sound', { id }); this.audio?.play(id, volume)?.catch(e => this.emit('audio-error', { message: e.message })); }
-  play(name, loop = ['idle', 'walk', 'run', 'cast_loop'].includes(name)) {
+  play(name, loop = ['idle', 'walk', 'run', 'cast_loop'].includes(name), forceRestart = false, speedRatio = 1) {
     const group = this.clips.get(name);
     if (!group) throw new Error(`Missing native clip ${name}`);
-    if (this.clip === name && group.isPlaying) return;
+    if (!forceRestart && this.clip === name && group.isPlaying) return;
     for (const g of this.clips.values()) g.stop();
-    this.clip = name; this.time = 0; group.start(loop, 1, group.from, group.to);
+    this.clip = name; this.time = 0;
+    group.start(loop, speedRatio, group.from, group.to);
+    group.goToFrame(group.from);
     this.emit('animation', { name });
   }
-  playAction(name, duration = 0.38) {
+  playAction(name, duration = 0.36) {
     this.actionTimer = duration;
     this.actionClip = name;
-    this.play(name, false);
+    this.play(name, false, true, 1.32);
   }
   seek(seconds) {
     const group = this.clips.get(this.clip); group.goToFrame(group.from + seconds * 30);
@@ -137,7 +139,7 @@ export class FlyffCharacter {
   }
   receiveHit(damage, slot = 'helmet', wear = damage) {
     this.hp = Math.max(0, this.hp - damage); const gear = this.gear[slot];
-    if (gear?.equipped) {
+    if (gear?.equipped && slot !== 'wings') {
       gear.durability = Math.max(0, gear.durability - wear);
       if (gear.durability === 0) { this.detach(slot); this.equip(slot, false); }
     }
@@ -158,7 +160,7 @@ export class FlyffCharacter {
     this.actionTimer = 0; this.actionClip = null;
     this.play('jump_start', false); this.sound(`jump_${this.config.sex}`, .35); return true;
   }
-  update(dt, { moving = false, running = false, surface = 'grass', height = this.root.position.y, externalAirPhase = null, justJumped = false, justLanded = false } = {}) {
+  update(dt, { moving = false, running = false, hovering = false, surface = 'grass', height = this.root.position.y, externalAirPhase = null, justJumped = false, justLanded = false } = {}) {
     const previousTime = this.time; this.time += dt;
     if (this.actionTimer > 0) {
       this.actionTimer -= dt;
@@ -168,10 +170,14 @@ export class FlyffCharacter {
       }
     }
     if (this.wingsNode && this.gear.wings?.equipped) {
-      const speed = externalAirPhase && externalAirPhase !== 'grounded' ? 7.0 : moving ? 5.0 : 2.1;
+      const airborne = hovering || (externalAirPhase && externalAirPhase !== 'grounded');
+      const speed = airborne ? 8.5 : moving ? 5.6 : 2.3;
       this.wingPhase += dt * speed;
-      const amp = moving || (externalAirPhase && externalAirPhase !== 'grounded') ? 0.08 : 0.035;
-      this.wingsNode.scaling.x = 1 + Math.sin(this.wingPhase) * amp;
+      const wave = Math.sin(this.wingPhase);
+      const amp = airborne ? 0.14 : moving ? 0.08 : 0.04;
+      this.wingsNode.scaling.x = 1 + wave * amp;
+      this.wingsNode.rotation.y = wave * (airborne ? 0.18 : 0.08);
+      this.wingsNode.rotation.x = Math.cos(this.wingPhase) * (airborne ? 0.08 : 0.03);
     }
     const floor=height+(this.root.parent?.getAbsolutePosition().y??0);
     for (const f of this.fragments) updateFragment(f,dt,this.groundAt,floor);
@@ -182,14 +188,14 @@ export class FlyffCharacter {
       if (justJumped) {
         this.jumping = true;
         this.actionTimer = 0; this.actionClip = null;
-        this.play('jump_start', false);
+        this.play('jump_start', false, true, 1.25);
         this.sound(`jump_${this.config.sex}`, .35);
         return;
       }
       if (justLanded) {
         this.jumping = false;
         if (this.actionTimer <= 0) {
-          this.play(moving ? (running ? 'run' : 'walk') : 'jump_land', moving);
+          this.play(moving ? (running ? 'run' : 'walk') : 'jump_land', moving, true, 1.15);
         }
         this.sound('land', .35); this.emit('land');
         return;
@@ -377,7 +383,7 @@ export class FlyffWorld {
     root.parent=this.rootParent??null;
     try {
       const [terrain, surface] = await Promise.all([importGLB(this.scene, this.base, tile.terrain), fetch(new URL(tile.surface,this.base)).then(r=>{if(!r.ok)throw new Error('Surface unavailable');return r.arrayBuffer();}).then(b=>new Uint8Array(b))]);
-      terrain.meshes.forEach(m=>{if(m.material)ownedMaterials.add(m.material);m.setEnabled(true);m.isVisible=true;m.receiveShadows=true;});
+      terrain.meshes.forEach(m=>{if(m.material)ownedMaterials.add(m.material);m.setEnabled(true);m.isVisible=true;m.receiveShadows=true;m.alwaysSelectAsActiveMesh=true;});
       terrain.meshes.filter(m => !m.parent).forEach(m => {
         m.parent = root;
         m.rotationQuaternion = null;
@@ -387,6 +393,7 @@ export class FlyffWorld {
         m.position.z += tile.z;
         m.setEnabled(true);
         m.isVisible = true;
+        m.alwaysSelectAsActiveMesh = true;
       });
       if(this.disposed)throw new Error('World disposed');
       const models = [...new Set(tile.objects.map(o => o.model))];
@@ -394,14 +401,23 @@ export class FlyffWorld {
       for (let i = 0; i < models.length; i += 8) await Promise.all(models.slice(i, i + 8).map(m => Promise.all([this.source(m),this.collision(m)])));
       if(this.disposed)throw new Error('World disposed');
       // One hardware instance batch per source mesh/model in a sector.
-      // The native GLB transform (including handedness) is preserved in each matrix.
+      // Preserve double-sided rendering so negative Z determinants in GLB handedness never cull visible objects.
       for (const model of models) {
         const source=await this.source(model),objects=tile.objects.filter(o=>o.model===model);
         for (const template of source.meshes.filter(m=>m.getTotalVertices()>0)) {
           template.computeWorldMatrix(true);
           const local=template.getWorldMatrix().clone();
           const mesh=template.clone(`batch_${tile.id}_${model}_${template.name}`,root,true);
-          mesh.position.setAll(0);mesh.scaling.setAll(1);mesh.rotation.setAll(0);mesh.rotationQuaternion=null;mesh.setEnabled(true);mesh.isVisible=true;mesh.isPickable=false;
+          mesh.position.setAll(0);mesh.scaling.setAll(1);mesh.rotation.setAll(0);mesh.rotationQuaternion=null;mesh.setEnabled(true);mesh.isVisible=true;mesh.isPickable=false;mesh.alwaysSelectAsActiveMesh=true;
+          if (mesh.material) {
+            const mats = mesh.material.subMaterials ? mesh.material.subMaterials : [mesh.material];
+            for (const mat of mats) {
+              if (!mat) continue;
+              mat.backFaceCulling = false;
+              if ('sideOrientation' in mat) mat.sideOrientation = null;
+              ownedMaterials.add(mat);
+            }
+          }
           const matrices=new Float32Array(objects.length*16);
           objects.forEach((obj,index)=>{
             const transform=Matrix.Compose(new Vector3(...obj.scale),Quaternion.RotationYawPitchRoll(-obj.rotationY*Math.PI/180,0,0),new Vector3(obj.x,obj.y,obj.z));
@@ -485,7 +501,12 @@ export class FlyffWorld {
         }
       }
       const colliders=[];
-      for(const obj of tile.objects){const geometry=await this.collision(obj.model);if(geometry)colliders.push({...obj,geometry});}
+      const isTinyFlora = (name) => /MaCoPrGr|MaCoPrMu|MaCoTrGrass|Flower/i.test(name || '');
+      for(const obj of tile.objects){
+        if (isTinyFlora(obj.model)) continue;
+        const geometry=await this.collision(obj.model);
+        if(geometry)colliders.push({...obj,geometry});
+      }
       return { root, collisionRoots, surface, colliders, ownedMaterials };
     } catch (e) { this.releaseTile({root,ownedMaterials}); throw e; }
   }

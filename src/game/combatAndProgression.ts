@@ -695,6 +695,7 @@ export function computeHeroDamageStats(
   defense: number;
   critChancePct: number;
   avgAttack: number;
+  ignoreDefPct: number;
 } {
   const usable = equippedItems.filter((i) => i.isEquipped && (i.slot === 'wings' || (i.durability ?? 100) > 0));
   const gearMin = usable.reduce((s, i) => s + i.minDmg + i.enhanceLevel * 2, 0);
@@ -730,7 +731,8 @@ export function computeHeroDamageStats(
   );
   const critChancePct = Math.min(72, profile.critBasePct + Math.floor((character.agi + character.cmd) / 2800));
   const avgAttack = Math.max(physicalPower, magicPower);
-  return { physicalPower, magicPower, defense, critChancePct, avgAttack };
+  const ignoreDefPct = wingBonus?.ignoreDefPct ?? 0;
+  return { physicalPower, magicPower, defense, critChancePct, avgAttack, ignoreDefPct };
 }
 
 export function computeHeroDefenseMitigation(
@@ -738,14 +740,16 @@ export function computeHeroDefenseMitigation(
   isCrit: boolean,
   character: Pick<MuCharacter, 'classType' | 'sex' | 'level' | 'resets' | 'str' | 'agi' | 'vit' | 'ene' | 'cmd'>,
   equippedItems: MuItem[],
+  extraDefPct = 0,
 ): { finalDamage: number; mitigatedPct: number } {
   const { defense } = computeHeroDamageStats(character, equippedItems);
+  const buffedDefense = defense * (1 + Math.max(0, extraDefPct) / 100);
   const equippedWing = equippedItems.find((i) => i.isEquipped && i.slot === 'wings');
   const wingAbsorbRatio = equippedWing
     ? getWingEvoBonusStats(getWingEvoTier(equippedWing.name, equippedWing.evoTier)).absorbPct / 100
     : 0;
   // Sin tope mínimo artificial: si el monstruo pega más que la defensa, el héroe recibe daño letal real
-  const effectiveDefense = isCrit ? defense * 0.32 : defense * 0.56;
+  const effectiveDefense = isCrit ? buffedDefense * 0.32 : buffedDefense * 0.56;
   const afterDef = Math.max(1, rawDamage - effectiveDefense);
   const reduced = Math.max(1, Math.round(afterDef * (1 - wingAbsorbRatio)));
   const ratioFloor = Math.max(1, Math.round(rawDamage * (isCrit ? 0.25 : 0.12)));
@@ -941,18 +945,32 @@ export function findAutoAimTarget(
 // --- Active Effects / Buffs / Debuffs ---
 
 export function createSkillBuffEffect(skill: SkillDef, rank = 1): ActiveEffect {
-  const duration = 18 + Math.min(12, rank * 2);
+  const duration = 20 + Math.min(14, rank * 2);
   if (skill.id === 'dk_swell_life') {
     return {
       id: 'eff-inner-life',
       name: 'Swell Life (Inner)',
       kind: 'buff',
-      statHint: '+20% DEF · +15% ATK',
+      statHint: '+15% Daño · +15% Reflejo · +20% DEF',
       color: '#f43f5e',
       remainingSec: duration,
       totalSec: duration,
-      atkBonusPct: 15 + rank * 2,
-      defBonusPct: 20 + rank * 2,
+      atkBonusPct: 15,
+      defBonusPct: 20,
+      reflectBonusPct: 15,
+    };
+  }
+  if (skill.id === 'dw_soul_barrier') {
+    return {
+      id: 'eff-soul-barrier',
+      name: 'Soul Barrier',
+      kind: 'buff',
+      statHint: '+15% Curación · +15% Protección DEF',
+      color: '#38bdf8',
+      remainingSec: duration,
+      totalSec: duration,
+      defBonusPct: 15,
+      healPct: 15,
     };
   }
   if (skill.id === 'elf_infinity') {
@@ -960,12 +978,13 @@ export function createSkillBuffEffect(skill: SkillDef, rank = 1): ActiveEffect {
       id: 'eff-infinity-arrow',
       name: 'Infinity Arrow',
       kind: 'buff',
-      statHint: '+22% Crit · +14% Vel.',
+      statHint: '+5% Daño · +15% Protección · +14% Vel.',
       color: '#2dd4bf',
       remainingSec: duration,
       totalSec: duration,
-      atkBonusPct: 14 + rank * 2,
-      critBonusPct: 22,
+      atkBonusPct: 5,
+      defBonusPct: 15,
+      critBonusPct: 16,
       speedBonusPct: 14,
     };
   }
@@ -974,23 +993,51 @@ export function createSkillBuffEffect(skill: SkillDef, rank = 1): ActiveEffect {
       id: 'eff-elf-aura',
       name: 'Aura de Protección',
       kind: 'buff',
-      statHint: '+26% DEF · Regeneración',
+      statHint: 'Curación +15% · +15% Protección DEF · +5% Daño',
       color: '#4ade80',
       remainingSec: duration,
       totalSec: duration,
-      defBonusPct: 26 + rank * 2,
+      atkBonusPct: 5,
+      defBonusPct: 15,
+      healPct: 15,
+    };
+  }
+  if (skill.id === 'dl_crit') {
+    return {
+      id: 'eff-dl-crit',
+      name: 'Critical Damage Aura',
+      kind: 'buff',
+      statHint: '+25% Daño · +22% Crítico',
+      color: '#c084fc',
+      remainingSec: duration,
+      totalSec: duration,
+      atkBonusPct: 25,
+      critBonusPct: 22,
+    };
+  }
+  if (skill.id === 'mg_ruin_aura') {
+    return {
+      id: 'eff-mg-overdrive',
+      name: 'Runic Overdrive',
+      kind: 'buff',
+      statHint: '+15% Daño Físico y Mágico',
+      color: '#f59e0b',
+      remainingSec: duration,
+      totalSec: duration,
+      atkBonusPct: 15,
+      critBonusPct: 12,
     };
   }
   return {
     id: `eff-${skill.id}`,
     name: skill.name,
     kind: 'buff',
-    statHint: '+18% ATK · +16% Crit',
+    statHint: '+15% Daño · +15% Protección',
     color: '#c084fc',
     remainingSec: duration,
     totalSec: duration,
-    atkBonusPct: 18 + rank * 2,
-    critBonusPct: 16,
+    atkBonusPct: 15,
+    defBonusPct: 15,
   };
 }
 
@@ -999,13 +1046,15 @@ export function aggregateActiveEffects(effects: ActiveEffect[]) {
   let defBonusPct = 0;
   let critBonusPct = 0;
   let speedBonusPct = 0;
+  let reflectBonusPct = 0;
   for (const eff of effects) {
     atkBonusPct += eff.atkBonusPct ?? 0;
     defBonusPct += eff.defBonusPct ?? 0;
     critBonusPct += eff.critBonusPct ?? 0;
     speedBonusPct += eff.speedBonusPct ?? 0;
+    reflectBonusPct += eff.reflectBonusPct ?? 0;
   }
-  return { atkBonusPct, defBonusPct, critBonusPct, speedBonusPct };
+  return { atkBonusPct, defBonusPct, critBonusPct, speedBonusPct, reflectBonusPct };
 }
 
 // --- Achievements System ---

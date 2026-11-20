@@ -203,30 +203,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             />
           </div>
 
-          {/* 60% Auto-Aim Toggle */}
-          <div className="p-3.5 rounded-lg bg-[#141a28] border border-slate-800 flex items-center justify-between gap-3">
-            <div>
-              <div className="text-xs font-semibold text-slate-100">
-                Autopuntado Táctico al 60% (10 Héroes)
-              </div>
-              <div className="text-[11px] text-slate-400 mt-0.5">
-                Orienta automáticamente tus ataques y habilidades con un 60% de probabilidad de impacto asistido hacia el monstruo más cercano.
-              </div>
-            </div>
-            <button
-              onClick={() =>
-                onUpdateSettings({ ...settings, autoAimAssist: !(settings.autoAimAssist ?? true) })
-              }
-              className={`min-h-[40px] px-3.5 rounded-lg text-xs font-bold whitespace-nowrap shrink-0 cursor-pointer ${
-                (settings.autoAimAssist ?? true)
-                  ? 'bg-amber-600 text-slate-950'
-                  : 'bg-slate-800 text-slate-300'
-              }`}
-            >
-              {(settings.autoAimAssist ?? true) ? '60% Activo' : 'Manual'}
-            </button>
-          </div>
-
           {/* FPS Target */}
           <div className="p-3.5 rounded-lg bg-[#141a28] border border-slate-800 flex items-center justify-between gap-3">
             <div>

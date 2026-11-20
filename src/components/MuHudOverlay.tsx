@@ -1,10 +1,8 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Backpack,
   Bot,
   Check,
-  Cloud,
-  CloudOff,
   Compass,
   Flame,
   Hand,
@@ -14,7 +12,6 @@ import {
   Settings,
   Shield,
   SlidersHorizontal,
-  Smartphone,
   Sword,
   Swords,
   User,
@@ -35,7 +32,6 @@ import type {
   MuCharacter,
   NpcDef,
   SkillDef,
-  SyncStatusInfo,
 } from '../types/game';
 import type { TargetMonsterInfo } from '../game/MuWorldEngine';
 import { getSkillRank } from '../game/combatAndProgression';
@@ -46,6 +42,7 @@ import {
   type LootFilterSettings,
   type PotionConfig,
 } from '../game/worldPhysicsMath';
+import { PWAInstallButton } from './PWAInstallButton';
 import { PubgJoystick } from './PubgJoystick';
 
 export interface WorldTelemetryInfo {
@@ -62,19 +59,19 @@ interface MuHudOverlayProps {
   character: MuCharacter;
   comboConfig: CharacterComboConfig;
   comboArmed: boolean;
+  autoHuntEnabled: boolean;
   buttonLayouts: Record<HudButtonId, ButtonLayoutItem>;
   editMode: boolean;
   measuredFps: number;
   free3dCamera: boolean;
-  autoAimAssist: boolean;
   activeEffects: ActiveEffect[];
   targetMonster: TargetMonsterInfo | null;
   skillCooldowns: Record<string, number>;
   nearbyNpc: NpcDef | null;
   worldTelemetry: WorldTelemetryInfo;
   damageNumbers: FloatingDamageNumber[];
-  syncStatus: SyncStatusInfo;
   minimapData: MinimapEntitySnapshot | null;
+  getMinimapTerrainGrid?: (spanMeters: number, centerX?: number, centerZ?: number) => number[] | null;
   lootFilters: LootFilterSettings;
   potionConfig: PotionConfig;
   onUpdateLootFilters: (next: LootFilterSettings) => void;
@@ -83,6 +80,7 @@ interface MuHudOverlayProps {
   onPressAttack: () => void;
   onJump: () => void;
   onToggleComboArmed: () => void;
+  onToggleAutoHunt: () => void;
   onCastSkill: (skill: SkillDef) => void;
   onUpdateComboConfig: (next: CharacterComboConfig) => void;
   onHealPotion: () => void;
@@ -113,19 +111,19 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
   character,
   comboConfig,
   comboArmed,
+  autoHuntEnabled,
   buttonLayouts,
   editMode,
   measuredFps,
   free3dCamera,
-  autoAimAssist,
   activeEffects,
   targetMonster,
   skillCooldowns,
   nearbyNpc,
   worldTelemetry,
   damageNumbers,
-  syncStatus,
   minimapData,
+  getMinimapTerrainGrid,
   lootFilters,
   potionConfig,
   onUpdateLootFilters,
@@ -134,6 +132,7 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
   onPressAttack,
   onJump,
   onToggleComboArmed,
+  onToggleAutoHunt,
   onCastSkill,
   onUpdateComboConfig,
   onHealPotion,
@@ -155,6 +154,15 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
   const [assignComboMode, setAssignComboMode] = useState(false);
   const [showLootMenu, setShowLootMenu] = useState(false);
   const [showPotionMenu, setShowPotionMenu] = useState(false);
+  const [minimapZoomed, setMinimapZoomed] = useState(false);
+  const minimapCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const lastTerrainDrawRef = useRef<{ mapId: string; zoomed: boolean; x: number; z: number; at: number }>({
+    mapId: '',
+    zoomed: false,
+    x: 99999,
+    z: 99999,
+    at: 0,
+  });
   const lastActionFireRef = useRef<Record<string, number>>({});
   const dragState = useRef<{
     id: HudButtonId;
@@ -288,6 +296,110 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
     onUpdateComboConfig({ ...comboConfig, comboSkillIds: next });
   };
 
+  useEffect(() => {
+    if (!minimapData || !getMinimapTerrainGrid) return;
+    const canvas = minimapCanvasRef.current;
+    if (!canvas) return;
+    const now = performance.now();
+    const prev = lastTerrainDrawRef.current;
+    const moved = Math.hypot(minimapData.hero.x - prev.x, minimapData.hero.z - prev.z);
+    if (
+      prev.mapId === minimapData.mapId &&
+      prev.zoomed === minimapZoomed &&
+      (!minimapZoomed || moved < 18) &&
+      now - prev.at < 1500
+    ) {
+      return;
+    }
+    const spanMeters = minimapZoomed ? Math.min(420, minimapData.sizeMeters) : minimapData.sizeMeters;
+    const centerX = minimapZoomed ? minimapData.hero.x : 0;
+    const centerZ = minimapZoomed ? minimapData.hero.z : 0;
+    const gridSize = 48;
+    const heights = getMinimapTerrainGrid(spanMeters, centerX, centerZ);
+    if (!heights || heights.length < gridSize * gridSize) return;
+
+    lastTerrainDrawRef.current = {
+      mapId: minimapData.mapId,
+      zoomed: minimapZoomed,
+      x: minimapData.hero.x,
+      z: minimapData.hero.z,
+      at: now,
+    };
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    let minH = Infinity;
+    let maxH = -Infinity;
+    for (let i = 0; i < heights.length; i++) {
+      if (heights[i] < minH) minH = heights[i];
+      if (heights[i] > maxH) maxH = heights[i];
+    }
+    const rangeH = Math.max(4, maxH - minH);
+    const isVolcanic = minimapData.mapId === 'ceniza';
+    const isCoastal = minimapData.mapId === 'puerto';
+    const cellW = canvas.width / gridSize;
+    const cellH = canvas.height / gridSize;
+
+    for (let row = 0; row < gridSize; row++) {
+      for (let col = 0; col < gridSize; col++) {
+        const h = heights[row * gridSize + col];
+        const norm = Math.max(0, Math.min(1, (h - minH) / rangeH));
+        const prevRowH = row > 0 ? heights[(row - 1) * gridSize + col] : h;
+        const prevColH = col > 0 ? heights[row * gridSize + (col - 1)] : h;
+        const slope = Math.abs(h - prevRowH) + Math.abs(h - prevColH);
+        const contourBoost = slope > 2.6 ? -16 : 0;
+
+        let r: number;
+        let g: number;
+        let b: number;
+        if (isVolcanic) {
+          r = Math.round(52 + norm * 115 + contourBoost);
+          g = Math.round(22 + norm * 48 + contourBoost);
+          b = Math.round(18 + norm * 24);
+        } else if (isCoastal && norm < 0.22) {
+          r = 16;
+          g = Math.round(64 + norm * 110);
+          b = Math.round(115 + norm * 90);
+        } else {
+          r = Math.round(24 + norm * 88 + contourBoost);
+          g = Math.round(52 + norm * 78 + contourBoost);
+          b = Math.round(28 + norm * 36);
+        }
+        ctx.fillStyle = `rgb(${Math.max(8, Math.min(250, r))}, ${Math.max(8, Math.min(250, g))}, ${Math.max(8, Math.min(250, b))})`;
+        ctx.fillRect(Math.floor(col * cellW), Math.floor(row * cellH), Math.ceil(cellW), Math.ceil(cellH));
+      }
+    }
+
+    // Draw safe capital zone boundary ring
+    const mapInfo = getMapById(minimapData.mapId);
+    const spawnX = mapInfo.spawn?.x ?? 0;
+    const spawnZ = mapInfo.spawn?.z ?? 0;
+    const sx = ((spawnX - (centerX - spanMeters / 2)) / spanMeters) * canvas.width;
+    const sy = ((centerZ + spanMeters / 2 - spawnZ) / spanMeters) * canvas.height;
+    const sr = (mapInfo.cityRadius / spanMeters) * canvas.width;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(110, 231, 183, 0.72)';
+    ctx.lineWidth = 1.25;
+    ctx.setLineDash([3, 2]);
+    ctx.beginPath();
+    ctx.arc(sx, sy, Math.max(4, sr), 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }, [minimapData, minimapZoomed, getMinimapTerrainGrid]);
+
+  const projectDot = (wx: number, wz: number) => {
+    if (!minimapData) return { xPct: 50, yPct: 50 };
+    if (!minimapZoomed) {
+      return projectToMinimap(wx, wz, minimapData.mapId, minimapData.sizeMeters);
+    }
+    const span = Math.min(420, minimapData.sizeMeters);
+    const half = span / 2;
+    const xPct = Math.max(4, Math.min(96, ((wx - (minimapData.hero.x - half)) / span) * 100));
+    const yPct = Math.max(6, Math.min(94, ((minimapData.hero.z + half - wz) / span) * 100));
+    return { xPct, yPct };
+  };
+
   return (
     <>
       {/* 3D-PROJECTED FLOATING DAMAGE NUMBERS */}
@@ -310,159 +422,230 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
         ))}
       </div>
 
-      {/* TOP-LEFT: Compact Character, Safe Zone / Hunting Zone, Coords & FPS */}
-      <div className="pointer-events-none fixed top-2.5 left-3 z-20 rounded-lg bg-[#0d121c]/92 border border-amber-700/50 px-2 lg:px-3 py-1 lg:py-1.5 shadow-lg space-y-0.5 max-w-[38vw] lg:max-w-[43vw]">
-        <div className="flex items-center gap-1.5 lg:gap-2 text-[10px] lg:text-xs flex-wrap">
-          <span className="font-display font-bold text-amber-300 truncate max-w-[110px] lg:max-w-none">{character.name}</span>
-          <span className="font-mono-tabular text-slate-300">
-            {character.classType} Nv.{character.level}
-          </span>
-          <span className="font-mono-tabular text-sky-300">
-            · {worldTelemetry.mapName || mapCfg.name} <span className="hidden lg:inline">({(worldTelemetry.areaKm2 || mapCfg.areaKm2).toFixed(2)} km²)</span>
-          </span>
-          <span className="font-mono-tabular text-emerald-300">{measuredFps} FPS</span>
-          {autoAimAssist && (
-            <span className="hidden xl:inline font-mono-tabular text-amber-300">· Auto-Aim 60%</span>
-          )}
-          {free3dCamera && (
-            <span className="hidden xl:inline font-mono-tabular text-purple-300">· 3D Libre</span>
-          )}
-        </div>
-        <div className="flex items-center gap-1.5 lg:gap-2 text-[10px] lg:text-[11px] font-mono-tabular">
-          {worldTelemetry.inSafeCity ? (
-            <span className="inline-flex items-center gap-1 text-emerald-300 font-semibold truncate">
-              <Shield className="w-3 h-3 shrink-0" />
-              <span>Capital Segura<span className="hidden lg:inline"> (Sin ataques ni monstruos)</span></span>
+      {/* TOP-LEFT: Hero Name, Map, FPS & Compact HP/MP/SD/AG/XP Bars */}
+      <div className="fixed top-2 left-2.5 z-20 flex flex-col gap-1.5 max-w-[44vw] sm:max-w-[335px]">
+        <div
+          data-testid="hud-hero-card"
+          className="pointer-events-none rounded-lg bg-[#0b1019]/92 border border-amber-700/55 px-2.5 py-1.5 shadow-xl space-y-1"
+        >
+          <div className="flex items-center gap-1.5 text-[10px] sm:text-[11px] flex-wrap leading-tight">
+            <span className="font-display font-bold text-amber-300 truncate max-w-[100px] sm:max-w-none">
+              {character.name}
             </span>
-          ) : (
-            <span className="inline-flex items-center gap-1 text-rose-300 font-semibold truncate">
-              <Swords className="w-3 h-3 shrink-0" />
-              <span>Zona Exterior<span className="hidden lg:inline"> ({worldTelemetry.nearbyMonsters} cerca / {worldTelemetry.totalMonsters.toLocaleString()} mapa)</span></span>
+            <span className="font-mono-tabular text-slate-200">
+              {character.classType} Nv.{character.level}
+              {character.resets > 0 ? ` R${character.resets}` : ''}
             </span>
-          )}
-          <span className="text-slate-400 shrink-0">
-            ({worldTelemetry.x}, {worldTelemetry.z})
-          </span>
-        </div>
-      </div>
+            <span className="font-mono-tabular text-sky-300 truncate">
+              · {worldTelemetry.mapName || mapCfg.name}
+            </span>
+            <span className="font-mono-tabular text-emerald-300">{measuredFps} FPS</span>
+            {free3dCamera && (
+              <span className="hidden xl:inline font-mono-tabular text-purple-300">· 3D 360°</span>
+            )}
+          </div>
 
-      {/* TOP-LEFT SECONDARY: Quick Oracle, APK / Cloud Sync Buttons + Active Effects */}
-      {!editMode && (
-        <div className="fixed top-[54px] lg:top-[62px] left-3 z-20 flex flex-col gap-1.5 max-w-[44vw] lg:max-w-[56vw]">
+          <div className="flex items-center justify-between gap-1.5 text-[9.5px] sm:text-[10px] font-mono-tabular">
+            {worldTelemetry.inSafeCity ? (
+              <span className="inline-flex items-center gap-1 text-emerald-300 font-semibold truncate">
+                <Shield className="w-3 h-3 shrink-0" />
+                <span>Capital Segura</span>
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 text-rose-300 font-semibold truncate">
+                <Swords className="w-3 h-3 shrink-0" />
+                <span>Exterior ({worldTelemetry.nearbyMonsters} cerca)</span>
+              </span>
+            )}
+            <span className="text-slate-400 shrink-0">
+              ({worldTelemetry.x}, {worldTelemetry.z})
+            </span>
+          </div>
+
+          {/* HP & MP Top-Left Bars */}
+          <div className="grid grid-cols-2 gap-1.5 pt-0.5">
+            <div>
+              <div className="flex justify-between text-[9px] font-mono-tabular text-rose-200 leading-none mb-0.5">
+                <span>HP</span>
+                <span>{character.hp}/{character.maxHp}</span>
+              </div>
+              <div className="h-2 rounded bg-slate-900 border border-rose-900/70 overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-rose-700 to-rose-500 transition-all"
+                  style={{ width: `${hpPct}%` }}
+                />
+              </div>
+            </div>
+            <div>
+              <div className="flex justify-between text-[9px] font-mono-tabular text-sky-200 leading-none mb-0.5">
+                <span>MP</span>
+                <span>{character.mp}/{character.maxMp}</span>
+              </div>
+              <div className="h-2 rounded bg-slate-900 border border-sky-900/70 overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-blue-700 to-sky-400 transition-all"
+                  style={{ width: `${mpPct}%` }}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* SD / AG / XP & Currencies */}
+          <div className="grid grid-cols-2 gap-1.5">
+            <div className="flex items-center gap-1">
+              <span className="text-[8.5px] font-mono-tabular text-amber-300 w-4">SD</span>
+              <div className="flex-1 h-1 rounded bg-slate-800 overflow-hidden">
+                <div className="h-full bg-amber-400" style={{ width: `${sdPct}%` }} />
+              </div>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="text-[8.5px] font-mono-tabular text-purple-300 w-4">AG</span>
+              <div className="flex-1 h-1 rounded bg-slate-800 overflow-hidden">
+                <div className="h-full bg-purple-400" style={{ width: `${agPct}%` }} />
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between gap-2 text-[9px] font-mono-tabular text-slate-300 pt-0.5">
+            <span className="text-amber-300 font-semibold">Zen {character.zen.toLocaleString()}</span>
+            <span className="text-slate-400">XP {xpPct}%</span>
+            <span>
+              <span className="text-rose-300">B:{character.bless}</span>{' '}
+              <span className="text-sky-300">S:{character.soul}</span>
+            </span>
+          </div>
+          <div className="h-1 w-full rounded bg-slate-900 overflow-hidden">
+            <div className="h-full bg-amber-500 transition-all" style={{ width: `${xpPct}%` }} />
+          </div>
+        </div>
+
+        {/* Oracle & Web APK-WEB Install Button */}
+        {!editMode && (
           <div className="flex items-center gap-1.5 flex-wrap">
             <button
+              type="button"
               onClick={onOpenOracle}
               className="min-h-[34px] px-2.5 rounded-lg bg-[#0e1420]/92 border border-slate-700 hover:border-emerald-500/60 text-emerald-300 text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
             >
               <Bot className="w-3.5 h-3.5" />
               Oráculo
             </button>
-            <button
-              onClick={onOpenApk}
-              className="min-h-[34px] px-2.5 rounded-lg bg-[#0e1420]/92 border border-slate-700 hover:border-amber-500/60 text-amber-200 text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
-            >
-              <Smartphone className="w-3.5 h-3.5" />
-              APK / Sync
-              {syncStatus.isOnline ? (
-                <Cloud className="w-3 h-3 text-emerald-400 ml-0.5" />
-              ) : (
-                <CloudOff className="w-3 h-3 text-amber-400 ml-0.5" />
-              )}
-            </button>
+            <PWAInstallButton compact onOpenApkCenter={onOpenApk} />
           </div>
+        )}
 
-          {activeEffects.length > 0 && (
-            <div className="fixed top-[96px] lg:top-[104px] left-[132px] sm:left-[152px] z-15 flex items-center gap-1.5 flex-wrap max-w-[30vw] pointer-events-none">
-              {activeEffects.map((eff) => (
-                <div
-                  key={eff.id}
-                  style={{ borderColor: eff.color }}
-                  className="px-2 py-1 rounded-md bg-[#0b1019]/92 border text-[10px] font-mono-tabular flex items-center gap-1.5 shadow"
+        {!editMode && activeEffects.length > 0 && (
+          <div className="flex items-center gap-1 flex-wrap pointer-events-none">
+            {activeEffects.map((eff) => (
+              <div
+                key={eff.id}
+                style={{ borderColor: eff.color }}
+                className="px-1.5 py-0.5 rounded bg-[#0b1019]/92 border text-[9px] font-mono-tabular flex items-center gap-1 shadow"
+              >
+                <span style={{ color: eff.color }} className="font-bold">
+                  {eff.kind === 'buff' ? '▲' : '▼'} {eff.name}
+                </span>
+                <span className="text-amber-300 font-bold">{Math.ceil(eff.remainingSec)}s</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* MOVABLE / DRAGGABLE TOPOGRAPHIC MINI-MAP */}
+      {minimapData &&
+        wrapButton(
+          'minimap',
+          <div
+            data-testid="hud-minimap"
+            className="relative w-[108px] h-[108px] sm:w-[128px] sm:h-[128px] rounded-lg bg-[#090e17]/92 border border-amber-600/70 shadow-xl overflow-hidden select-none"
+          >
+            <canvas
+              ref={minimapCanvasRef}
+              width={96}
+              height={96}
+              className="absolute inset-0 w-full h-full opacity-90 pointer-events-none"
+            />
+            <div className="absolute inset-x-0 top-1/2 h-px bg-white/10 pointer-events-none" />
+            <div className="absolute inset-y-0 left-1/2 w-px bg-white/10 pointer-events-none" />
+            <div className="absolute top-0.5 left-1 right-1 flex items-center justify-between text-[8px] font-mono-tabular text-slate-100 bg-black/45 px-1 rounded">
+              <span className="truncate font-semibold text-amber-200">
+                {getMapById(minimapData.mapId).name}
+              </span>
+              {!editMode && (
+                <button
+                  type="button"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setMinimapZoomed((v) => !v);
+                  }}
+                  title="Alternar vista mapa completo / local"
+                  className="text-sky-300 hover:text-white font-bold cursor-pointer pl-1"
                 >
-                  <span style={{ color: eff.color }} className="font-bold">
-                    {eff.kind === 'buff' ? '▲' : '▼'} {eff.name}
-                  </span>
-                  <span className="text-slate-300">{eff.statHint}</span>
-                  <span className="text-amber-300 font-bold">{Math.ceil(eff.remainingSec)}s</span>
-                </div>
-              ))}
+                  {minimapZoomed ? '2×' : '1×'}
+                </button>
+              )}
             </div>
-          )}
-        </div>
-      )}
 
-      {/* TOP-LEFT CORNER MINI-MAP (Gold=Hero, Blue=NPC, Green=Friends, Red=Monsters) */}
-      {!editMode && minimapData && (
-        <div
-          data-testid="hud-minimap"
-          className="pointer-events-none fixed top-[96px] lg:top-[104px] left-3 z-15 w-[112px] h-[112px] sm:w-[132px] sm:h-[132px] rounded-lg bg-[#090e17]/88 border border-amber-600/60 shadow-xl overflow-hidden select-none"
-        >
-          {/* Subtle coordinate crosshairs */}
-          <div className="absolute inset-x-0 top-1/2 h-px bg-slate-700/45" />
-          <div className="absolute inset-y-0 left-1/2 w-px bg-slate-700/45" />
-          <div className="absolute top-0.5 left-1 right-1 flex items-center justify-between text-[8px] font-mono-tabular text-slate-300/90">
-            <span className="truncate font-semibold text-amber-200">{getMapById(minimapData.mapId).name}</span>
-            <span>{minimapData.monsters.length}m</span>
-          </div>
+            {/* Red dots = Monsters */}
+            {minimapData.monsters.map((m) => {
+              const p = projectDot(m.x, m.z);
+              return (
+                <span
+                  key={m.id}
+                  style={{ left: `${p.xPct}%`, top: `${p.yPct}%` }}
+                  className={`pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 rounded-full ${
+                    m.isBoss ? 'w-2 h-2 bg-red-500 ring-1 ring-amber-300' : 'w-1.5 h-1.5 bg-red-500/95'
+                  }`}
+                />
+              );
+            })}
 
-          {/* Red dots = Monsters */}
-          {minimapData.monsters.map((m) => {
-            const p = projectToMinimap(m.x, m.z, minimapData.mapId, minimapData.sizeMeters);
-            return (
-              <span
-                key={m.id}
-                style={{ left: `${p.xPct}%`, top: `${p.yPct}%` }}
-                className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-full ${
-                  m.isBoss ? 'w-2 h-2 bg-red-500 ring-1 ring-amber-300' : 'w-1.5 h-1.5 bg-red-400/90'
-                }`}
-              />
-            );
-          })}
+            {/* Blue dots = NPCs */}
+            {minimapData.npcs.map((n) => {
+              const p = projectDot(n.x, n.z);
+              return (
+                <span
+                  key={n.id}
+                  style={{ left: `${p.xPct}%`, top: `${p.yPct}%` }}
+                  className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-sky-400 border border-sky-100/80"
+                />
+              );
+            })}
 
-          {/* Blue dots = NPCs */}
-          {minimapData.npcs.map((n) => {
-            const p = projectToMinimap(n.x, n.z, minimapData.mapId, minimapData.sizeMeters);
-            return (
-              <span
-                key={n.id}
-                style={{ left: `${p.xPct}%`, top: `${p.yPct}%` }}
-                className="absolute -translate-x-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-sky-400 border border-sky-100/70"
-              />
-            );
-          })}
+            {/* Green dots = Wi-Fi / Bluetooth Friends */}
+            {minimapData.friends.map((f) => {
+              const p = projectDot(f.x, f.z);
+              return (
+                <span
+                  key={f.id}
+                  style={{ left: `${p.xPct}%`, top: `${p.yPct}%` }}
+                  className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full bg-emerald-400 ring-1 ring-emerald-100"
+                />
+              );
+            })}
 
-          {/* Green dots = Wi-Fi / Bluetooth Friends */}
-          {minimapData.friends.map((f) => {
-            const p = projectToMinimap(f.x, f.z, minimapData.mapId, minimapData.sizeMeters);
-            return (
-              <span
-                key={f.id}
-                style={{ left: `${p.xPct}%`, top: `${p.yPct}%` }}
-                className="absolute -translate-x-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full bg-emerald-400 ring-1 ring-emerald-100"
-              />
-            );
-          })}
+            {/* Gold dot = Player Hero */}
+            {(() => {
+              const hp = projectDot(minimapData.hero.x, minimapData.hero.z);
+              return (
+                <span
+                  data-testid="minimap-hero-dot"
+                  style={{ left: `${hp.xPct}%`, top: `${hp.yPct}%` }}
+                  className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full bg-amber-400 ring-2 ring-amber-100 shadow-[0_0_6px_#fbbf24]"
+                />
+              );
+            })()}
 
-          {/* Gold dot = Player Hero */}
-          {(() => {
-            const hp = projectToMinimap(minimapData.hero.x, minimapData.hero.z, minimapData.mapId, minimapData.sizeMeters);
-            return (
-              <span
-                data-testid="minimap-hero-dot"
-                style={{ left: `${hp.xPct}%`, top: `${hp.yPct}%` }}
-                className="absolute -translate-x-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full bg-amber-400 ring-2 ring-amber-100 shadow-[0_0_6px_#fbbf24]"
-              />
-            );
-          })()}
-
-          <div className="absolute bottom-0 inset-x-0 bg-black/65 px-1 py-0.5 flex items-center justify-between text-[7px] font-mono-tabular">
-            <span className="text-amber-300">●Tú</span>
-            <span className="text-sky-300">●NPC</span>
-            <span className="text-emerald-300">●Amg</span>
-            <span className="text-rose-400">●Mob</span>
-          </div>
-        </div>
-      )}
+            <div className="pointer-events-none absolute bottom-0 inset-x-0 bg-black/70 px-1 py-0.5 flex items-center justify-between text-[7px] font-mono-tabular">
+              <span className="text-amber-300">●Tú</span>
+              <span className="text-sky-300">●NPC</span>
+              <span className="text-emerald-300">●Amg</span>
+              <span className="text-rose-400">●Mob</span>
+            </div>
+          </div>,
+        )}
 
       {/* TARGET LOCKED MONSTER + DAMAGE TABLE (When outside Safe City) */}
       {targetMonster && !editMode && (
@@ -558,15 +741,15 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
         </div>
       )}
 
-      {/* DRAGGABLE & SCALABLE HUD BUTTONS */}
+      {/* DRAGGABLE & SCALABLE TOP-RIGHT HUD BUTTONS */}
       {wrapButton(
         'mapWarp',
         <button
           onClick={() => !editMode && onOpenMapWarp()}
-          className="min-h-[38px] lg:min-h-[42px] px-2 lg:px-2.5 rounded-lg bg-[#0f1522]/92 border border-emerald-600/50 hover:border-emerald-400 text-emerald-200 text-[11px] lg:text-xs font-semibold inline-flex items-center gap-1 lg:gap-1.5 shadow-lg cursor-pointer whitespace-nowrap"
+          className="min-h-[36px] xl:min-h-[40px] px-2 xl:px-2.5 rounded-lg bg-[#0f1522]/92 border border-emerald-600/50 hover:border-emerald-400 text-emerald-200 text-[11px] font-semibold inline-flex items-center gap-1 shadow-lg cursor-pointer whitespace-nowrap"
         >
-          <Compass className="w-3.5 h-3.5 lg:w-4 lg:h-4 text-emerald-400" />
-          <span>Mapas<span className="hidden lg:inline"> / Madrigal</span></span>
+          <Compass className="w-3.5 h-3.5 text-emerald-400" />
+          <span>Mapas<span className="hidden xl:inline"> / Madrigal</span></span>
         </button>,
       )}
 
@@ -574,17 +757,17 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
         'stats',
         <button
           onClick={() => !editMode && onOpenStats()}
-          className="relative min-h-[38px] lg:min-h-[42px] px-2 lg:px-2.5 rounded-lg bg-[#0f1522]/92 border border-purple-500/50 hover:border-purple-400 text-purple-200 text-[11px] lg:text-xs font-semibold inline-flex items-center gap-1 lg:gap-1.5 shadow-lg cursor-pointer whitespace-nowrap"
+          className="relative min-h-[36px] xl:min-h-[40px] px-2 xl:px-2.5 rounded-lg bg-[#0f1522]/92 border border-purple-500/50 hover:border-purple-400 text-purple-200 text-[11px] font-semibold inline-flex items-center gap-1 shadow-lg cursor-pointer whitespace-nowrap"
         >
-          <User className="w-3.5 h-3.5 lg:w-4 lg:h-4 text-purple-300" />
-          <span>Héroe<span className="hidden lg:inline"> / Logros</span></span>
+          <User className="w-3.5 h-3.5 text-purple-300" />
+          <span>Héroe<span className="hidden xl:inline"> / Logros</span></span>
           {character.level >= 99 && (
-            <span className="px-1.5 py-0.2 rounded bg-rose-500 text-white text-[10px] font-bold">
+            <span className="px-1 py-0.2 rounded bg-rose-500 text-white text-[9px] font-bold">
               RESET
             </span>
           )}
           {(character.unspentPoints + (character.skillPoints ?? 0)) > 0 && (
-            <span className="px-1.5 py-0.2 rounded bg-amber-500 text-slate-950 text-[10px] font-bold">
+            <span className="px-1 py-0.2 rounded bg-amber-500 text-slate-950 text-[9px] font-bold">
               +{character.unspentPoints + (character.skillPoints ?? 0)}
             </span>
           )}
@@ -595,10 +778,10 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
         'sync',
         <button
           onClick={() => !editMode && onOpenSync()}
-          className="min-h-[38px] lg:min-h-[42px] px-2 lg:px-2.5 rounded-lg bg-[#0f1522]/92 border border-sky-600/50 hover:border-sky-400 text-sky-200 text-[11px] lg:text-xs font-semibold inline-flex items-center gap-1 lg:gap-1.5 shadow-lg cursor-pointer whitespace-nowrap"
+          className="min-h-[36px] xl:min-h-[40px] px-2 xl:px-2.5 rounded-lg bg-[#0f1522]/92 border border-sky-600/50 hover:border-sky-400 text-sky-200 text-[11px] font-semibold inline-flex items-center gap-1 shadow-lg cursor-pointer whitespace-nowrap"
         >
-          <Wifi className="w-3.5 h-3.5 lg:w-4 lg:h-4 text-sky-400" />
-          Wi-Fi / BT
+          <Wifi className="w-3.5 h-3.5 text-sky-400" />
+          <span>Wi-Fi / BT</span>
         </button>,
       )}
 
@@ -606,10 +789,10 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
         'inventory',
         <button
           onClick={() => !editMode && onOpenInventory()}
-          className="min-h-[38px] lg:min-h-[42px] px-2 lg:px-2.5 rounded-lg bg-[#0f1522]/92 border border-amber-600/60 hover:border-amber-400 text-amber-200 text-[11px] lg:text-xs font-semibold inline-flex items-center gap-1 lg:gap-1.5 shadow-lg cursor-pointer whitespace-nowrap"
+          className="min-h-[36px] xl:min-h-[40px] px-2 xl:px-2.5 rounded-lg bg-[#0f1522]/92 border border-amber-600/60 hover:border-amber-400 text-amber-200 text-[11px] font-semibold inline-flex items-center gap-1 shadow-lg cursor-pointer whitespace-nowrap"
         >
-          <Backpack className="w-3.5 h-3.5 lg:w-4 lg:h-4 text-amber-400" />
-          Inventario
+          <Backpack className="w-3.5 h-3.5 text-amber-400" />
+          <span>Inventario</span>
         </button>,
       )}
 
@@ -618,9 +801,9 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
         <button
           onClick={() => !editMode && onOpenSettings()}
           aria-label="Ajustes"
-          className="min-h-[44px] min-w-[44px] rounded-lg bg-[#0f1522]/92 border border-slate-600 hover:border-amber-400 text-slate-100 flex items-center justify-center shadow-lg cursor-pointer"
+          className="min-h-[38px] min-w-[38px] xl:min-h-[42px] xl:min-w-[42px] rounded-lg bg-[#0f1522]/92 border border-slate-600 hover:border-amber-400 text-slate-100 flex items-center justify-center shadow-lg cursor-pointer"
         >
-          <Settings className="w-5 h-5 text-amber-300" />
+          <Settings className="w-4 h-4 xl:w-5 xl:h-5 text-amber-300" />
         </button>,
       )}
 
@@ -990,7 +1173,7 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
         </div>,
       )}
 
-      {/* COMBO x5 TOGGLE BUTTON (Tap once to arm/disarm 5-power combo for Attack button) */}
+      {/* COMBO x5 TOGGLE BUTTON (Tap once to arm/disarm 5-power combo ONLY) */}
       {wrapButton(
         'combo',
         <button
@@ -1015,7 +1198,37 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
             {comboArmed ? 'COMBO ON' : 'COMBO'}
           </span>
           <span className="text-[8px] font-mono-tabular text-amber-200/90 pointer-events-none">
-            {comboArmed ? 'Auto+Cura' : `${comboConfig.comboSkillIds.slice(0, 5).length}/5`}
+            {comboArmed ? 'x5 Listo' : `${comboConfig.comboSkillIds.slice(0, 5).length}/5`}
+          </span>
+        </button>,
+      )}
+
+      {/* DEDICATED HELLP AUTO-HUNT & AUTO-HEAL BUTTON */}
+      {wrapButton(
+        'hellp',
+        <button
+          data-testid="hud-hellp-btn"
+          onPointerDown={(e) => {
+            if (editMode) return;
+            e.stopPropagation();
+            fireImmediateAction('hellp', onToggleAutoHunt);
+          }}
+          onClick={(e) => {
+            e.stopPropagation();
+            fireImmediateAction('hellp', onToggleAutoHunt);
+          }}
+          className={`w-14 h-14 rounded-full border-2 flex flex-col items-center justify-center shadow-xl active:scale-95 cursor-pointer transition-colors touch-none select-none ${
+            autoHuntEnabled
+              ? 'bg-gradient-to-b from-emerald-600 to-teal-700 border-emerald-200 text-white'
+              : 'bg-[#111926]/92 border-emerald-600/60 text-emerald-200'
+          }`}
+        >
+          <Bot className={`w-4 h-4 pointer-events-none ${autoHuntEnabled ? 'text-white' : 'text-emerald-300'}`} />
+          <span className="text-[9.5px] font-extrabold leading-tight pointer-events-none">
+            {autoHuntEnabled ? 'Hellp ON' : 'Hellp'}
+          </span>
+          <span className="text-[7.5px] font-mono-tabular text-emerald-100/90 pointer-events-none">
+            {autoHuntEnabled ? 'Auto+Cura' : 'Auto'}
           </span>
         </button>,
       )}
@@ -1046,62 +1259,6 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
           </span>
         </button>,
       )}
-
-      {/* AUTHENTIC MU ONLINE BOTTOM HP/MP GLOBES + SD/AG/XP BAR */}
-      <div className="pointer-events-none fixed bottom-0 left-1/2 -translate-x-1/2 z-10 flex items-end gap-1 sm:gap-2 pb-1">
-        <div className="relative w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-[#130b0d] border-2 border-amber-700/90 overflow-hidden shadow-2xl flex items-center justify-center">
-          <div
-            className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-rose-800 via-rose-600 to-red-500 transition-all"
-            style={{ height: `${hpPct}%` }}
-          />
-          <span className="relative z-10 text-[10px] font-mono-tabular font-bold text-white drop-shadow">
-            {character.hp}
-          </span>
-        </div>
-
-        <div className="w-44 sm:w-64 rounded-t-lg bg-[#0d111a]/95 border border-b-0 border-amber-700/70 px-2.5 py-1.5 space-y-1 shadow-xl">
-          <div className="grid grid-cols-2 gap-1.5">
-            <div>
-              <div className="flex justify-between text-[9px] font-mono-tabular text-amber-200">
-                <span>SD</span>
-                <span>{character.sd}</span>
-              </div>
-              <div className="h-1.5 rounded bg-slate-800 overflow-hidden">
-                <div className="h-full bg-amber-400" style={{ width: `${sdPct}%` }} />
-              </div>
-            </div>
-            <div>
-              <div className="flex justify-between text-[9px] font-mono-tabular text-purple-200">
-                <span>AG</span>
-                <span>{character.ag}</span>
-              </div>
-              <div className="h-1.5 rounded bg-slate-800 overflow-hidden">
-                <div className="h-full bg-purple-500" style={{ width: `${agPct}%` }} />
-              </div>
-            </div>
-          </div>
-
-          <div className="h-1.5 w-full rounded bg-slate-900 border border-slate-700 overflow-hidden">
-            <div className="h-full bg-amber-500 transition-all" style={{ width: `${xpPct}%` }} />
-          </div>
-
-          <div className="flex items-center justify-between text-[10px] font-mono-tabular text-slate-300">
-            <span>Zen {character.zen.toLocaleString()}</span>
-            <span className="text-rose-300">B:{character.bless}</span>
-            <span className="text-sky-300">S:{character.soul}</span>
-          </div>
-        </div>
-
-        <div className="relative w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-[#09101a] border-2 border-amber-700/90 overflow-hidden shadow-2xl flex items-center justify-center">
-          <div
-            className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-blue-900 via-blue-600 to-sky-400 transition-all"
-            style={{ height: `${mpPct}%` }}
-          />
-          <span className="relative z-10 text-[10px] font-mono-tabular font-bold text-white drop-shadow">
-            {character.mp}
-          </span>
-        </div>
-      </div>
 
       {/* SMALL MU ONLINE SKILL & 5-POWER COMBO CONFIGURATOR POPOVER */}
       {showComboPicker && (

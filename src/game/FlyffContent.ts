@@ -7,7 +7,7 @@ import { FlyffAudio, FlyffCharacter, FlyffEffects, FlyffWorld, readJSON } from '
 import { EquipmentAppearance } from './flyff/EquipmentAppearance';
 import { SurfaceCollision } from './flyff/SurfaceCollision';
 import { RECIPES } from './flyff/recipes';
-import { stepHeroVerticalPhysics, type HeroVerticalState } from './worldPhysicsMath';
+import { computeWingFlightOffsetY, exponentialDamp, stepHeroVerticalPhysics, type HeroVerticalState } from './worldPhysicsMath';
 
 const ORIGIN = 1536;
 const SLOTS = {
@@ -51,6 +51,8 @@ export class FlyffContent {
   private lastAirPhase: 'grounded' | 'rising' | 'falling' = 'grounded';
   private lastJustJumped = false;
   private lastJustLanded = false;
+  private hasEquippedWings = false;
+  private hoverOffsetY = 0;
   onError: (error:unknown)=>void = console.warn;
   onWear: (slot: string, durability: number)=>void = ()=>{};
   constructor(private scene: Scene) {
@@ -87,12 +89,14 @@ export class FlyffContent {
   }
   async equipment(items:MuItem[]) {
     const generation=++this.equipmentGeneration,actor=this.actor,appearance=this.appearance;
+    this.hasEquippedWings = Boolean(items.find((i) => i.slot === 'wings' && i.isEquipped));
     await appearance?.apply(items);
     if(!actor||actor!==this.actor||appearance!==this.appearance||this.disposed||generation!==this.equipmentGeneration)return;
     for(const [slot,itemSlot] of Object.entries(SLOTS)) {
       const item=items.find(i=>i.slot===itemSlot&&i.isEquipped);
-      this.actor.equip(slot,Boolean(item&&(item.durability??100)>0));
-      this.actor.gear[slot].durability=item?.durability??100;
+      const isWings = slot === 'wings';
+      this.actor.equip(slot, Boolean(item && (isWings || (item.durability ?? 100) > 0)));
+      this.actor.gear[slot].durability = isWings ? 100 : (item?.durability ?? 100);
       const visual=getItemVisualSpec(item);
       for(const mesh of this.actor.outfit.meshes.filter(m=>m.name.startsWith(`equip_${slot}_`))) {
         if(mesh.material instanceof PBRMaterial) {
@@ -105,7 +109,7 @@ export class FlyffContent {
   }
   hurt(damage:number) {
     const actor=this.actor;if(!actor)return;
-    const available=Object.keys(SLOTS).filter(s=>s!=='weapon'&&actor.gear[s].equipped);
+    const available=Object.keys(SLOTS).filter(s=>s!=='weapon'&&s!=='wings'&&actor.gear[s].equipped);
     const slot=available[Math.floor(Math.random()*available.length)];
     if(slot){const remaining=Math.max(0,actor.gear[slot].durability-Math.max(1,Math.round(damage/8)));
       actor.gear[slot].durability=remaining;if(!remaining){actor.detach(slot);actor.equip(slot,false);}this.onWear(SLOTS[slot as keyof typeof SLOTS],remaining);}
@@ -155,7 +159,7 @@ export class FlyffContent {
       }
       this.lastStreamX = x;
       this.lastStreamZ = z;
-      await next.stream(x+ORIGIN,z+ORIGIN,0,360);
+      await next.stream(x+ORIGIN,z+ORIGIN,1,580);
       if(!this.disposed&&generation===this.worldGeneration) {
         this.ensureTilesVisible(next);
         this.refreshCollision();
@@ -181,7 +185,7 @@ export class FlyffContent {
     this.lastStreamX = x;
     this.lastStreamZ = z;
     try {
-      await world.stream(x+ORIGIN,z+ORIGIN,0,360);
+      await world.stream(x+ORIGIN,z+ORIGIN,1,580);
       if(world===this.world&&!this.disposed&&generation===this.worldGeneration){
         this.ensureTilesVisible(world);
         this.refreshCollision();
@@ -240,23 +244,43 @@ export class FlyffContent {
     this.lastJustJumped = step.justJumped;
     this.lastJustLanded = step.justLanded;
     if (this.actor) {
-      this.actor.root.position.y = 0;
+      this.actor.root.position.y = this.hoverOffsetY;
     }
     return step.state.y;
   }
-  update(dt:number,x:number,z:number,moving:boolean,rotation:number) {
+  sampleMinimapTerrain(centerX: number, centerZ: number, spanMeters: number, gridSize = 48): number[] | null {
+    if (!this.world) return null;
+    const heights: number[] = new Array(gridSize * gridSize);
+    const half = spanMeters / 2;
+    const step = spanMeters / Math.max(1, gridSize - 1);
+    for (let row = 0; row < gridSize; row++) {
+      // Top row corresponds to higher +Z (matching projectToMinimap v = 1 - (z+half)/size)
+      const wz = centerZ + half - row * step;
+      for (let col = 0; col < gridSize; col++) {
+        const wx = centerX - half + col * step;
+        heights[row * gridSize + col] = this.world.heightAt(wx + ORIGIN, wz + ORIGIN);
+      }
+    }
+    return heights;
+  }
+  update(dt:number,x:number,z:number,moving:boolean,rotation:number,inSafeCity = false) {
     this.effects.update(dt);this.world?.update(dt);this.worldClock+=dt;
     const movedDist = Number.isFinite(this.lastStreamX) ? Math.hypot(x - this.lastStreamX, z - this.lastStreamZ) : 999;
     if(this.world&&!this.loadingWorld&&(movedDist>=24||this.worldClock>=this.streamClock)){
       this.worldClock=0;
       void this.stream(x,z).catch(this.onError);
     }
+    const targetHover = computeWingFlightOffsetY(inSafeCity, this.hasEquippedWings);
+    this.hoverOffsetY = exponentialDamp(this.hoverOffsetY, targetHover, 7.5, Math.min(0.08, dt));
+    const hovering = !inSafeCity && this.hasEquippedWings;
+    const bob = this.hoverOffsetY > 0.15 ? Math.sin(this.worldClock * 4.2) * 0.065 * Math.min(1, this.hoverOffsetY) : 0;
     if(this.actor){
       this.actor.root.rotation.y=rotation;
       (this.actor as any).update(dt,{
         moving,
         running:true,
-        height:0,
+        hovering,
+        height: this.hoverOffsetY + bob,
         surface:this.world?.surfaceAt(x+ORIGIN,z+ORIGIN)??'land',
         externalAirPhase: this.world ? this.lastAirPhase : null,
         justJumped: this.lastJustJumped,

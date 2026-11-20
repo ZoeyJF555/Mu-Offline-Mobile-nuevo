@@ -214,9 +214,17 @@ export function normalizeCharacterRecord(c: MuCharacter): MuCharacter {
   const safeMap: MapId = VALID_MAP_IDS.has(c.currentMapId as MapId) ? (c.currentMapId as MapId) : 'flaris';
   const expectedXp = c.level >= MAX_HERO_LEVEL ? Math.max(1, c.xpToNext || 1) : getXpRequiredForLevel(c.level);
   const safeXp = c.level >= MAX_HERO_LEVEL ? 0 : Math.min(c.xp, Math.max(0, expectedXp - 1));
+  const needsCenizaRespawnRelocate =
+    safeMap === 'ceniza' &&
+    typeof c.lastX === 'number' &&
+    typeof c.lastZ === 'number' &&
+    c.lastX < 780 &&
+    c.lastZ < -850;
   return {
     ...c,
     currentMapId: safeMap,
+    lastX: needsCenizaRespawnRelocate ? 884 : c.lastX,
+    lastZ: needsCenizaRespawnRelocate ? -636 : c.lastZ,
     sex: c.sex ?? 'male',
     xp: safeXp,
     xpToNext: expectedXp,
@@ -828,7 +836,7 @@ export async function sellInventoryItem(
 
 export async function executeChaosMixWing(
   char: MuCharacter,
-  tier: 2 | 3,
+  tier: 2 | 3 | 4,
 ): Promise<{ ok: boolean; message: string; character: MuCharacter; items: MuItem[] }> {
   const recipe = MU_CHAOS_WINGS_RECIPES.find((r) => r.tier === tier)!;
   const currentItems = await getItemsForCharacter(char.id);
@@ -840,7 +848,7 @@ export async function executeChaosMixWing(
   ) {
     return {
       ok: false,
-      message: `Faltan recursos para Chaos Mix Lv${tier} (${recipe.blessCost} Bless, ${recipe.soulCost} Soul, ${recipe.chaosCost} Chaos, ${recipe.zenCost.toLocaleString()} Zen).`,
+      message: `Faltan recursos para Chaos Mix Evo ${tier} (${recipe.blessCost} Bless, ${recipe.soulCost} Soul, ${recipe.chaosCost} Chaos, ${recipe.zenCost.toLocaleString()} Zen).`,
       character: char,
       items: currentItems,
     };
@@ -853,15 +861,21 @@ export async function executeChaosMixWing(
     name: wingName,
     slot: 'wings',
     category: 'wings',
-    setName: `Lv${tier} Wings`,
-    rarity: tier === 3 ? 'ancient' : 'excellent',
-    enhanceLevel: tier === 3 ? 13 : 9,
-    minDmg: tier === 3 ? 52 : 34,
-    maxDmg: tier === 3 ? 52 : 34,
-    defense: tier === 3 ? 64 : 42,
-    magicPower: tier === 3 ? 52 : 32,
+    setName: `Evo ${tier} Wings`,
+    rarity: tier >= 3 ? 'ancient' : 'excellent',
+    enhanceLevel: tier === 4 ? 15 : tier === 3 ? 13 : 9,
+    evoTier: tier,
+    minDmg: tier === 4 ? 108 : tier === 3 ? 68 : 38,
+    maxDmg: tier === 4 ? 108 : tier === 3 ? 68 : 38,
+    defense: tier === 4 ? 118 : tier === 3 ? 76 : 44,
+    magicPower: tier === 4 ? 108 : tier === 3 ? 68 : 36,
     luck: true,
-    excellentOpt: tier === 3 ? 'Ignora Defensa 5% · Absorbe 42% Daño' : 'Ignora Defensa 3% · Absorbe 32% Daño',
+    excellentOpt:
+      tier === 4
+        ? 'Evo 4 Suprema · Absorbe 52% · +55% ATK · Ignora 12%'
+        : tier === 3
+          ? 'Evo 3 (3× Evo 2) · Absorbe 40% · +38% ATK · Ignora 8%'
+          : 'Evo 2 (2× Evo 1) · Absorbe 28% · +24% ATK · Ignora 4%',
     isEquipped: false,
     originalOwner: char.name,
     sharedFromSession: null,
@@ -892,7 +906,7 @@ const DEFAULT_SETTINGS: GameSettings = {
   muted: false,
   musicEnabled: true,
   musicVolume: 0.45,
-  free3dCamera: false,
+  free3dCamera: true,
   cameraDistance: DEFAULT_CAMERA_DISTANCE,
   cameraDistanceMigratedV2: true,
   cameraDistanceMigratedV3: true,
@@ -905,22 +919,25 @@ export async function loadGameSettings(): Promise<GameSettings> {
   const row = await db.KvSettings.get('game_settings');
   if (!row) return { ...DEFAULT_SETTINGS };
   try {
-    const parsed = JSON.parse(row.valueJson) as Partial<GameSettings>;
-    if (!parsed.cameraDistanceMigratedV3) {
-      const migrated: GameSettings = {
+    const parsed = JSON.parse(row.valueJson) as Partial<GameSettings> & { free3dMigratedV4?: boolean };
+    if (!parsed.cameraDistanceMigratedV3 || !parsed.free3dMigratedV4) {
+      const migrated = {
         ...DEFAULT_SETTINGS,
         ...parsed,
+        free3dCamera: true,
+        autoAimAssist: true,
         cameraDistance:
           typeof parsed.cameraDistance === 'number' && parsed.cameraDistance > 4.4
             ? parsed.cameraDistance
             : DEFAULT_CAMERA_DISTANCE,
         cameraDistanceMigratedV2: true,
         cameraDistanceMigratedV3: true,
+        free3dMigratedV4: true,
       };
       await db.KvSettings.put({ key: 'game_settings', valueJson: JSON.stringify(migrated) });
       return migrated;
     }
-    return { ...DEFAULT_SETTINGS, ...parsed };
+    return { ...DEFAULT_SETTINGS, ...parsed, autoAimAssist: true };
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
@@ -932,8 +949,10 @@ export async function saveGameSettings(settings: GameSettings): Promise<void> {
     key: 'game_settings',
     valueJson: JSON.stringify({
       ...settings,
+      autoAimAssist: true,
       cameraDistanceMigratedV2: true,
       cameraDistanceMigratedV3: true,
+      free3dMigratedV4: true,
     }),
   });
 }
@@ -975,7 +994,20 @@ export async function loadButtonLayouts(): Promise<Record<HudButtonId, ButtonLay
   const row = await db.KvSettings.get('hud_layouts');
   if (!row) return { ...DEFAULT_BUTTON_LAYOUTS };
   try {
-    return { ...DEFAULT_BUTTON_LAYOUTS, ...JSON.parse(row.valueJson) };
+    const parsed = JSON.parse(row.valueJson) as Partial<Record<HudButtonId, ButtonLayoutItem>>;
+    if (!parsed.minimap || !parsed.hellp) {
+      const upgraded: Record<HudButtonId, ButtonLayoutItem> = {
+        ...DEFAULT_BUTTON_LAYOUTS,
+        joystick: parsed.joystick || DEFAULT_BUTTON_LAYOUTS.joystick,
+        attack: parsed.attack || DEFAULT_BUTTON_LAYOUTS.attack,
+        jump: parsed.jump || DEFAULT_BUTTON_LAYOUTS.jump,
+        potion: parsed.potion || DEFAULT_BUTTON_LAYOUTS.potion,
+        loot: parsed.loot || DEFAULT_BUTTON_LAYOUTS.loot,
+      };
+      await db.KvSettings.put({ key: 'hud_layouts', valueJson: JSON.stringify(upgraded) });
+      return upgraded;
+    }
+    return { ...DEFAULT_BUTTON_LAYOUTS, ...parsed };
   } catch {
     return { ...DEFAULT_BUTTON_LAYOUTS };
   }

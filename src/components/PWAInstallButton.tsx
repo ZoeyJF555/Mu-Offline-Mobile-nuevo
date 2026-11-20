@@ -58,39 +58,43 @@ export function usePWAInstall() {
   };
 }
 
-export const PWAInstallButton: React.FC<{ onOpenApkCenter?: () => void }> = ({ onOpenApkCenter }) => {
+export const PWAInstallButton: React.FC<{ onOpenApkCenter?: () => void; compact?: boolean }> = ({
+  onOpenApkCenter,
+  compact = false,
+}) => {
   const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
   const [showIOSGuide, setShowIOSGuide] = useState(false);
 
   if (isInstalled) return null;
 
+  const handleClick = async () => {
+    if (isInstallable) {
+      const accepted = await install();
+      if (!accepted && onOpenApkCenter) {
+        onOpenApkCenter();
+      }
+      return;
+    }
+    if (isIOS) {
+      setShowIOSGuide(true);
+      return;
+    }
+    onOpenApkCenter?.();
+  };
+
   return (
     <>
-      {isInstallable ? (
-        <button
-          onClick={install}
-          className="inline-flex items-center gap-2 min-h-[44px] px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-slate-950 font-semibold text-sm transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-        >
-          <Download className="w-4 h-4" />
-          Instalar App Web
-        </button>
-      ) : isIOS ? (
-        <button
-          onClick={() => setShowIOSGuide(true)}
-          className="inline-flex items-center gap-2 min-h-[44px] px-4 py-2 rounded-lg bg-[#161c28] border border-amber-500/30 hover:border-amber-400 text-amber-200 font-medium text-sm transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-        >
-          <Smartphone className="w-4 h-4" />
-          Instalar en iOS
-        </button>
-      ) : onOpenApkCenter ? (
-        <button
-          onClick={onOpenApkCenter}
-          className="inline-flex items-center gap-2 min-h-[44px] px-4 py-2 rounded-lg bg-[#161c28] border border-slate-700 hover:border-amber-500/60 text-slate-200 font-medium text-sm transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-        >
-          <Smartphone className="w-4 h-4 text-amber-400" />
-          APK y Web Móvil
-        </button>
-      ) : null}
+      <button
+        type="button"
+        data-testid="btn-download-apk-web"
+        onClick={handleClick}
+        className={`inline-flex items-center gap-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer shadow-lg ${
+          compact ? 'min-h-[34px] px-2.5 py-1 text-[11px]' : 'min-h-[42px] px-3.5 py-2 text-xs sm:text-sm'
+        }`}
+      >
+        {isInstallable ? <Download className="w-3.5 h-3.5" /> : <Smartphone className="w-3.5 h-3.5" />}
+        <span>DESCARGAR APK-WEB</span>
+      </button>
 
       {showIOSGuide && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4">

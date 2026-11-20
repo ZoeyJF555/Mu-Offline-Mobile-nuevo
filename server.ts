@@ -389,6 +389,18 @@ async function startServer() {
           return;
         }
 
+        if (msg.type === 'buff:share') {
+          const fromPeer = room.peers.get(currentPeerId)?.peer;
+          const effect = msg.effect as Record<string, unknown> | undefined;
+          if (!fromPeer || !effect) return;
+          broadcastRoom(
+            room,
+            { type: 'buff:shared', fromPeerName: fromPeer.name, effect },
+            currentPeerId,
+          );
+          return;
+        }
+
         if (msg.type === 'room:end') {
           if (room.hostPeerId === currentPeerId) {
             broadcastRoom(room, {

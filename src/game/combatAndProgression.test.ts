@@ -12,6 +12,8 @@ import {
   computeHeroDamageStats,
   computeHeroDefenseMitigation,
   computeMapScaledXpReward,
+  createSkillBuffEffect,
+  aggregateActiveEffects,
   decodeDuelToken,
   encodeDuelToken,
   estimateResetProgressionHours,
@@ -24,7 +26,7 @@ import {
   rollMonsterAttack,
   scaleMonsterForPlayerLevel,
 } from './combatAndProgression';
-import { getDefaultComboConfig, getStarterItemsForMuClass } from '../data/muSkillsAndClasses';
+import { MU_SKILLS, getDefaultComboConfig, getStarterItemsForMuClass } from '../data/muSkillsAndClasses';
 import { MU_MAPS } from '../data/muWorldData';
 import type { HeroClass, MapMonsterDef, MuCharacter } from '../types/game';
 
@@ -279,5 +281,32 @@ test('XP tables and map-scaled XP rates (6%, 9%, 12%, 22%) take ~5 days (3-4h/da
   const est = estimateResetProgressionHours(420);
   assert.ok(est.totalHours >= 15 && est.totalHours <= 20, `Expected 15-20h total, got ${est.totalHours}h`);
   assert.ok(est.daysAt35HoursPerDay >= 4.2 && est.daysAt35HoursPerDay <= 5.8);
+});
+
+test('all 5 class buff powers grant exact ATK, DEF, Heal, and Reflect bonuses', () => {
+  const bkSwell = createSkillBuffEffect(MU_SKILLS.DK.find((s) => s.id === 'dk_swell_life')!, 1);
+  assert.equal(bkSwell.atkBonusPct, 15);
+  assert.equal(bkSwell.reflectBonusPct, 15);
+  assert.equal(bkSwell.defBonusPct, 20);
+
+  const dwBarrier = createSkillBuffEffect(MU_SKILLS.DW.find((s) => s.id === 'dw_soul_barrier')!, 1);
+  assert.equal(dwBarrier.healPct, 15);
+  assert.equal(dwBarrier.defBonusPct, 15);
+
+  const elfAura = createSkillBuffEffect(MU_SKILLS.ELF.find((s) => s.id === 'elf_bless')!, 1);
+  assert.equal(elfAura.healPct, 15);
+  assert.equal(elfAura.defBonusPct, 15);
+  assert.equal(elfAura.atkBonusPct, 5);
+
+  const dlCrit = createSkillBuffEffect(MU_SKILLS.DL.find((s) => s.id === 'dl_crit')!, 1);
+  assert.equal(dlCrit.atkBonusPct, 25);
+
+  const mgOverdrive = createSkillBuffEffect(MU_SKILLS.MG.find((s) => s.id === 'mg_ruin_aura')!, 1);
+  assert.equal(mgOverdrive.atkBonusPct, 15);
+
+  const agg = aggregateActiveEffects([bkSwell, dlCrit]);
+  assert.equal(agg.atkBonusPct, 40);
+  assert.equal(agg.reflectBonusPct, 15);
+  assert.equal(agg.defBonusPct, 20);
 });
 

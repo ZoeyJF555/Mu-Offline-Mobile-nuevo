@@ -80,6 +80,7 @@ import {
 import { MuWorldEngine, type EngineCallbacks, type TargetMonsterInfo } from './game/MuWorldEngine';
 import { soundSynth } from './game/soundSynth';
 import { cloudSyncManager } from './services/cloudSyncManager';
+import { checkForGithubOtaUpdate } from './services/githubOtaService';
 import { LocalSyncManager } from './services/syncManager';
 import { ApkSyncDrawer } from './components/ApkSyncDrawer';
 import { CharacterStatsModal } from './components/CharacterStatsModal';
@@ -131,7 +132,7 @@ const INITIAL_SETTINGS: GameSettings = {
   muted: false,
   musicEnabled: true,
   musicVolume: 0.45,
-  free3dCamera: false,
+  free3dCamera: true,
   cameraDistance: DEFAULT_CAMERA_DISTANCE,
   cameraDistanceMigratedV2: true,
   cameraDistanceMigratedV3: true,
@@ -162,6 +163,7 @@ export default function App() {
   const [buttonLayouts, setButtonLayouts] = useState<Record<HudButtonId, ButtonLayoutItem>>(DEFAULT_BUTTON_LAYOUTS);
   const [comboConfig, setComboConfig] = useState<CharacterComboConfig>(getDefaultComboConfig('DK'));
   const [comboArmed, setComboArmed] = useState(false);
+  const [autoHuntEnabled, setAutoHuntEnabled] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [measuredFps, setMeasuredFps] = useState(60);
   const [worldTelemetry, setWorldTelemetry] = useState<WorldTelemetryInfo>({
@@ -215,6 +217,7 @@ export default function App() {
   const potionConfigRef = useRef<PotionConfig>(DEFAULT_POTION_CONFIG);
   const autoHealAtRef = useRef<number>(0);
   const pressAttackRef = useRef<() => void>(() => {});
+  const activeEffectsRef = useRef<ActiveEffect[]>([]);
   charRef.current = character;
   itemsRef.current = items;
   roomRef.current = roomState;
@@ -226,6 +229,7 @@ export default function App() {
   skillCooldownsRef.current = skillCooldowns;
   lootFiltersRef.current = lootFilters;
   potionConfigRef.current = potionConfig;
+  activeEffectsRef.current = activeEffects;
 
   const pushBanner = useCallback((text: string, color = '#fbbf24') => {
     const id = Date.now() + Math.random();
@@ -457,6 +461,23 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Automatic GitHub OTA check on boot when online
+  useEffect(() => {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+    let cancelled = false;
+    checkForGithubOtaUpdate()
+      .then((res) => {
+        if (cancelled) return;
+        if (res.updateAvailable) {
+          pushBanner(res.updateReason || 'Nueva actualización en GitHub disponible', '#38bdf8');
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [pushBanner]);
+
   useEffect(() => {
     soundSynth.volume = gameSettings.volume;
     soundSynth.muted = gameSettings.muted;
@@ -504,6 +525,7 @@ export default function App() {
       atkBonusPct: agg.atkBonusPct,
       speedBonusPct: agg.speedBonusPct,
       critBonusPct: agg.critBonusPct,
+      reflectBonusPct: agg.reflectBonusPct,
     });
   }, [activeEffects]);
 
@@ -729,6 +751,22 @@ export default function App() {
       onDuelCompleted: ({ record }) => {
         pushBanner(`Duelo en sala: ${record.summary}`, '#fbbf24');
       },
+      onBuffShared: ({ fromPeerName, effect }) => {
+        setActiveEffects((prev) => [...prev.filter((e) => e.id !== effect.id), effect]);
+        const healPct = effect.healPct ?? 0;
+        if (healPct > 0) {
+          setCharacter((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  hp: Math.min(prev.maxHp, prev.hp + Math.round((prev.maxHp * healPct) / 100)),
+                  mp: Math.min(prev.maxMp, prev.mp + Math.round((prev.maxMp * healPct) / 100)),
+                }
+              : prev,
+          );
+        }
+        pushBanner(`Buff compartido de ${fromPeerName}: ${effect.name}`, effect.color || '#34d399');
+      },
       onRoomEnded: async (message) => {
         setRoomState(null);
         engineRef.current?.setEventActive(false);
@@ -797,6 +835,7 @@ export default function App() {
 
         if (leveledUp) {
           soundSynth.playLevelUp();
+          engineRef.current?.playLevelUpAnimation(false);
         }
 
         const updated: MuCharacter = {
@@ -854,7 +893,14 @@ export default function App() {
       onPlayerDamaged: (rawAmount, isCrit) => {
         const cur = charRef.current;
         if (!cur) return;
-        const { finalDamage } = computeHeroDefenseMitigation(rawAmount, Boolean(isCrit), cur, itemsRef.current);
+        const extraDefPct = aggregateActiveEffects(activeEffectsRef.current).defBonusPct;
+        const { finalDamage } = computeHeroDefenseMitigation(
+          rawAmount,
+          Boolean(isCrit),
+          cur,
+          itemsRef.current,
+          extraDefPct,
+        );
         const sdAbsorb = Math.min(cur.sd, Math.round(finalDamage * 0.55));
         const hpDamage = Math.max(1, finalDamage - sdAbsorb);
         const nextHp = Math.max(0, cur.hp - hpDamage);
@@ -1000,19 +1046,30 @@ export default function App() {
         setSkillCooldowns((prev) => ({ ...prev, [useSkill.id]: cdSec }));
       }
 
-      if (useSkill.isBuff) {
-        const eff = createSkillBuffEffect(useSkill, getSkillRank(c, useSkill.id));
-        setActiveEffects((prev) => [...prev.filter((e) => e.id !== eff.id), eff]);
+      const useBuffEffect = useSkill.isBuff
+        ? createSkillBuffEffect(useSkill, getSkillRank(c, useSkill.id))
+        : null;
+      if (useBuffEffect) {
+        setActiveEffects((prev) => [...prev.filter((e) => e.id !== useBuffEffect.id), useBuffEffect]);
+        if (roomRef.current) {
+          syncRef.current?.sendSharedBuff(useBuffEffect);
+        }
       }
 
       setCharacter((prev) => {
         if (!prev) return prev;
+        const healHp = useBuffEffect
+          ? useBuffEffect.healPct
+            ? Math.round((prev.maxHp * useBuffEffect.healPct) / 100)
+            : 55
+          : 0;
+        const healMp = useBuffEffect?.healPct ? Math.round((prev.maxMp * useBuffEffect.healPct) / 100) : 0;
         return {
           ...prev,
-          mp: Math.max(0, prev.mp - useSkill.mpCost),
+          mp: Math.min(prev.maxMp, Math.max(0, prev.mp - useSkill.mpCost) + healMp),
           ag: Math.max(0, prev.ag - useSkill.agCost),
-          hp: useSkill.isBuff ? Math.min(prev.maxHp, prev.hp + 55) : prev.hp,
-          sd: useSkill.isBuff ? Math.min(prev.maxSd, prev.sd + 45) : prev.sd,
+          hp: useBuffEffect ? Math.min(prev.maxHp, prev.hp + healHp) : prev.hp,
+          sd: useBuffEffect ? Math.min(prev.maxSd, prev.sd + 45) : prev.sd,
         };
       });
 
@@ -1073,8 +1130,8 @@ export default function App() {
   pressAttackRef.current = handlePressAttack;
 
   useEffect(() => {
-    engineRef.current?.setAutoHuntEnabled(comboArmed);
-  }, [comboArmed]);
+    engineRef.current?.setAutoHuntEnabled(autoHuntEnabled);
+  }, [autoHuntEnabled]);
 
   // Global keyboard shortcuts while playing/paused
   useEffect(() => {
@@ -1376,14 +1433,14 @@ export default function App() {
     setCharacter(normalizeCharacterRecord(saved));
   }, [pushBanner]);
 
-  // Auto-loot (filtered) & auto-heal loop when playing
+  // Auto-loot (filtered) & Hellp auto-heal loop when playing
   useEffect(() => {
     if (screenStage !== 'playing') return;
     const timer = window.setInterval(() => {
       if (lootFiltersRef.current.autoLootEnabled) {
         engineRef.current?.collectAutoLoot(lootFiltersRef.current);
       }
-      if (comboArmed) {
+      if (autoHuntEnabled) {
         const c = charRef.current;
         if (c && (c.hp < c.maxHp || c.mp < c.maxMp)) {
           const hpPct = (c.hp / Math.max(1, c.maxHp)) * 100;
@@ -1400,7 +1457,7 @@ export default function App() {
       }
     }, 350);
     return () => window.clearInterval(timer);
-  }, [screenStage, comboArmed, handleHealPotion]);
+  }, [screenStage, autoHuntEnabled, handleHealPotion]);
 
   const handleEquip = async (itemId: string) => {
     if (!character) return;
@@ -1447,6 +1504,7 @@ export default function App() {
     if (res.ok) {
       setCharacter(res.character);
       soundSynth.playLevelUp();
+      engineRef.current?.playLevelUpAnimation(true);
       pushBanner(res.message, '#fbbf24');
     } else {
       pushBanner(res.message, '#f87171');
@@ -1572,7 +1630,7 @@ export default function App() {
     soundSynth.playTradeSync();
   };
 
-  const handleChaosMixWing = async (tier: 2 | 3) => {
+  const handleChaosMixWing = async (tier: 2 | 3 | 4) => {
     if (!character) return;
     const res = await executeChaosMixWing(character, tier);
     setCharacter(res.character);
@@ -1712,19 +1770,21 @@ export default function App() {
             character={character}
             comboConfig={comboConfig}
             comboArmed={comboArmed}
+            autoHuntEnabled={autoHuntEnabled}
             buttonLayouts={buttonLayouts}
             editMode={editMode}
             measuredFps={measuredFps}
             free3dCamera={gameSettings.free3dCamera}
-            autoAimAssist={gameSettings.autoAimAssist ?? true}
             activeEffects={activeEffects}
             targetMonster={targetMonster}
             skillCooldowns={skillCooldowns}
             nearbyNpc={nearbyNpc}
             worldTelemetry={worldTelemetry}
             damageNumbers={damageNumbers}
-            syncStatus={syncStatus}
             minimapData={minimapData}
+            getMinimapTerrainGrid={(spanMeters, cx, cz) =>
+              engineRef.current?.sampleMinimapTerrain(spanMeters, 48, cx, cz) ?? null
+            }
             lootFilters={lootFilters}
             potionConfig={potionConfig}
             onUpdateLootFilters={handleUpdateLootFilters}
@@ -1733,6 +1793,7 @@ export default function App() {
             onPressAttack={handlePressAttack}
             onJump={() => engineRef.current?.jump()}
             onToggleComboArmed={() => setComboArmed((v) => !v)}
+            onToggleAutoHunt={() => setAutoHuntEnabled((v) => !v)}
             onCastSkill={handleCastSkill}
             onUpdateComboConfig={handleUpdateComboConfig}
             onHealPotion={handleHealPotion}

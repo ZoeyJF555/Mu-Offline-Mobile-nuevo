@@ -200,6 +200,7 @@ export type HudButtonId =
   | 'skillTray'
   | 'potion'
   | 'loot'
+  | 'minimap'
   | 'inventory'
   | 'mapWarp'
   | 'stats'
@@ -224,7 +225,7 @@ export interface GameSettings {
   cameraDistance?: number; // 2.6 to 11.5m third-person distance (default 5.4m)
   cameraDistanceMigratedV2?: boolean;
   cameraDistanceMigratedV3?: boolean;
-  autoAimAssist?: boolean; // 60% auto-aim toggle (default true)
+  autoAimAssist?: boolean; // 50% auto-aim default
   targetFps: 30 | 45 | 60;
 }
 
@@ -249,6 +250,8 @@ export interface ActiveEffect {
   defBonusPct?: number;
   critBonusPct?: number;
   speedBonusPct?: number;
+  reflectBonusPct?: number;
+  healPct?: number;
 }
 
 export interface MonsterPowerDef {

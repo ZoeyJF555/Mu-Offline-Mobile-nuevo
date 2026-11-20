@@ -13,7 +13,7 @@ interface NpcShopModalProps {
   onBuyItem: (shopItem: ShopItemDef) => void;
   onBuyJewel: (jewel: 'bless' | 'soul' | 'chaos' | 'life' | 'harmony', cost: number) => void;
   onSellItem: (itemId: string) => void;
-  onChaosMixWing: (tier: 2 | 3) => void;
+  onChaosMixWing: (tier: 2 | 3 | 4) => void;
 }
 
 export const NpcShopModal: React.FC<NpcShopModalProps> = ({
@@ -225,7 +225,7 @@ export const NpcShopModal: React.FC<NpcShopModalProps> = ({
               <div className="p-3 rounded-lg bg-[#14111d] border border-rose-500/40 text-xs text-slate-200 flex items-center gap-2">
                 <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
                 <span>
-                  Máquina del Chaos Goblin: combina Joyas y Zen para forjar Alas Lv2 y Lv3 para tu clase ({character.classType}).
+                  Máquina del Chaos Goblin: combina Joyas y Zen para forjar Alas Evo 2, Evo 3 y Evo 4 para tu clase ({character.classType}).
                 </span>
               </div>
 

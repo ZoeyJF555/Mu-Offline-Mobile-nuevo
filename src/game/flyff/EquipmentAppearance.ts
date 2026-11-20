@@ -1,5 +1,6 @@
 import { Matrix, TransformNode, Vector3, type Scene, type ISceneLoaderAsyncResult } from '@babylonjs/core';
 import type { MuItem } from '../../types/game';
+import { getWingEvoTier, getWingTargetWidth, type WingEvoTier } from '../worldPhysicsMath';
 import { FlyffCharacter, importGLB, splitGarments } from './runtime.js';
 
 /** One native rig shared by all garments. Item identity selects geometry, not just color. */
@@ -22,18 +23,18 @@ export class EquipmentAppearance {
     if (spine !== this.actor.root) {
       // Align local +X = Right, +Y = Up, +Z = Hero Back (-Z world)
       mount.rotation.set(0, 0, -Math.PI / 2);
-      mount.position.set(0.06, 0, 0.08);
+      mount.position.set(0.05, 0, 0.04);
     } else {
       mount.rotation.set(0, Math.PI, 0);
-      mount.position.set(0, 1.05, -0.14);
+      mount.position.set(0, 1.05, -0.1);
     }
     this.wingMount = mount;
     (this.actor as any).wingsNode = mount;
     return mount;
   }
 
-  private async load(file: string, slot?: string) {
-    const key = slot ? `${slot}:${file}` : file;
+  private async load(file: string, slot?: string, evoTier: WingEvoTier = 1) {
+    const key = slot === 'wings' ? `wings:evo${evoTier}:${file}` : slot ? `${slot}:${file}` : file;
     if (!this.loaded.has(key)) {
       const promise = importGLB(this.scene, this.base, file).then((result) => {
         if (this.disposed) {
@@ -60,7 +61,7 @@ export class EquipmentAppearance {
 
           // Evaluate frame 0 of any wing animation before measuring skinned bounds
           for (const ag of result.animationGroups ?? []) {
-            ag.start(true, 0.85, ag.from, ag.to);
+            ag.start(true, 0.92, ag.from, ag.to);
             ag.goToFrame(ag.from);
           }
           holder.computeWorldMatrix(true);
@@ -125,15 +126,15 @@ export class EquipmentAppearance {
           if (hasVerts) {
             const spanX = Math.max(0.15, lMax.x - lMin.x);
             const spanY = Math.max(0.15, lMax.y - lMin.y);
-            const maxWidth = file.includes('prophet') ? 1.62 : 1.42;
-            const maxHeight = file.includes('prophet') ? 1.24 : 0.98;
-            const scale = Math.min(1.25, Math.max(0.16, Math.min(maxWidth / spanX, maxHeight / spanY)));
+            const targetWidth = getWingTargetWidth(evoTier);
+            const targetHeight = targetWidth * 0.78;
+            const scale = Math.max(0.16, Math.min(targetWidth / spanX, targetHeight / spanY));
             holder.scaling.setAll(scale);
 
             const cx = ((lMin.x + lMax.x) * 0.5) * scale;
             const cy = ((lMin.y + lMax.y) * 0.5) * scale;
-            const targetCenterY = isOpenMu ? 0.16 : 0.14;
-            holder.position.set(-cx, targetCenterY - cy, 0.10 - lMin.z * scale);
+            const targetCenterY = isOpenMu ? 0.14 : 0.12;
+            holder.position.set(-cx, targetCenterY - cy, 0.04 - lMin.z * scale);
           }
 
           result.meshes
@@ -142,7 +143,10 @@ export class EquipmentAppearance {
               mesh.name = `equip_wings_${key}_${i}`;
               mesh.alwaysSelectAsActiveMesh = true;
               if (mesh.material) {
-                mesh.material.backFaceCulling = false;
+                const mats: any[] = (mesh.material as any).subMaterials || [mesh.material];
+                for (const mat of mats) {
+                  if (mat) mat.backFaceCulling = false;
+                }
               }
             });
         } else if (slot) {
@@ -213,7 +217,9 @@ export class EquipmentAppearance {
       const slot = slotMap[item.slot];
       if (!slot) continue;
       let file: string | undefined;
+      let evoTier: WingEvoTier = 1;
       if (slot === 'wings') {
+        evoTier = getWingEvoTier(item.name, item.evoTier);
         file =
           this.library.wings?.[item.name] ??
           this.library.wings?.['Alas de Ángel MU (OpenMU)'] ??
@@ -228,7 +234,7 @@ export class EquipmentAppearance {
         file = this.library.sets[item.setName]?.[this.actor.config.sex];
       }
       if (file) {
-        const asset = await this.load(file, ['weapon', 'offhand', 'wings'].includes(slot) ? slot : undefined);
+        const asset = await this.load(file, ['weapon', 'offhand', 'wings'].includes(slot) ? slot : undefined, evoTier);
         if (asset.result) selected.set(slot, asset.key);
       }
     }

@@ -62,13 +62,26 @@ export default defineConfig(() => {
             },
             {
               urlPattern: /\/models\/.*\.glb$/i,
-              handler: 'NetworkFirst',
+              handler: 'CacheFirst',
               options: {
-                cacheName: 'mu-3d-assets-v2',
-                networkTimeoutSeconds: 3,
+                cacheName: 'mu-3d-assets-v3',
                 expiration: {
                   maxEntries: 80,
-                  maxAgeSeconds: 60 * 60 * 24 * 30,
+                  maxAgeSeconds: 60 * 60 * 24 * 60,
+                },
+                cacheableResponse: {
+                  statuses: [0, 200],
+                },
+              },
+            },
+            {
+              urlPattern: /\/openmu\/.*\.(?:glb|json|png|wav|mp3|ogg|txt)$/i,
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'mu-openmu-assets-v3',
+                expiration: {
+                  maxEntries: 600,
+                  maxAgeSeconds: 60 * 60 * 24 * 60,
                 },
                 cacheableResponse: {
                   statuses: [0, 200],
@@ -77,13 +90,12 @@ export default defineConfig(() => {
             },
             {
               urlPattern: /\/flyff\/.*\.(?:glb|json|png|f32|u8|wav|txt)$/i,
-              handler: 'NetworkFirst',
+              handler: 'CacheFirst',
               options: {
-                cacheName: 'mu-flyff-assets-v2',
-                networkTimeoutSeconds: 3,
+                cacheName: 'mu-flyff-assets-v3',
                 expiration: {
-                  maxEntries: 1000,
-                  maxAgeSeconds: 60 * 60 * 24 * 30,
+                  maxEntries: 1500,
+                  maxAgeSeconds: 60 * 60 * 24 * 60,
                 },
                 cacheableResponse: {
                   statuses: [0, 200],

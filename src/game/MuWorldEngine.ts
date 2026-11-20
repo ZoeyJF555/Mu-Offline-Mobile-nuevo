@@ -113,6 +113,8 @@ interface ProjectileFx {
   damage: number;
   isCritical: boolean;
   isExcellent: boolean;
+  freezeMs?: number;
+  colorHex?: number;
 }
 
 interface TransientFx {
@@ -422,6 +424,8 @@ export class MuWorldEngine {
   private monDefIdx = new Uint8Array(0);
   private monAttackCd = new Float32Array(0);
   private monPowerCd = new Float32Array(0);
+  private monFrozenUntil = new Float64Array(0);
+  private monStrikeAnim = new Float32Array(0);
   private spatialGrid = new Map<number, number[]>();
   private thinMasterMeshes = new Map<string, { mesh: Mesh; matrices: number[] }>();
   private monShadowMesh: Mesh | null = null;
@@ -452,7 +456,7 @@ export class MuWorldEngine {
   private autoAimAssist = true;
   private autoHuntEnabled = false;
   private autoHuntAttackTimer = 0;
-  private activeEffectBonuses = { atkBonusPct: 0, speedBonusPct: 0, critBonusPct: 0 };
+  private activeEffectBonuses = { atkBonusPct: 0, speedBonusPct: 0, critBonusPct: 0, reflectBonusPct: 0 };
   private userBrightness = 1.08;
   private targetFps: 30 | 45 | 60 = 60;
   private isSoftwareGl = false;
@@ -534,8 +538,8 @@ export class MuWorldEngine {
       new Vector3(this.heroX, 1.38, this.heroZ),
       this.scene,
     );
-    this.camera.lowerBetaLimit = 0.28;
-    this.camera.upperBetaLimit = 1.34;
+    this.camera.lowerBetaLimit = 0.18;
+    this.camera.upperBetaLimit = 1.46;
     this.camera.lowerRadiusLimit = MIN_CAMERA_DISTANCE;
     this.camera.upperRadiusLimit = MAX_CAMERA_DISTANCE;
     this.camera.minZ = 0.25;
@@ -588,30 +592,11 @@ export class MuWorldEngine {
   }
 
   private async preloadAssetsAndStart() {
-    await this.assetManager.preloadCoreModels([
-      'hero_dk.glb',
-      'hero_dw.glb',
-      'hero_elf.glb',
-      'hero_dl.glb',
-      'hero_mg.glb',
-      'bot_soldier.glb',
-      'npc_merchant.glb',
-      'npc_goblin.glb',
-      'weapon_sword.glb',
-      'weapon_staff.glb',
-      'weapon_bow.glb',
-      'weapon_scepter.glb',
-      'shield_dragon.glb',
-      'house_medieval.glb',
-      'tavern_baret.glb',
-      'shop_smithy.glb',
-      'city_wall.glb',
-      'city_gate.glb',
-      'fountain_plaza.glb',
-    ]);
-    if (this.disposed) return;
+    // Rebuild hero and equipment immediately without blocking on unused legacy meshes
     await this.rebuildHeroModel();
     if (this.disposed) return;
+    // Warm up lightweight NPC models in background while loading map
+    void this.assetManager.preloadCoreModels(['npc_merchant.glb', 'npc_goblin.glb']).catch(() => {});
     if (this.loadSeq === 0) {
       await this.loadMap('flaris', true);
     }
@@ -654,13 +639,13 @@ export class MuWorldEngine {
     this.camDragLastY = e.clientY;
     this.camera.alpha -= dx * 0.0085;
     this.camera.beta = clampCameraBeta(this.camera.beta - dy * 0.0065);
-    this.camAutoTurnCooldown = 0.45;
+    this.camAutoTurnCooldown = 2.8;
   };
 
   private handleWindowPointerUp = (e: PointerEvent) => {
     if (e.pointerId === this.camDragPointerId) {
       this.camDragPointerId = null;
-      this.camAutoTurnCooldown = 0.45;
+      this.camAutoTurnCooldown = 2.8;
     }
   };
 
@@ -721,8 +706,13 @@ export class MuWorldEngine {
     if (!enabled) this.autoHuntAttackTimer = 0;
   }
 
-  setActiveEffectBonuses(bonuses: { atkBonusPct: number; speedBonusPct: number; critBonusPct: number }) {
-    this.activeEffectBonuses = bonuses;
+  setActiveEffectBonuses(bonuses: { atkBonusPct: number; speedBonusPct: number; critBonusPct: number; reflectBonusPct?: number }) {
+    this.activeEffectBonuses = {
+      atkBonusPct: bonuses.atkBonusPct,
+      speedBonusPct: bonuses.speedBonusPct,
+      critBonusPct: bonuses.critBonusPct,
+      reflectBonusPct: bonuses.reflectBonusPct ?? 0,
+    };
   }
 
   setBrightness(val: number) {
@@ -943,11 +933,13 @@ export class MuWorldEngine {
         this.scene,
       );
       baseDisc.rotation.x = Math.PI / 2;
-      baseDisc.position.y = -32;
+      baseDisc.position.y = -95;
       const baseMat = new StandardMaterial(`assetFallbackMat_${mapCfg.id}`, this.scene);
-      baseMat.diffuseColor = fogColor.scale(0.38);
-      baseMat.emissiveColor = fogColor.scale(0.22);
+      baseMat.diffuseColor = fogColor.scale(0.18);
+      baseMat.emissiveColor = fogColor.scale(0.12);
       baseMat.specularColor = Color3.Black();
+      baseMat.disableLighting = true;
+      baseMat.backFaceCulling = false;
       baseDisc.material = baseMat;
       baseDisc.isPickable = false;
       baseDisc.parent = this.worldRoot;
@@ -1268,6 +1260,8 @@ export class MuWorldEngine {
     this.monDefIdx = new Uint8Array(count);
     this.monAttackCd = new Float32Array(count);
     this.monPowerCd = new Float32Array(count);
+    this.monFrozenUntil = new Float64Array(count);
+    this.monStrikeAnim = new Float32Array(count);
     this.spatialGrid.clear();
 
     const heroLevel = this.heroStatsSnapshot?.level ?? 1;
@@ -1680,8 +1674,18 @@ export class MuWorldEngine {
     }
 
     const hitLanded = aimResult ? rollAutoAimHit(this.autoAimAssist, AUTO_AIM_PROBABILITY) : true;
+    const freezeMs = skill.vfx === 'ice_arrow' ? 2000 : 0;
 
-    // Ranged projectile skills aimed with 60% auto-aim blend & accuracy roll
+    // DL Fire Scream: blue-flame 5m radial explosion around the hero + forward flame wave
+    if (skill.vfx === 'fire_scream') {
+      const auraNearby = this.queryNearbyMonsterIndices(this.heroX, this.heroZ, 5.2);
+      for (const idx of auraNearby) {
+        if (this.monAlive[idx] !== 1) continue;
+        this.damageMonsterAt(idx, Math.round(damage * 0.85), isCritical, isExcellent, 0x38bdf8, 0);
+      }
+    }
+
+    // Ranged projectile skills aimed with 50% auto-aim blend & accuracy roll
     if (
       skill.vfx === 'bolt' ||
       skill.vfx === 'fire_burst' ||
@@ -1694,7 +1698,6 @@ export class MuWorldEngine {
       const count = skill.vfx === 'triple_shot' ? 3 : 1;
       const missDeflect = hitLanded ? 0 : (Math.random() < 0.5 ? -0.28 : 0.28);
       const baseAngle = (aimResult ? aimResult.blendedAngle : this.heroRotY) + missDeflect;
-      const projColor = Color3.FromHexString(`#${skill.colorHex.toString(16).padStart(6, '0')}`);
 
       for (let i = 0; i < count; i++) {
         const spread = (i - (count - 1) / 2) * 0.22;
@@ -1711,17 +1714,21 @@ export class MuWorldEngine {
 
         const modelPath = isArrow
           ? '/flyff/efectos/mallas/obj_middlearrow_01.glb'
-          : skill.vfx === 'bolt' || skill.vfx === 'raven'
-            ? '/openmu/effects/lightning_type01.glb'
-            : '/openmu/effects/FlameStrike.glb';
+          : skill.vfx === 'fire_scream'
+            ? '/openmu/effects/darkfirescrem01.glb'
+            : skill.vfx === 'bolt' || skill.vfx === 'raven'
+              ? '/openmu/effects/chain_lightning_ani.glb'
+              : '/openmu/effects/FlameStrike.glb';
+
+        const projColor = skill.vfx === 'fire_scream' ? 0x38bdf8 : skill.vfx === 'ice_arrow' ? 0x67e8f9 : skill.colorHex;
 
         void this.assetManager
           .instantiateNormalizedModel(modelPath, `proj_glb_${i}`, projNode, {
-            targetSize: isArrow ? 1.25 : 0.95,
+            targetSize: isArrow ? 1.25 : 1.05,
             zUpOpenMu: !isArrow,
             seatOnGround: false,
-            emissiveHex: skill.colorHex,
-            emissiveIntensity: 0.85,
+            emissiveHex: projColor,
+            emissiveIntensity: 0.9,
           })
           .catch(() => {});
 
@@ -1736,12 +1743,14 @@ export class MuWorldEngine {
           damage: hitLanded ? damage : Math.round(damage * 0.2),
           isCritical,
           isExcellent,
+          freezeMs,
+          colorHex: projColor,
         });
       }
       return;
     }
 
-    // Melee / AoE instant area hit (prioritizes 60% auto-aimed target first!)
+    // Melee / AoE instant area hit (prioritizes 50% auto-aimed target first!)
     const nearby = this.queryNearbyMonsterIndices(this.heroX, this.heroZ, skill.range + 2.4);
     if (aimResult && nearby.includes(aimResult.targetIndex)) {
       const i = nearby.indexOf(aimResult.targetIndex);
@@ -1757,7 +1766,7 @@ export class MuWorldEngine {
       const mz = this.monZ[missIdx];
       this.emitDamageNumber(
         new Vector3(mx, this.getTerrainHeight(mx, mz) + 2.3, mz),
-        'Esquivado (Aim 60%)',
+        'Esquivado',
         '#94a3b8',
         false,
       );
@@ -1768,7 +1777,7 @@ export class MuWorldEngine {
     for (const idx of nearby) {
       if (this.monAlive[idx] !== 1) continue;
       if (!skill.isAoe && hits >= 1) break;
-      this.damageMonsterAt(idx, damage, isCritical, isExcellent, skill.colorHex);
+      this.damageMonsterAt(idx, damage, isCritical, isExcellent, skill.colorHex, freezeMs);
       hits++;
       if (hits >= 14) break;
     }
@@ -1789,6 +1798,73 @@ export class MuWorldEngine {
     this.comboState = { steps: chain, nextIndex: 0, timer: 0.01, bonusStatPower };
   }
 
+  playLevelUpAnimation(isReset = false) {
+    const node = new TransformNode(`lvlUpFx_${Date.now()}`, this.scene);
+    node.parent = this.heroRoot;
+    node.position.set(0, 0.08, 0);
+    const fxColor = isReset ? 0xf59e0b : 0x38bdf8;
+    const fxSize = isReset ? 4.4 : 3.2;
+
+    void this.assetManager
+      .instantiateNormalizedModel('/openmu/effects/Change_Up_Eff.glb', 'lvl_change', node, {
+        targetSize: fxSize,
+        zUpOpenMu: true,
+        seatOnGround: true,
+        emissiveHex: fxColor,
+        emissiveIntensity: 1.0,
+      })
+      .catch(() => {});
+    void this.assetManager
+      .instantiateNormalizedModel('/openmu/effects/MagicCircle01.glb', 'lvl_circle', node, {
+        targetSize: fxSize * 0.9,
+        zUpOpenMu: true,
+        seatOnGround: true,
+        emissiveHex: 0xfde047,
+        emissiveIntensity: 0.9,
+      })
+      .catch(() => {});
+    void this.assetManager
+      .instantiateNormalizedModel('/openmu/effects/ManaRune.glb', 'lvl_rune', node, {
+        targetSize: fxSize * 0.72,
+        zUpOpenMu: true,
+        seatOnGround: true,
+        emissiveHex: fxColor,
+        emissiveIntensity: 0.95,
+      })
+      .catch(() => {});
+
+    this.transientFx.push({
+      node,
+      life: 2.2,
+      maxLife: 2.2,
+      expandRate: 0.38,
+      spinSpeed: isReset ? 4.2 : 2.8,
+      riseSpeed: 0.35,
+    });
+    soundSynth.playLevelUp();
+  }
+
+  sampleMinimapTerrain(
+    spanMeters: number,
+    gridSize = 48,
+    centerX = this.heroX,
+    centerZ = this.heroZ,
+  ): number[] | null {
+    const heights = this.flyff.sampleMinimapTerrain(centerX, centerZ, spanMeters, gridSize);
+    if (heights) return heights;
+    const fallback: number[] = new Array(gridSize * gridSize);
+    const half = spanMeters / 2;
+    const step = spanMeters / Math.max(1, gridSize - 1);
+    for (let row = 0; row < gridSize; row++) {
+      const wz = centerZ + half - row * step;
+      for (let col = 0; col < gridSize; col++) {
+        const wx = centerX - half + col * step;
+        fallback[row * gridSize + col] = this.getTerrainHeight(wx, wz);
+      }
+    }
+    return fallback;
+  }
+
   private spawnSkillVfx(skill: SkillDef) {
     const hy = this.getTerrainHeight(this.heroX, this.heroZ);
     const node = new TransformNode(`vfx_${skill.id}_${Date.now()}`, this.scene);
@@ -1796,32 +1872,60 @@ export class MuWorldEngine {
     node.rotation.y = this.heroRotY;
     node.parent = this.fxRoot;
 
+    // DL Fire Scream: 5m blue-fire AoE circle around the hero
+    if (skill.vfx === 'fire_scream') {
+      void this.assetManager
+        .instantiateNormalizedModel('/openmu/effects/darkfirescrem01.glb', 'dl_blue_fire', node, {
+          targetSize: 5.0,
+          zUpOpenMu: true,
+          seatOnGround: true,
+          emissiveHex: 0x38bdf8,
+          emissiveIntensity: 1.0,
+        })
+        .catch(() => {});
+      this.transientFx.push({
+        node,
+        life: 0.85,
+        maxLife: 0.85,
+        expandRate: 0.35,
+        spinSpeed: 5.4,
+        riseSpeed: 0.14,
+      });
+      return;
+    }
+
     const effectGlb =
       skill.vfx === 'buff'
-        ? '/openmu/effects/shield_up.glb'
-        : skill.vfx === 'lightning_shock' || skill.vfx === 'aqua_beam' || skill.vfx === 'bolt' || skill.vfx === 'evil_spirit'
-          ? '/openmu/effects/lightning_type01.glb'
-          : skill.vfx === 'nova' || skill.vfx === 'hellfire' || skill.vfx === 'meteor' || skill.vfx === 'fire_burst' || skill.vfx === 'fire_scream'
-            ? '/openmu/effects/FlameStrike.glb'
-            : skill.vfx === 'twisting' || skill.vfx === 'blood_storm' || skill.vfx === 'gigantic_storm'
-              ? '/openmu/effects/Change_Up_Eff.glb'
-              : '/openmu/effects/magic_powerup.glb';
+        ? '/openmu/effects/Protect01.glb'
+        : skill.vfx === 'ice_storm' || skill.vfx === 'ice_arrow'
+          ? '/openmu/effects/blizzard.glb'
+          : skill.vfx === 'lightning_shock' || skill.vfx === 'gigantic_storm' || skill.vfx === 'chaotic_ray'
+            ? '/openmu/effects/chain_lightning_ani.glb'
+            : skill.vfx === 'aqua_beam' || skill.vfx === 'bolt' || skill.vfx === 'evil_spirit'
+              ? '/openmu/effects/lightning_type01.glb'
+              : skill.vfx === 'nova' || skill.vfx === 'hellfire' || skill.vfx === 'meteor' || skill.vfx === 'fire_burst'
+                ? '/openmu/effects/Inferno01.glb'
+                : skill.vfx === 'twisting' || skill.vfx === 'blood_storm' || skill.vfx === 'power_slash' || skill.vfx === 'sword_rush'
+                  ? '/openmu/effects/SwordForce.glb'
+                  : skill.vfx === 'death_stab' || skill.vfx === 'rageful_blow'
+                    ? '/openmu/effects/combo.glb'
+                    : '/openmu/effects/magic_powerup.glb';
 
     void this.assetManager
       .instantiateNormalizedModel(effectGlb, `skill_glb_${skill.id}`, node, {
-        targetSize: skill.isAoe ? 3.4 : 2.1,
+        targetSize: skill.isAoe ? 3.8 : 2.3,
         zUpOpenMu: true,
         seatOnGround: true,
         emissiveHex: skill.colorHex,
-        emissiveIntensity: 0.78,
+        emissiveIntensity: 0.82,
       })
       .catch(() => {});
 
     this.transientFx.push({
       node,
-      life: 0.62,
-      maxLife: 0.62,
-      expandRate: skill.isAoe ? 1.8 : 0.95,
+      life: 0.65,
+      maxLife: 0.65,
+      expandRate: skill.isAoe ? 1.5 : 0.95,
       spinSpeed: skill.vfx === 'buff' ? 3.2 : 6.5,
       riseSpeed: skill.vfx === 'buff' ? 0.65 : 0.12,
     });
@@ -1853,16 +1957,48 @@ export class MuWorldEngine {
     });
   }
 
-  private damageMonsterAt(idx: number, damage: number, isCritical: boolean, isExcellent: boolean, colorHex = 0xfbbf24) {
+  private damageMonsterAt(
+    idx: number,
+    damage: number,
+    isCritical: boolean,
+    isExcellent: boolean,
+    colorHex = 0xfbbf24,
+    freezeMs = 0,
+  ) {
     if (this.monAlive[idx] !== 1) return;
     this.monHp[idx] = Math.max(0, this.monHp[idx] - damage);
     this.flyff.impact(this.monX[idx], this.monZ[idx]);
 
-    // Emit floating 3D -> 2D projected damage number + visible Babylon hit spark
     const mx = this.monX[idx];
     const mz = this.monZ[idx];
     const groundY = this.getTerrainHeight(mx, mz);
     const my = groundY + 2.4;
+
+    if (freezeMs > 0) {
+      this.monFrozenUntil[idx] = performance.now() + freezeMs;
+      const iceNode = new TransformNode(`iceFreeze_${Date.now()}`, this.scene);
+      iceNode.position.set(mx, groundY + 0.1, mz);
+      iceNode.parent = this.fxRoot;
+      void this.assetManager
+        .instantiateNormalizedModel('/openmu/effects/Ice01.glb', 'ice_freeze_glb', iceNode, {
+          targetSize: 1.85,
+          zUpOpenMu: true,
+          seatOnGround: true,
+          emissiveHex: 0x67e8f9,
+          emissiveIntensity: 0.92,
+        })
+        .catch(() => {});
+      this.transientFx.push({
+        node: iceNode,
+        life: freezeMs / 1000,
+        maxLife: freezeMs / 1000,
+        expandRate: 0.12,
+        spinSpeed: 1.2,
+        riseSpeed: 0,
+      });
+      this.emitDamageNumber(new Vector3(mx, my + 0.35, mz), '¡CONGELADO 2s!', '#67e8f9', true);
+    }
+
     this.spawnHitImpactVfx(mx, groundY + 1.1, mz, isExcellent ? 0x34d399 : isCritical ? 0xfbbf24 : colorHex, isCritical || isExcellent);
     this.emitDamageNumber(
       new Vector3(mx, my, mz),
@@ -1878,6 +2014,7 @@ export class MuWorldEngine {
 
     if (this.monHp[idx] <= 0) {
       this.monAlive[idx] = 0;
+      this.monFrozenUntil[idx] = 0;
       this.monRespawn[idx] = 10 + Math.random() * 8;
       const xp = this.monXp[idx];
       const zen = this.monZen[idx];
@@ -2114,8 +2251,8 @@ export class MuWorldEngine {
           this.heroRotY = Math.atan2(nx, nz);
           this.heroAction = 'move';
         }
-        // Smooth third-person camera turn following hero heading while running forward/sideways
-        if (this.camDragPointerId === null && this.camAutoTurnCooldown <= 0 && lz > -0.35) {
+        // Smooth third-person camera turn ONLY when classic follow mode (!free3dMode) and idle from drag
+        if (!this.free3dMode && this.camDragPointerId === null && this.camAutoTurnCooldown <= 0 && lz > -0.35) {
           const desiredAlpha = Math.atan2(-Math.cos(this.heroRotY), -Math.sin(this.heroRotY));
           const diff = Math.atan2(
             Math.sin(desiredAlpha - this.camera.alpha),
@@ -2211,11 +2348,14 @@ export class MuWorldEngine {
       });
       this.camPrevEye = { x: camSolve.eyeX, y: camSolve.eyeY, z: camSolve.eyeZ };
       this.camera.radius = camSolve.effectiveRadius;
+      const desiredEyeY = targetY + Math.cos(camSolve.clampedBeta) * camSolve.effectiveRadius;
       const eyeFloor = this.getTerrainHeight(camSolve.eyeX, camSolve.eyeZ) + 0.72;
-      const dyFromTarget = Math.max(camSolve.eyeY, eyeFloor) - targetY;
-      const cosB = Math.max(-0.85, Math.min(0.95, dyFromTarget / Math.max(0.5, camSolve.effectiveRadius)));
-      const safeBeta = Math.acos(cosB);
-      this.camera.beta = Math.min(camSolve.clampedBeta, Math.max(0.28, safeBeta));
+      if (eyeFloor > desiredEyeY + 0.08) {
+        const dyFromTarget = eyeFloor - targetY;
+        const cosB = Math.max(-0.85, Math.min(0.95, dyFromTarget / Math.max(0.5, camSolve.effectiveRadius)));
+        const safeBeta = Math.acos(cosB);
+        this.camera.beta = Math.min(camSolve.clampedBeta, Math.max(0.18, safeBeta));
+      }
 
       // Sync peer location
       if (now - this.lastMoveSyncTime > 120) {
@@ -2238,15 +2378,16 @@ export class MuWorldEngine {
         this.callbacks.onNearbyNpcChange?.(closestNpc);
       }
     } else {
-      // Login / Character select cinematic orbit around Lorencia plaza
-      const orbit = now * 0.00025;
-      this.camera.target.set(this.heroX, this.getTerrainHeight(this.heroX, this.heroZ) + 1.05, this.heroZ);
-      this.camera.alpha = orbit;
-      this.camera.beta = 1.1;
-      this.camera.radius = this.mode === 'character_select' ? 4 : 15;
+      // Login / Character select frontal framing so hero + armor + wings remain 100% visible
+      const titleY = this.getTerrainHeight(this.heroX, this.heroZ);
+      this.heroRoot.position.set(this.heroX, titleY, this.heroZ);
+      this.camera.target.set(this.heroX, titleY + 1.05, this.heroZ);
+      this.camera.alpha = -Math.PI / 2 + Math.sin(now * 0.0004) * 0.35;
+      this.camera.beta = 1.24;
+      this.camera.radius = this.mode === 'character_select' ? 4.4 : 5.6;
     }
 
-    this.flyff.update(dt, this.heroX, this.heroZ, this.heroAction === 'move', this.heroRotY);
+    this.flyff.update(dt, this.heroX, this.heroZ, this.heroAction === 'move', this.heroRotY, this.isInSafeCity());
 
     // Update Friendly Medieval Bots (soldiers, mages, elves, BKs patrolling the capital)
     for (const bot of this.friendlyBots) {
@@ -2281,7 +2422,14 @@ export class MuWorldEngine {
       peer.root.position.z += (peer.targetZ - peer.root.position.z) * 0.18;
       peer.root.position.y = this.getTerrainHeight(peer.root.position.x, peer.root.position.z);
       peer.root.rotation.y = peer.rotY;
-      peer.content.update(dt,peer.root.position.x,peer.root.position.z,peer.action==='move',0);
+      peer.content.update(
+        dt,
+        peer.root.position.x,
+        peer.root.position.z,
+        peer.action === 'move',
+        0,
+        this.isInSafeCity(peer.root.position.x, peer.root.position.z),
+      );
     }
 
     // Update Nearby Monsters (Spatial Grid + ThinInstances + Active Combat)
@@ -2300,7 +2448,7 @@ export class MuWorldEngine {
         if (this.monAlive[idx] !== 1) continue;
         const dist = Math.hypot(this.monX[idx] - p.x, this.monZ[idx] - p.z);
         if (dist < 2.2) {
-          this.damageMonsterAt(idx, p.damage, p.isCritical, p.isExcellent);
+          this.damageMonsterAt(idx, p.damage, p.isCritical, p.isExcellent, p.colorHex ?? 0xfbbf24, p.freezeMs ?? 0);
           hit = true;
           break;
         }
@@ -2533,14 +2681,16 @@ export class MuWorldEngine {
 
       if (this.monAttackCd[idx] > 0) this.monAttackCd[idx] -= dt;
       if (this.monPowerCd[idx] > 0) this.monPowerCd[idx] -= dt;
+      if (this.monStrikeAnim[idx] > 0) this.monStrikeAnim[idx] = Math.max(0, this.monStrikeAnim[idx] - dt);
 
+      const isFrozen = now < (this.monFrozenUntil[idx] ?? 0);
       let rotY = 0;
       let isMovingMon = false;
       const leashR = this.monLeash[idx] || 3.0;
       const campX = this.monCampX[idx];
       const campZ = this.monCampZ[idx];
 
-      if (this.mode === 'playing' && !heroInCity && distToHero < 22 && distToHero > 2.15) {
+      if (!isFrozen && this.mode === 'playing' && !heroInCity && distToHero < 22 && distToHero > 2.15) {
         const moveX = mx + (dx / distToHero) * 3.8 * dt;
         const moveZ = mz + (dz / distToHero) * 3.8 * dt;
         const withinCamp = Math.hypot(moveX - campX, moveZ - campZ) <= leashR;
@@ -2553,13 +2703,13 @@ export class MuWorldEngine {
           isMovingMon = true;
         }
         rotY = Math.atan2(dx, dz);
-      } else {
+      } else if (!isFrozen) {
         rotY = Math.sin(now * 0.001 + idx) * 1.1;
       }
 
       const def = this.currentMap.monsters[this.monDefIdx[idx]];
-      // Monster Special Powers, Melee & Critical Attacks
-      if (this.mode === 'playing' && !heroInCity) {
+      // Monster Special Powers, Melee & Critical Attacks (skipped while frozen)
+      if (!isFrozen && this.mode === 'playing' && !heroInCity) {
         const scaled = scaleMonsterForPlayerLevel(def, heroLv, this.getPlayerAvgAttackEstimate(), mapRange, this.currentMap.id);
         const power = scaled.powers[0];
         if (distToHero <= (power ? Math.max(power.range, 2.7) : 2.7) && this.monAttackCd[idx] <= 0 && this.monPowerCd[idx] <= 0) {
@@ -2567,14 +2717,24 @@ export class MuWorldEngine {
           if (rolled.isPower && power) {
             this.monPowerCd[idx] = power.cooldownSec;
             this.monAttackCd[idx] = 1.4;
+            this.monStrikeAnim[idx] = 0.34;
             this.spawnMonsterPowerFx(mx, mz, power);
             this.flyff.hurt(rolled.damage);
             this.callbacks.onPlayerDamaged(rolled.damage, false);
             this.callbacks.onMonsterPowerHit?.(power, rolled.damage);
+            if ((this.activeEffectBonuses.reflectBonusPct ?? 0) > 0) {
+              const reflected = Math.max(2, Math.round((rolled.damage * (this.activeEffectBonuses.reflectBonusPct ?? 0)) / 100));
+              this.damageMonsterAt(idx, reflected, false, false, 0xf43f5e, 0);
+            }
           } else if (distToHero <= 2.75) {
             this.monAttackCd[idx] = 1.55;
+            this.monStrikeAnim[idx] = 0.28;
             this.flyff.hurt(rolled.damage);
             this.callbacks.onPlayerDamaged(rolled.damage, rolled.isCrit);
+            if ((this.activeEffectBonuses.reflectBonusPct ?? 0) > 0) {
+              const reflected = Math.max(2, Math.round((rolled.damage * (this.activeEffectBonuses.reflectBonusPct ?? 0)) / 100));
+              this.damageMonsterAt(idx, reflected, false, false, 0xf43f5e, 0);
+            }
             if (rolled.isCrit) {
               const hy = this.getTerrainHeight(this.heroX, this.heroZ) + 2.2;
               this.emitDamageNumber(new Vector3(this.heroX, hy, this.heroZ), `CRIT -${rolled.damage}!`, '#ef4444', true);
@@ -2589,11 +2749,13 @@ export class MuWorldEngine {
       if (bucket) {
         const my = this.getTerrainHeight(mx, mz);
         const baseScale = def.isBoss ? 1.45 : 1.05;
-        const phase = now * (isMovingMon ? 0.011 : 0.0032) + idx * 0.7;
-        const bobY = isMovingMon ? Math.abs(Math.sin(phase)) * 0.14 : 0;
-        const breath = isMovingMon ? 0 : Math.sin(phase) * 0.032;
-        const pitch = isMovingMon ? 0.09 : Math.sin(phase) * 0.03;
-        const roll = isMovingMon ? Math.sin(phase) * 0.06 : 0;
+        const strikeT = this.monStrikeAnim[idx] / 0.34;
+        const strikeLunge = strikeT > 0 ? Math.sin(strikeT * Math.PI) : 0;
+        const phase = isFrozen ? idx : now * (isMovingMon ? 0.011 : 0.0032) + idx * 0.7;
+        const bobY = isFrozen ? 0 : isMovingMon ? Math.abs(Math.sin(phase)) * 0.14 : strikeLunge * 0.22;
+        const breath = isFrozen ? 0 : isMovingMon ? 0 : Math.sin(phase) * 0.032;
+        const pitch = isFrozen ? 0 : strikeLunge * 0.38 + (isMovingMon ? 0.09 : Math.sin(phase) * 0.03);
+        const roll = isFrozen ? 0 : isMovingMon ? Math.sin(phase) * 0.06 : 0;
         const mat = Matrix.Compose(
           new Vector3(baseScale * (1 + breath), baseScale * (1 - breath * 0.75), baseScale * (1 + breath)),
           Quaternion.RotationYawPitchRoll(rotY, pitch, roll),

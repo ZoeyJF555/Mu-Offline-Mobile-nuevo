@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Gem, Hammer, Shield, Sparkles, Sword, X } from 'lucide-react';
+import { Gem, Hammer, LayoutGrid, List, Shield, Sparkles, Sword, X } from 'lucide-react';
 import { getItemVisualSpec } from '../data/muWorldData';
 import type { ItemSlot, MuCharacter, MuItem } from '../types/game';
 
@@ -40,6 +40,7 @@ export const MuInventoryModal: React.FC<MuInventoryModalProps> = ({
   forgeMessage,
 }) => {
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
 
   if (!open) return null;
 
@@ -172,36 +173,106 @@ export const MuInventoryModal: React.FC<MuInventoryModalProps> = ({
           {/* Right: 6x4 MU Grid + Selected Item Tooltip */}
           <div className="md:col-span-7 flex flex-col gap-3">
             <div className="bg-[#090c14] border border-slate-800 rounded-lg p-3">
-              <div className="flex items-center justify-between text-[11px] text-slate-400 mb-2">
-                <span>Mochila (IndexedDB · {backpackItems.length} ítems guardados)</span>
-                <span>Toca un cuadro para equipar o forjar</span>
+              <div className="flex items-center justify-between gap-2 text-[11px] text-slate-400 mb-2 flex-wrap">
+                <span>Mochila ({backpackItems.length} ítems guardados)</span>
+                <div className="inline-flex items-center rounded-lg bg-[#111726] border border-slate-700 p-0.5">
+                  <button
+                    type="button"
+                    data-testid="inv-view-grid"
+                    onClick={() => setViewMode('grid')}
+                    className={`min-h-[28px] px-2 rounded text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer ${
+                      viewMode === 'grid' ? 'bg-amber-600 text-slate-950' : 'text-slate-300 hover:text-white'
+                    }`}
+                  >
+                    <LayoutGrid className="w-3.5 h-3.5" />
+                    Cuadrícula
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="inv-view-list"
+                    onClick={() => setViewMode('list')}
+                    className={`min-h-[28px] px-2 rounded text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer ${
+                      viewMode === 'list' ? 'bg-amber-600 text-slate-950' : 'text-slate-300 hover:text-white'
+                    }`}
+                  >
+                    <List className="w-3.5 h-3.5" />
+                    Lista
+                  </button>
+                </div>
               </div>
-              <div className="grid grid-cols-6 gap-1.5">
-                {Array.from({ length: totalSlots }).map((_, idx) => {
-                  const it = backpackItems[idx];
-                  const active = it && selectedItem?.id === it.id;
-                  return (
-                    <button
-                      key={idx}
-                      onClick={() => it && setSelectedId(it.id)}
-                      className={`min-h-[54px] p-1 rounded border flex flex-col items-center justify-center text-center transition-colors ${
-                        it
-                          ? `${getRarityStyle(it)} cursor-pointer`
-                          : 'border-slate-800/80 bg-[#0d111a] cursor-default'
-                      } ${active ? 'ring-2 ring-amber-400' : ''}`}
-                    >
-                      {it && (
-                        <>
-                          {renderSlotIcon(it)}
-                          <span className="text-[9px] font-semibold leading-tight truncate w-full mt-0.5">
-                            +{it.enhanceLevel} {it.name.split(' ')[0]}
-                          </span>
-                        </>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
+
+              {viewMode === 'grid' ? (
+                <div className="grid grid-cols-6 gap-1.5">
+                  {Array.from({ length: totalSlots }).map((_, idx) => {
+                    const it = backpackItems[idx];
+                    const active = it && selectedItem?.id === it.id;
+                    return (
+                      <button
+                        key={idx}
+                        onClick={() => it && setSelectedId(it.id)}
+                        className={`min-h-[54px] p-1 rounded border flex flex-col items-center justify-center text-center transition-colors ${
+                          it
+                            ? `${getRarityStyle(it)} cursor-pointer`
+                            : 'border-slate-800/80 bg-[#0d111a] cursor-default'
+                        } ${active ? 'ring-2 ring-amber-400' : ''}`}
+                      >
+                        {it && (
+                          <>
+                            {renderSlotIcon(it)}
+                            <span className="text-[9px] font-semibold leading-tight truncate w-full mt-0.5">
+                              +{it.enhanceLevel} {it.name.split(' ')[0]}
+                            </span>
+                          </>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : backpackItems.length === 0 ? (
+                <div className="p-6 text-center text-xs text-slate-400">
+                  No hay ítems en la mochila. Toca cualquier pieza equipada en el panel izquierdo para verla o retirarla.
+                </div>
+              ) : (
+                <div className="space-y-1.5 max-h-[240px] overflow-y-auto mu-scroll pr-1">
+                  {backpackItems.map((it) => {
+                    const active = selectedItem?.id === it.id;
+                    return (
+                      <div
+                        key={it.id}
+                        onClick={() => setSelectedId(it.id)}
+                        className={`p-2 rounded-lg border flex items-center justify-between gap-2 cursor-pointer transition-colors ${getRarityStyle(it)} ${
+                          active ? 'ring-2 ring-amber-400' : ''
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          {renderSlotIcon(it, 'w-4 h-4 shrink-0')}
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold truncate">
+                              {it.name} +{it.enhanceLevel}
+                            </div>
+                            <div className="text-[10px] font-mono-tabular text-slate-300 truncate">
+                              {it.minDmg > 0 ? `Daño ${it.minDmg}~${it.maxDmg} · ` : ''}
+                              {it.magicPower > 0 ? `Magia +${it.magicPower} · ` : ''}
+                              {it.defense > 0 ? `Def ${it.defense} · ` : ''}
+                              Estado {it.durability ?? 100}%
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onEquip(it.id);
+                          }}
+                          className="min-h-[32px] px-2.5 rounded bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-[11px] shrink-0 cursor-pointer"
+                        >
+                          Equipar
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             {selectedItem && (
