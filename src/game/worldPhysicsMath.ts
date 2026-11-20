@@ -27,7 +27,7 @@ export interface CameraTerrainResult {
 }
 
 export function clampCameraBeta(beta: number): number {
-  return Math.max(0.28, Math.min(1.34, beta));
+  return Math.max(0.18, Math.min(1.46, beta));
 }
 
 export function exponentialDamp(current: number, target: number, lambda: number, dt: number): number {
@@ -362,3 +362,100 @@ export function computeDualPotionRestore(input: {
     tier,
   };
 }
+
+export type WingEvoTier = 1 | 2 | 3 | 4;
+
+export function getWingEvoTier(wingName?: string | null, explicitTier?: WingEvoTier): WingEvoTier {
+  if (explicitTier === 1 || explicitTier === 2 || explicitTier === 3 || explicitTier === 4) {
+    return explicitTier;
+  }
+  const n = (wingName || '').toLowerCase();
+  if (
+    n.includes('evo 4') ||
+    n.includes('lv4') ||
+    n.includes('eternal') ||
+    n.includes('emperor') ||
+    n.includes('curse') ||
+    n.includes('eterno') ||
+    n.includes('emperador')
+  ) {
+    return 4;
+  }
+  if (
+    n.includes('evo 3') ||
+    n.includes('lv3') ||
+    n.includes('storm') ||
+    n.includes('space time') ||
+    n.includes('illusion') ||
+    n.includes('monarch') ||
+    n.includes('hurricane') ||
+    n.includes('profeta') ||
+    n.includes('prophet') ||
+    n.includes('dragón mu') ||
+    n.includes('dragon mu')
+  ) {
+    return 3;
+  }
+  if (
+    n.includes('evo 2') ||
+    n.includes('lv2') ||
+    n.includes('celestiales') ||
+    n.includes('espíritu élfico') ||
+    n.includes('espiritu elfico') ||
+    n.includes('wings of dragon') ||
+    n.includes('wings of soul') ||
+    n.includes('wings of spirit') ||
+    n.includes('wings of darkness') ||
+    n.includes('cape of lord') ||
+    n.includes('alma oscura')
+  ) {
+    return 2;
+  }
+  return 1;
+}
+
+/**
+ * Escala progresiva de alas:
+ * - Evo 1: tamaño base compacto (0.95m)
+ * - Evo 2: 2x más grande que Evo 1 (1.90m)
+ * - Evo 3: 3x más grande que Evo 2 (5.70m)
+ * - Evo 4: más grande que Evo 3 (6.80m)
+ */
+export function getWingTargetWidth(evoTier: WingEvoTier): number {
+  switch (evoTier) {
+    case 1:
+      return 0.95;
+    case 2:
+      return 1.9;
+    case 3:
+      return 5.7;
+    case 4:
+      return 6.8;
+  }
+}
+
+export function getWingEvoBonusStats(evoTier: WingEvoTier): {
+  absorbPct: number;
+  atkBonusPct: number;
+  speedBonusPct: number;
+  ignoreDefPct: number;
+} {
+  switch (evoTier) {
+    case 1:
+      return { absorbPct: 15, atkBonusPct: 10, speedBonusPct: 10, ignoreDefPct: 2 };
+    case 2:
+      return { absorbPct: 28, atkBonusPct: 22, speedBonusPct: 18, ignoreDefPct: 5 };
+    case 3:
+      return { absorbPct: 40, atkBonusPct: 38, speedBonusPct: 28, ignoreDefPct: 8 };
+    case 4:
+      return { absorbPct: 52, atkBonusPct: 55, speedBonusPct: 38, ignoreDefPct: 12 };
+  }
+}
+
+/**
+ * Fuera de la ciudad segura, el personaje con alas equipadas vuela/aletea +1.0m sobre el terreno.
+ */
+export function computeWingFlightOffsetY(inSafeCity: boolean, hasEquippedWings: boolean): number {
+  return !inSafeCity && hasEquippedWings ? 1.0 : 0.0;
+}
+

@@ -108,6 +108,7 @@ export interface MuItem {
   luck: boolean;
   excellentOpt: string;
   isEquipped: boolean;
+  evoTier?: 1 | 2 | 3 | 4;
   durability?: number; // Missing values in old saves mean 100%.
   originalOwner: string;
   sharedFromSession: string | null;
@@ -194,6 +195,7 @@ export type HudButtonId =
   | 'joystick'
   | 'attack'
   | 'combo'
+  | 'hellp'
   | 'jump'
   | 'skillTray'
   | 'potion'
@@ -513,6 +515,7 @@ export interface ShopItemDef {
   defense: number;
   magicPower: number;
   excellentOpt: string;
+  evoTier?: 1 | 2 | 3 | 4;
   zenCost: number;
   classFilter?: HeroClass[];
   vendorRoles: NpcRole[];

@@ -175,8 +175,8 @@ test('monsters scale dynamically inside map level bands and expose crit damage t
   assert.equal(critHit.damage, atLv99Flaris.damageTable.criticalHit);
 });
 
-test('60% auto-aim locks onto nearest target, blends angle by 60%, and rolls 60% hit accuracy', () => {
-  assert.equal(AUTO_AIM_PROBABILITY, 0.6);
+test('50% auto-aim locks onto nearest target, blends angle by 50%, and rolls 50% hit accuracy', () => {
+  assert.equal(AUTO_AIM_PROBABILITY, 0.5);
   const heroRotY = 0; // Facing +Z
   const res = findAutoAimTarget(
     0,
@@ -190,10 +190,39 @@ test('60% auto-aim locks onto nearest target, blends angle by 60%, and rolls 60%
   );
   assert.ok(res !== null);
   assert.equal(res.targetIndex, 1);
-  assert.equal(res.coveragePct, 60);
-  assert.ok(Math.abs(res.blendedAngle - (Math.PI / 4) * 0.6) < 0.001);
-  assert.equal(rollAutoAimHit(true, 0.6, 0.59), true);
-  assert.equal(rollAutoAimHit(true, 0.6, 0.61), false);
+  assert.equal(res.coveragePct, 50);
+  assert.ok(Math.abs(res.blendedAngle - (Math.PI / 4) * 0.5) < 0.001);
+  assert.equal(rollAutoAimHit(true, 0.5, 0.49), true);
+  assert.equal(rollAutoAimHit(true, 0.5, 0.51), false);
+});
+
+test('Evo 1-4 wings boost hero attack & defense mitigation and stay functional even if durability=0', () => {
+  const base = makeTestChar({ level: 40, str: 300, agi: 200, vit: 200 });
+  const evo1Wing = {
+    ...base.equipment[0],
+    id: 'w-e1',
+    slot: 'wings' as const,
+    category: 'wings' as const,
+    name: 'Alas Pluma de Flaris (Flyff Evo 1)',
+    evoTier: 1 as const,
+    durability: 0,
+  };
+  const evo4Wing = {
+    ...evo1Wing,
+    id: 'w-e4',
+    name: 'Alas Eternas MU (OpenMU Evo 4)',
+    evoTier: 4 as const,
+    durability: 100,
+  };
+  const statsNoWing = computeHeroDamageStats(base, base.equipment);
+  const statsEvo1 = computeHeroDamageStats(base, [...base.equipment, evo1Wing]);
+  const statsEvo4 = computeHeroDamageStats(base, [...base.equipment, evo4Wing]);
+  assert.ok(statsEvo1.avgAttack > statsNoWing.avgAttack);
+  assert.ok(statsEvo4.avgAttack > statsEvo1.avgAttack);
+
+  const dmgNoWing = computeHeroDefenseMitigation(1000, false, base, base.equipment);
+  const dmgEvo4 = computeHeroDefenseMitigation(1000, false, base, [...base.equipment, evo4Wing]);
+  assert.ok(dmgEvo4.finalDamage < dmgNoWing.finalDamage);
 });
 
 test('achievements evaluate kills, level, and duel wins accurately', () => {

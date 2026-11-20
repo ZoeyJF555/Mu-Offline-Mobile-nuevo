@@ -4,6 +4,10 @@ import {
   DEFAULT_CAMERA_DISTANCE,
   DEFAULT_LOOT_FILTERS,
   computeDualPotionRestore,
+  computeWingFlightOffsetY,
+  getWingEvoBonusStats,
+  getWingEvoTier,
+  getWingTargetWidth,
   matchesLootFilter,
   projectToMinimap,
   solveCameraWithTerrain,
@@ -19,12 +23,12 @@ test('third-person default camera is pulled back +2m (5.4m) and never clips bene
     pivotY: 14,
     pivotZ: -1020,
     alpha: Math.PI / 2,
-    beta: 1.52, // Extreme downward tilt attempt
+    beta: 1.62, // Extreme downward tilt attempt
     desiredRadius: DEFAULT_CAMERA_DISTANCE,
     sampleTerrainHeight: (_x, z) => (z < -1022 ? 17.5 : 12.6),
   });
 
-  assert.ok(res.clampedBeta <= 1.34, 'camera pitch must clamp safely');
+  assert.ok(res.clampedBeta <= 1.46, 'camera pitch must clamp safely');
   const eyeGround = res.eyeZ < -1022 ? 17.5 : 12.6;
   assert.ok(res.eyeY >= eyeGround + 0.65, `eyeY (${res.eyeY}) must remain above terrain (${eyeGround})`);
 });
@@ -116,4 +120,22 @@ test('every healing potion tier restores BOTH HP and MP simultaneously', () => {
   });
   assert.equal(suprema.nextHp, 1200);
   assert.equal(suprema.nextMp, 900);
+});
+
+test('wings follow exact Evo 1->2 (2x), Evo 2->3 (3x), Evo 4 (>Evo 3) scale & +1m outside-city flight', () => {
+  const w1 = getWingTargetWidth(getWingEvoTier('Alas Pluma de Flaris (Flyff Evo 1)'));
+  const w2 = getWingTargetWidth(getWingEvoTier('Alas Celestiales (Flyff Evo 2)'));
+  const w3 = getWingTargetWidth(getWingEvoTier('Wing of Storm +13'));
+  const w4 = getWingTargetWidth(getWingEvoTier('Alas Eternas MU (OpenMU Evo 4)'));
+
+  assert.equal(w2, w1 * 2);
+  assert.ok(Math.abs(w3 - w2 * 3) < 0.001);
+  assert.ok(w4 > w3);
+
+  assert.ok(getWingEvoBonusStats(4).absorbPct > getWingEvoBonusStats(3).absorbPct);
+  assert.ok(getWingEvoBonusStats(3).atkBonusPct > getWingEvoBonusStats(2).atkBonusPct);
+
+  assert.equal(computeWingFlightOffsetY(true, true), 0);
+  assert.equal(computeWingFlightOffsetY(false, false), 0);
+  assert.equal(computeWingFlightOffsetY(false, true), 1.0);
 });

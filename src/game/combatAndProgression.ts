@@ -1,4 +1,5 @@
 import { MU_CLASSES, MU_SKILLS } from '../data/muSkillsAndClasses';
+import { getWingEvoBonusStats, getWingEvoTier } from './worldPhysicsMath';
 import type {
   AchievementDef,
   ActiveEffect,
@@ -695,24 +696,32 @@ export function computeHeroDamageStats(
   critChancePct: number;
   avgAttack: number;
 } {
-  const usable = equippedItems.filter((i) => i.isEquipped && (i.durability ?? 100) > 0);
+  const usable = equippedItems.filter((i) => i.isEquipped && (i.slot === 'wings' || (i.durability ?? 100) > 0));
   const gearMin = usable.reduce((s, i) => s + i.minDmg + i.enhanceLevel * 2, 0);
   const gearMax = usable.reduce((s, i) => s + i.maxDmg + i.enhanceLevel * 3, 0);
   const gearMagic = usable.reduce((s, i) => s + i.magicPower + i.enhanceLevel * 3, 0);
   const gearDef = usable.reduce((s, i) => s + i.defense + i.enhanceLevel * 2, 0);
 
+  const equippedWing = usable.find((i) => i.slot === 'wings');
+  const wingBonus = equippedWing
+    ? getWingEvoBonusStats(getWingEvoTier(equippedWing.name, equippedWing.evoTier))
+    : null;
+  const wingAtkMult = wingBonus ? 1 + wingBonus.atkBonusPct / 100 : 1;
+
   const profile = getVariantProfile(character.classType, character.sex ?? 'male');
   const resetMult = 1 + (character.resets || 0) * 0.14;
-  // Todos los 5 atributos (hasta 65,000 c/u) escalan el combate del personaje
+  // Todos los 5 atributos (hasta 65,000 c/u) escalan el combate del personaje + bono de Alas Evo 1-4
   const physicalPower = Math.round(
     ((character.str * 1.15 + character.agi * 0.42 + character.vit * 0.18 + character.ene * 0.12 + character.cmd * 0.65) * 0.9 +
       (gearMin + gearMax) * 0.65) *
-      resetMult,
+      resetMult *
+      wingAtkMult,
   );
   const magicPower = Math.round(
     ((character.ene * 1.2 + character.cmd * 0.45 + character.agi * 0.28 + character.vit * 0.14 + character.str * 0.15) * 0.9 +
       gearMagic) *
-      resetMult,
+      resetMult *
+      wingAtkMult,
   );
   const defense = Math.round(
     (character.agi * 0.48 + character.vit * 0.52 + character.str * 0.16 + character.ene * 0.12 + character.cmd * 0.25 + gearDef) *
@@ -731,9 +740,14 @@ export function computeHeroDefenseMitigation(
   equippedItems: MuItem[],
 ): { finalDamage: number; mitigatedPct: number } {
   const { defense } = computeHeroDamageStats(character, equippedItems);
+  const equippedWing = equippedItems.find((i) => i.isEquipped && i.slot === 'wings');
+  const wingAbsorbRatio = equippedWing
+    ? getWingEvoBonusStats(getWingEvoTier(equippedWing.name, equippedWing.evoTier)).absorbPct / 100
+    : 0;
   // Sin tope mínimo artificial: si el monstruo pega más que la defensa, el héroe recibe daño letal real
   const effectiveDefense = isCrit ? defense * 0.32 : defense * 0.56;
-  const reduced = Math.max(1, Math.round(rawDamage - effectiveDefense));
+  const afterDef = Math.max(1, rawDamage - effectiveDefense);
+  const reduced = Math.max(1, Math.round(afterDef * (1 - wingAbsorbRatio)));
   const ratioFloor = Math.max(1, Math.round(rawDamage * (isCrit ? 0.25 : 0.12)));
   const finalDamage = Math.max(ratioFloor, reduced);
   const mitigatedPct = Math.max(0, Math.min(92, Math.round((1 - finalDamage / Math.max(1, rawDamage)) * 100)));
@@ -839,9 +853,9 @@ export function rollMonsterAttack(
   };
 }
 
-// --- 60% Auto-Aim System ---
+// --- 50% Auto-Aim System (Por defecto activo al 50%) ---
 
-export const AUTO_AIM_PROBABILITY = 0.6;
+export const AUTO_AIM_PROBABILITY = 0.5;
 
 export interface AutoAimCandidate {
   index: number;
