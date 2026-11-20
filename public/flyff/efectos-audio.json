@@ -61,8 +61,23 @@
     "soul": "audio/soul.wav",
     "rage": "audio/rage.wav",
     "wind": "audio/wind.wav",
-    "firebird": "audio/firebird.wav"
+    "firebird": "audio/firebird.wav",
+    "pickup": "audio/pickup.wav",
+    "drop": "audio/drop.wav",
+    "drop_ding": "audio/drop_ding.wav",
+    "potion": "audio/potion.wav",
+    "levelup": "audio/levelup.wav",
+    "equip_wing": "audio/equip_wing.wav",
+    "equip_armor": "audio/equip_armor.wav",
+    "mu_sword_swing": "../openmu/audio/eSwingLightSword.wav",
+    "mu_blow": "../openmu/audio/eBlow.wav",
+    "mu_meteorite": "../openmu/audio/eMeteorite.wav",
+    "mu_piercing": "../openmu/audio/ePiercing.wav",
+    "mu_swell_life": "../openmu/audio/eSwellLife.wav",
+    "mu_thunder": "../openmu/audio/eThunder.wav",
+    "mu_knight_skill2": "../openmu/audio/sKnightSkill2.wav",
+    "mu_knight_skill3": "../openmu/audio/sKnightSkill3.wav"
   },
   "missing": [],
-  "rights": "Flyff original reference resources; redistribution permission not verified"
+  "rights": "Flyff & OpenMU original reference resources; see licencias/"
 }

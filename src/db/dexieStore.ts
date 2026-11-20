@@ -29,7 +29,15 @@ import {
   POINTS_PER_LEVEL,
   getSkillRank,
   getSkillUpgradeCost,
+  getXpRequiredForLevel,
 } from '../game/combatAndProgression';
+import {
+  DEFAULT_CAMERA_DISTANCE,
+  DEFAULT_LOOT_FILTERS,
+  DEFAULT_POTION_CONFIG,
+  type LootFilterSettings,
+  type PotionConfig,
+} from '../game/worldPhysicsMath';
 import type { MapId } from '../types/game';
 
 interface KvSettingRow {
@@ -151,7 +159,7 @@ async function seedCharacterInternal(
     sex,
     level: 1,
     xp: 0,
-    xpToNext: 120,
+    xpToNext: getXpRequiredForLevel(1),
     unspentPoints: POINTS_PER_LEVEL,
     skillPoints: 2,
     skillLevels: {},
@@ -172,6 +180,7 @@ async function seedCharacterInternal(
     life: 2,
     creation: 1,
     harmony: 1,
+    talisman: 0,
     hp: cls.baseStats.maxHp,
     maxHp: cls.baseStats.maxHp,
     mp: cls.baseStats.maxMp,
@@ -203,10 +212,15 @@ function stripBuggedStarterWings(items?: MuItem[]): MuItem[] {
 
 export function normalizeCharacterRecord(c: MuCharacter): MuCharacter {
   const safeMap: MapId = VALID_MAP_IDS.has(c.currentMapId as MapId) ? (c.currentMapId as MapId) : 'flaris';
+  const expectedXp = c.level >= MAX_HERO_LEVEL ? Math.max(1, c.xpToNext || 1) : getXpRequiredForLevel(c.level);
+  const safeXp = c.level >= MAX_HERO_LEVEL ? 0 : Math.min(c.xp, Math.max(0, expectedXp - 1));
   return {
     ...c,
     currentMapId: safeMap,
     sex: c.sex ?? 'male',
+    xp: safeXp,
+    xpToNext: expectedXp,
+    talisman: c.talisman ?? 0,
     skillPoints: c.skillPoints ?? Math.max(2, c.level),
     skillLevels: c.skillLevels ?? {},
     specialization: c.specialization ?? 'balanced',
@@ -533,7 +547,7 @@ export async function performHeroReset(
     ...char,
     level: 1,
     xp: 0,
-    xpToNext: 120,
+    xpToNext: getXpRequiredForLevel(1),
     resets: nextResets,
     unspentPoints: (char.unspentPoints ?? 0) + resetBonusPoints,
     hp: char.maxHp,
@@ -879,8 +893,9 @@ const DEFAULT_SETTINGS: GameSettings = {
   musicEnabled: true,
   musicVolume: 0.45,
   free3dCamera: false,
-  cameraDistance: 3.4,
+  cameraDistance: DEFAULT_CAMERA_DISTANCE,
   cameraDistanceMigratedV2: true,
+  cameraDistanceMigratedV3: true,
   autoAimAssist: true,
   targetFps: 60,
 };
@@ -891,12 +906,16 @@ export async function loadGameSettings(): Promise<GameSettings> {
   if (!row) return { ...DEFAULT_SETTINGS };
   try {
     const parsed = JSON.parse(row.valueJson) as Partial<GameSettings>;
-    if (!parsed.cameraDistanceMigratedV2) {
+    if (!parsed.cameraDistanceMigratedV3) {
       const migrated: GameSettings = {
         ...DEFAULT_SETTINGS,
         ...parsed,
-        cameraDistance: 3.4,
+        cameraDistance:
+          typeof parsed.cameraDistance === 'number' && parsed.cameraDistance > 4.4
+            ? parsed.cameraDistance
+            : DEFAULT_CAMERA_DISTANCE,
         cameraDistanceMigratedV2: true,
+        cameraDistanceMigratedV3: true,
       };
       await db.KvSettings.put({ key: 'game_settings', valueJson: JSON.stringify(migrated) });
       return migrated;
@@ -911,8 +930,44 @@ export async function saveGameSettings(settings: GameSettings): Promise<void> {
   await initDexie();
   await db.KvSettings.put({
     key: 'game_settings',
-    valueJson: JSON.stringify({ ...settings, cameraDistanceMigratedV2: true }),
+    valueJson: JSON.stringify({
+      ...settings,
+      cameraDistanceMigratedV2: true,
+      cameraDistanceMigratedV3: true,
+    }),
   });
+}
+
+export async function loadLootFilters(): Promise<LootFilterSettings> {
+  await initDexie();
+  const row = await db.KvSettings.get('loot_filters');
+  if (!row) return { ...DEFAULT_LOOT_FILTERS };
+  try {
+    return { ...DEFAULT_LOOT_FILTERS, ...JSON.parse(row.valueJson) };
+  } catch {
+    return { ...DEFAULT_LOOT_FILTERS };
+  }
+}
+
+export async function saveLootFilters(filters: LootFilterSettings): Promise<void> {
+  await initDexie();
+  await db.KvSettings.put({ key: 'loot_filters', valueJson: JSON.stringify(filters) });
+}
+
+export async function loadPotionConfig(): Promise<PotionConfig> {
+  await initDexie();
+  const row = await db.KvSettings.get('potion_config');
+  if (!row) return { ...DEFAULT_POTION_CONFIG };
+  try {
+    return { ...DEFAULT_POTION_CONFIG, ...JSON.parse(row.valueJson) };
+  } catch {
+    return { ...DEFAULT_POTION_CONFIG };
+  }
+}
+
+export async function savePotionConfig(cfg: PotionConfig): Promise<void> {
+  await initDexie();
+  await db.KvSettings.put({ key: 'potion_config', valueJson: JSON.stringify(cfg) });
 }
 
 export async function loadButtonLayouts(): Promise<Record<HudButtonId, ButtonLayoutItem>> {

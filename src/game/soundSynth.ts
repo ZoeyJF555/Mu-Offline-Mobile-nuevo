@@ -64,6 +64,35 @@ class MuSoundSynth {
 
   private bedSource: AudioBufferSourceNode | null = null;
   private bedGain: GainNode | null = null;
+  private wavCache = new Map<string, Promise<AudioBuffer | null>>();
+
+  private playWav(relativeUrl: string, vol = 0.5): boolean {
+    const ctx = this.ensureContext();
+    if (!ctx || typeof fetch !== 'function') return false;
+    const base = typeof window !== 'undefined' ? new URL(relativeUrl.replace(/^\//, ''), `${window.location.origin}/`).href : relativeUrl;
+    let p = this.wavCache.get(base);
+    if (!p) {
+      p = fetch(base)
+        .then((r) => (r.ok ? r.arrayBuffer() : null))
+        .then((ab) => (ab && this.ctx ? this.ctx.decodeAudioData(ab) : null))
+        .catch(() => null);
+      this.wavCache.set(base, p);
+    }
+    void p.then((buf) => {
+      if (!buf || this.muted || !this.ctx || this.ctx.state !== 'running') return;
+      const src = this.ctx.createBufferSource();
+      const gain = this.ctx.createGain();
+      src.buffer = buf;
+      gain.gain.value = Math.max(0.01, Math.min(1, vol * this.volume));
+      src.connect(gain).connect(this.ctx.destination);
+      src.onended = () => {
+        src.disconnect();
+        gain.disconnect();
+      };
+      src.start();
+    });
+    return true;
+  }
 
   private ensureContext(allowWhenSfxMuted = false): AudioContext | null {
     if (!allowWhenSfxMuted && (this.muted || this.volume <= 0.01)) return null;
@@ -234,14 +263,25 @@ class MuSoundSynth {
 
   playSkillSfx(vfx: SkillVfxKind) {
     if (vfx === 'slash' || vfx === 'twisting' || vfx === 'death_stab' || vfx === 'power_slash') {
+      this.playWav('/openmu/audio/eSwingLightSword.wav', 0.42);
       this.playSlash(vfx === 'twisting');
     } else if (vfx === 'buff') {
+      this.playWav('/openmu/audio/eSwellLife.wav', 0.44);
       this.playTradeSync();
     } else if (vfx === 'arrow' || vfx === 'triple_shot' || vfx === 'ice_arrow') {
+      this.playWav('/openmu/audio/ePiercing.wav', 0.42);
       this.playBowShot();
     } else if (vfx === 'nova' || vfx === 'hellfire' || vfx === 'gigantic_storm' || vfx === 'fire_scream') {
+      this.playWav('/openmu/audio/eMeteorite.wav', 0.45);
       this.playHeavyImpact();
+    } else if (vfx === 'lightning_shock') {
+      this.playWav('/openmu/audio/eThunder.wav', 0.45);
+      this.playMagic();
+    } else if (vfx === 'rageful_blow' || vfx === 'blood_storm') {
+      this.playWav('/openmu/audio/eBlow.wav', 0.46);
+      this.playSlash(true);
     } else {
+      this.playWav('/openmu/audio/sKnightSkill2.wav', 0.4);
       this.playMagic();
     }
   }
@@ -346,7 +386,37 @@ class MuSoundSynth {
     });
   }
 
+  playPickup(isJewel = false) {
+    this.playWav('/flyff/audio/pickup.wav', isJewel ? 0.62 : 0.52);
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const notes = isJewel ? [987.77, 1318.51, 1760] : [784, 1046.5];
+    notes.forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, now + i * 0.045);
+      gain.gain.setValueAtTime(this.g(0.11), now + i * 0.045);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.045 + 0.16);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(now + i * 0.045);
+      osc.stop(now + i * 0.045 + 0.17);
+    });
+  }
+
+  playPotion() {
+    this.playWav('/flyff/audio/potion.wav', 0.56);
+    this.playTradeSync();
+  }
+
+  playEquip(isWing = false) {
+    this.playWav(isWing ? '/flyff/audio/equip_wing.wav' : '/flyff/audio/equip_armor.wav', 0.58);
+    this.playForge(true);
+  }
+
   playJewelDrop() {
+    this.playWav('/flyff/audio/drop_ding.wav', 0.56);
     const ctx = this.ensureContext();
     if (!ctx) return;
     const now = ctx.currentTime;
@@ -380,6 +450,7 @@ class MuSoundSynth {
   }
 
   playLevelUp() {
+    this.playWav('/flyff/audio/levelup.wav', 0.62);
     const ctx = this.ensureContext();
     if (!ctx) return;
     const now = ctx.currentTime;

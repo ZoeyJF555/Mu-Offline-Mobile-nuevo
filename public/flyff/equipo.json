@@ -21,6 +21,28 @@
     "Escudo Legendario": "equipo/item_armshistar.glb",
     "Escudo de Hierro Oscuro": "equipo/item_armshitower.glb"
   },
+  "wings": {
+    "Alas Pluma de Flaris (Flyff)": "equipo/wing_flyff_feather.glb",
+    "Alas Celestiales (Flyff)": "equipo/wing_flyff_angel.glb",
+    "Alas del Profeta de Madrigal (Flyff)": "equipo/wing_flyff_prophet.glb",
+    "Alas de Ángel MU (OpenMU)": "../openmu/models/wing_mu_angel.glb",
+    "Alas de Espíritu Élfico (MU)": "../openmu/models/wing_mu_elf.glb",
+    "Alas de Dragón MU (OpenMU)": "../openmu/models/wing_mu_dragon.glb",
+    "Wings of Dragon (Lv2)": "../openmu/models/wing_mu_dragon.glb",
+    "Wings of Dragon +9": "../openmu/models/wing_mu_dragon.glb",
+    "Wings of Soul (Lv2)": "../openmu/models/wing_mu_angel.glb",
+    "Wings of Soul +9": "../openmu/models/wing_mu_angel.glb",
+    "Wings of Spirit (Lv2)": "../openmu/models/wing_mu_elf.glb",
+    "Wings of Spirit +9": "../openmu/models/wing_mu_elf.glb",
+    "Cape of Lord (Lv2)": "equipo/wing_flyff_prophet.glb",
+    "Cape of Lord +9": "equipo/wing_flyff_prophet.glb",
+    "Wings of Darkness +9": "../openmu/models/wing_mu_dragon.glb",
+    "Wing of Storm +13": "../openmu/models/wing_mu_dragon.glb",
+    "Wing of Space Time +13": "../openmu/models/wing_mu_angel.glb",
+    "Wing of Illusion +13": "../openmu/models/wing_mu_elf.glb",
+    "Mantle of Monarch +13": "equipo/wing_flyff_prophet.glb",
+    "Wings of Hurricane +13": "equipo/wing_flyff_angel.glb"
+  },
   "sets": {
     "Dragon": {
       "male": "equipo/Mer01_male.glb",

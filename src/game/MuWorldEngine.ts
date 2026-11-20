@@ -25,6 +25,7 @@ import type {
   GroundTheme,
   HeroClass,
   MapId,
+  MinimapEntitySnapshot,
   MonsterArchetype,
   MonsterPowerDef,
   MuCharacter,
@@ -47,6 +48,16 @@ import {
   rollMonsterAttack,
   scaleMonsterForPlayerLevel,
 } from './combatAndProgression';
+import {
+  DEFAULT_CAMERA_DISTANCE,
+  MAX_CAMERA_DISTANCE,
+  MIN_CAMERA_DISTANCE,
+  clampCameraBeta,
+  exponentialDamp,
+  matchesLootFilter,
+  solveCameraWithTerrain,
+  type LootFilterSettings,
+} from './worldPhysicsMath';
 import { FlyffContent } from './FlyffContent';
 import { getStarterItemsForMuClass } from '../data/muSkillsAndClasses';
 import { MuAssetManager } from './MuAssetManager';
@@ -64,7 +75,7 @@ export interface TargetMonsterInfo {
 
 export interface LootDrop {
   id: string;
-  kind: 'zen' | 'bless' | 'soul' | 'chaos' | 'life';
+  kind: 'zen' | 'bless' | 'soul' | 'chaos' | 'life' | 'creation' | 'talisman';
   label: string;
   amount: number;
   x: number;
@@ -92,7 +103,7 @@ interface FriendlyBot {
 }
 
 interface ProjectileFx {
-  mesh: Mesh;
+  mesh: TransformNode;
   x: number;
   y: number;
   z: number;
@@ -139,6 +150,8 @@ export interface EngineCallbacks {
   onNearbyNpcChange?: (npc: NpcDef | null) => void;
   onOpenNpc?: (npc: NpcDef) => void;
   onFpsUpdate?: (fps: number) => void;
+  onMinimapUpdate?: (snapshot: MinimapEntitySnapshot) => void;
+  onAutoHuntAttack?: () => void;
   onWorldTelemetry?: (info: {
     x: number;
     z: number;
@@ -386,7 +399,7 @@ export class MuWorldEngine {
   private lootDrops: LootDrop[] = [];
   private projectiles: ProjectileFx[] = [];
   private transientFx: TransientFx[] = [];
-  private remotePeers = new Map<string, { root: TransformNode; content: FlyffContent; targetX: number; targetZ: number; rotY: number; action: RoomPeer['action'] }>();
+  private remotePeers = new Map<string, { name: string; root: TransformNode; content: FlyffContent; targetX: number; targetZ: number; rotY: number; action: RoomPeer['action'] }>();
   private loadingMap = false;
 
   // --- Spatial Simulation with 18x15 3m Camps + Dispersed Monsters ---
@@ -414,11 +427,11 @@ export class MuWorldEngine {
   private monShadowMesh: Mesh | null = null;
   private monShadowMatrices: number[] = [];
   private activeMonsterSlots: ActiveMonsterSlot[] = [];
-  private autoAimRing: Mesh | null = null;
+  private autoAimRing: TransformNode | null = null;
   private skyDome: Mesh | null = null;
   private lockedTargetIdx = -1;
   private lastScaledHeroLevel = 1;
-  private enemyProjectiles: Array<{ mesh: Mesh; x: number; y: number; z: number; vx: number; vz: number; life: number }> = [];
+  private enemyProjectiles: Array<{ mesh: TransformNode; x: number; y: number; z: number; vx: number; vz: number; life: number }> = [];
 
   // Weather
   private weatherMesh: Mesh | null = null;
@@ -430,12 +443,15 @@ export class MuWorldEngine {
   private keys = new Set<string>();
   private joystickVec = { x: 0, y: 0 };
   private free3dMode = true;
-  private cameraDistance = 3.4;
+  private cameraDistance = DEFAULT_CAMERA_DISTANCE;
+  private camPrevEye: { x: number; y: number; z: number } | null = null;
   private camDragPointerId: number | null = null;
   private camDragLastX = 0;
   private camDragLastY = 0;
   private camAutoTurnCooldown = 0;
   private autoAimAssist = true;
+  private autoHuntEnabled = false;
+  private autoHuntAttackTimer = 0;
   private activeEffectBonuses = { atkBonusPct: 0, speedBonusPct: 0, critBonusPct: 0 };
   private userBrightness = 1.08;
   private targetFps: 30 | 45 | 60 = 60;
@@ -513,15 +529,16 @@ export class MuWorldEngine {
     this.camera = new ArcRotateCamera(
       'muCamera',
       -Math.PI / 2,
-      1.22,
+      1.16,
       this.cameraDistance,
-      new Vector3(this.heroX, 1.32, this.heroZ),
+      new Vector3(this.heroX, 1.38, this.heroZ),
       this.scene,
     );
-    this.camera.lowerBetaLimit = 0.32;
-    this.camera.upperBetaLimit = 1.48;
-    this.camera.lowerRadiusLimit = 2.0;
-    this.camera.upperRadiusLimit = 20;
+    this.camera.lowerBetaLimit = 0.28;
+    this.camera.upperBetaLimit = 1.34;
+    this.camera.lowerRadiusLimit = MIN_CAMERA_DISTANCE;
+    this.camera.upperRadiusLimit = MAX_CAMERA_DISTANCE;
+    this.camera.minZ = 0.25;
     this.camera.wheelPrecision = 24;
     this.canvas.style.touchAction = 'none';
 
@@ -636,7 +653,7 @@ export class MuWorldEngine {
     this.camDragLastX = e.clientX;
     this.camDragLastY = e.clientY;
     this.camera.alpha -= dx * 0.0085;
-    this.camera.beta = Math.max(0.32, Math.min(1.48, this.camera.beta - dy * 0.0065));
+    this.camera.beta = clampCameraBeta(this.camera.beta - dy * 0.0065);
     this.camAutoTurnCooldown = 0.45;
   };
 
@@ -649,16 +666,19 @@ export class MuWorldEngine {
 
   private handleCanvasWheel = (e: WheelEvent) => {
     if (this.mode !== 'playing') return;
-    this.cameraDistance = Math.max(2.2, Math.min(14, this.cameraDistance + Math.sign(e.deltaY) * 0.6));
+    this.cameraDistance = Math.max(
+      MIN_CAMERA_DISTANCE,
+      Math.min(MAX_CAMERA_DISTANCE, this.cameraDistance + Math.sign(e.deltaY) * 0.6),
+    );
   };
 
   private handleKeyDown = (e: KeyboardEvent) => {
     const target = e.target as HTMLElement | null;
     if (target?.isContentEditable || ['INPUT','TEXTAREA','SELECT'].includes(target?.tagName ?? '')) return;
     this.keys.add(e.code);
-    if ((e.code === 'KeyJ' || e.code === 'Space') && this.mode === 'playing') { e.preventDefault(); this.jump(); }
+    if (e.code === 'KeyJ' && this.mode === 'playing') { e.preventDefault(); this.jump(); }
     if (e.code === 'KeyE' && this.mode === 'playing') {
-      this.pickupNearestLoot();
+      this.pickupNearestLoot(true);
     }
   };
 
@@ -674,10 +694,13 @@ export class MuWorldEngine {
     this.mode = mode;
     if (mode !== 'playing') {
       this.camDragPointerId = null;
+      this.camPrevEye = null;
     } else {
       this.camera.radius = this.cameraDistance;
+      this.camPrevEye = null;
       const hy = this.getTerrainHeight(this.heroX, this.heroZ);
-      this.camera.target.set(this.heroX, hy + 1.32, this.heroZ);
+      this.flyff.resetVerticalPosition(hy);
+      this.camera.target.set(this.heroX, hy + 1.38, this.heroZ);
     }
   }
 
@@ -686,11 +709,16 @@ export class MuWorldEngine {
   }
 
   setCameraDistance(dist: number) {
-    this.cameraDistance = Math.max(2.2, Math.min(12.0, dist));
+    this.cameraDistance = Math.max(MIN_CAMERA_DISTANCE, Math.min(MAX_CAMERA_DISTANCE, dist));
   }
 
   setAutoAimAssist(enabled: boolean) {
     this.autoAimAssist = enabled;
+  }
+
+  setAutoHuntEnabled(enabled: boolean) {
+    this.autoHuntEnabled = enabled;
+    if (!enabled) this.autoHuntAttackTimer = 0;
   }
 
   setActiveEffectBonuses(bonuses: { atkBonusPct: number; speedBonusPct: number; critBonusPct: number }) {
@@ -705,7 +733,7 @@ export class MuWorldEngine {
 
   setTargetFps(fps: 30 | 45 | 60) {
     this.targetFps = fps;
-    this.engine.setHardwareScalingLevel(this.isSoftwareGl ? 1.35 : fps === 30 ? 1.35 : fps === 45 ? 1.15 : 1.0);
+    this.engine.setHardwareScalingLevel(this.isSoftwareGl ? 1.8 : fps === 30 ? 1.35 : fps === 45 ? 1.15 : 1.0);
   }
 
   setJoystickVector(x: number, y: number) {
@@ -741,7 +769,7 @@ export class MuWorldEngine {
     for (let i = 0; i < this.totalMonsters; i++) {
       const def = defs[this.monDefIdx[i]];
       if (!def) continue;
-      const scaled = scaleMonsterForPlayerLevel(def, heroLevel, avgAtk, mapRange);
+      const scaled = scaleMonsterForPlayerLevel(def, heroLevel, avgAtk, mapRange, this.currentMap.id);
       const hpRatio = this.monMaxHp[i] > 0 ? this.monHp[i] / this.monMaxHp[i] : 1;
       this.monMaxHp[i] = scaled.maxHp;
       this.monHp[i] = Math.max(1, Math.round(scaled.maxHp * hpRatio));
@@ -789,8 +817,10 @@ export class MuWorldEngine {
     this.heroRotY = Math.random() * Math.PI * 2;
     this.lockedTargetIdx = -1;
     const hy = this.getTerrainHeight(rx, rz);
+    this.flyff.resetVerticalPosition(hy);
+    this.camPrevEye = null;
     this.heroRoot.position.set(rx, hy, rz);
-    this.camera.target.set(rx, hy + 1.32, rz);
+    this.camera.target.set(rx, hy + 1.38, rz);
     this.callbacks.onTargetMonsterChange?.(null);
     return this.getHeroPose();
   }
@@ -906,17 +936,18 @@ export class MuWorldEngine {
     this.setBrightness(this.userBrightness);
 
     if (mapCfg.assetWorld && mapCfg.spawn) {
-      // Subtle textured terrain disc underneath so distant edges beyond streamed tiles never show black void
+      // Deep solid fog-toned abyss disc well below terrain so looking down or near hills NEVER exposes grid bleed-through
       const baseDisc = MeshBuilder.CreateDisc(
         `assetFallbackGround_${mapCfg.id}`,
-        { radius: mapCfg.sizeMeters * 0.72, tessellation: 48 },
+        { radius: mapCfg.sizeMeters * 0.85, tessellation: 48 },
         this.scene,
       );
       baseDisc.rotation.x = Math.PI / 2;
-      baseDisc.position.y = -0.35;
+      baseDisc.position.y = -32;
       const baseMat = new StandardMaterial(`assetFallbackMat_${mapCfg.id}`, this.scene);
-      baseMat.diffuseTexture = createGroundCanvasTexture(this.scene, mapCfg.groundTheme, mapCfg.groundTintHex, 36);
-      baseMat.specularColor = new Color3(0.05, 0.05, 0.05);
+      baseMat.diffuseColor = fogColor.scale(0.38);
+      baseMat.emissiveColor = fogColor.scale(0.22);
+      baseMat.specularColor = Color3.Black();
       baseDisc.material = baseMat;
       baseDisc.isPickable = false;
       baseDisc.parent = this.worldRoot;
@@ -930,9 +961,12 @@ export class MuWorldEngine {
         this.heroZ = targetZ;
         this.heroRotY = initialPose && typeof initialPose.rotY === 'number' ? initialPose.rotY : 0;
         const spawnY = this.getTerrainHeight(this.heroX, this.heroZ);
+        this.flyff.resetVerticalPosition(spawnY);
+        this.camPrevEye = null;
         this.heroRoot.position.set(this.heroX, spawnY, this.heroZ);
         this.camera.alpha = -Math.PI / 2;
-        this.camera.target.set(this.heroX, spawnY + 1.32, this.heroZ);
+        this.camera.beta = 1.16;
+        this.camera.target.set(this.heroX, spawnY + 1.38, this.heroZ);
       }
       for (const npcDef of mapCfg.npcs) {
         const inst = await this.assetManager.instantiateModel(npcDef.role === 'chaos_goblin' ? 'npc_goblin.glb' : 'npc_merchant.glb', `npc_${npcDef.id}`, this.cityRoot);
@@ -1326,7 +1360,7 @@ export class MuWorldEngine {
 
       const defIdx = i % defs.length;
       const def = defs[defIdx];
-      const scaled = scaleMonsterForPlayerLevel(def, heroLevel, avgAtk, mapRange);
+      const scaled = scaleMonsterForPlayerLevel(def, heroLevel, avgAtk, mapRange, mapCfg.id);
       this.monX[i] = x;
       this.monZ[i] = z;
       this.monHomeX[i] = x;
@@ -1440,20 +1474,19 @@ export class MuWorldEngine {
       });
     }
 
-    const ring = MeshBuilder.CreateTorus(
-      'autoAimRing',
-      { diameter: 2.3, thickness: 0.12, tessellation: 24 },
-      this.scene,
-    );
-    const ringMat = new StandardMaterial('autoAimRingMat', this.scene);
-    ringMat.emissiveColor = new Color3(0.98, 0.72, 0.15);
-    ringMat.diffuseColor = Color3.Black();
-    ringMat.disableLighting = true;
-    ring.material = ringMat;
-    ring.isPickable = false;
-    ring.setEnabled(false);
-    ring.parent = this.fxRoot;
-    this.autoAimRing = ring;
+    const ringRoot = new TransformNode('autoAimRing', this.scene);
+    ringRoot.setEnabled(false);
+    ringRoot.parent = this.fxRoot;
+    this.autoAimRing = ringRoot;
+    void this.assetManager
+      .instantiateNormalizedModel('/openmu/effects/MoveTargetPosEffect.glb', 'aim_marker', ringRoot, {
+        targetSize: 2.25,
+        zUpOpenMu: true,
+        seatOnGround: true,
+        emissiveHex: 0xfbbf24,
+        emissiveIntensity: 0.72,
+      })
+      .catch(() => {});
   }
 
   private cellKey(x: number, z: number): number {
@@ -1490,7 +1523,7 @@ export class MuWorldEngine {
   private initWeatherParticles(kind: WeatherKind) {
     this.weatherKind = kind;
     if (kind === 'none') return;
-    const count = 280;
+    const count = 240;
     const hex =
       kind === 'snowfall' || kind === 'snow'
         ? 0xe0f2fe
@@ -1504,11 +1537,26 @@ export class MuWorldEngine {
                 ? 0xfde68a
                 : 0xbef264;
 
-    const proto = MeshBuilder.CreateSphere('weatherProto', { diameter: 0.14, segments: 4 }, this.scene);
+    const spriteTex = new DynamicTexture('weatherSpriteTex', { width: 32, height: 32 }, this.scene, true);
+    const sctx = spriteTex.getContext();
+    sctx.clearRect(0, 0, 32, 32);
+    const grad = sctx.createRadialGradient(16, 16, 1, 16, 16, 14);
+    grad.addColorStop(0, 'rgba(255,255,255,0.95)');
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    sctx.fillStyle = grad;
+    sctx.fillRect(0, 0, 32, 32);
+    spriteTex.hasAlpha = true;
+    spriteTex.update();
+
+    const proto = MeshBuilder.CreatePlane('weatherProto', { size: 0.22 }, this.scene);
     const mat = new StandardMaterial('weatherMat', this.scene);
     mat.emissiveColor = Color3.FromHexString(`#${hex.toString(16).padStart(6, '0')}`);
+    mat.diffuseTexture = spriteTex;
+    mat.opacityTexture = spriteTex;
     mat.disableLighting = true;
+    mat.backFaceCulling = false;
     proto.material = mat;
+    proto.billboardMode = Mesh.BILLBOARDMODE_ALL;
     proto.isPickable = false;
     proto.alwaysSelectAsActiveMesh = true;
 
@@ -1652,33 +1700,36 @@ export class MuWorldEngine {
         const spread = (i - (count - 1) / 2) * 0.22;
         const ang = baseAngle + spread;
         const isArrow = skill.vfx === 'arrow' || skill.vfx === 'triple_shot' || skill.vfx === 'ice_arrow';
-        const orb = isArrow
-          ? MeshBuilder.CreateCylinder('projArrow', { diameterTop: 0.08, diameterBottom: 0.22, height: 1.35, tessellation: 8 }, this.scene)
-          : MeshBuilder.CreateSphere('projOrb', { diameter: 0.58, segments: 10 }, this.scene);
-        if (isArrow) {
-          orb.rotation.x = Math.PI / 2;
-          orb.rotation.y = ang;
-        }
-        const halo = MeshBuilder.CreateTorus('projHalo', { diameter: 0.72, thickness: 0.08, tessellation: 14 }, this.scene);
-        const mat = new StandardMaterial('projMat', this.scene);
-        mat.emissiveColor = projColor;
-        mat.diffuseColor = projColor;
-        mat.disableLighting = true;
-        orb.material = mat;
-        halo.material = mat;
-        halo.parent = orb;
-
-        orb.position = new Vector3(
+        const projNode = new TransformNode(`proj_${skill.id}_${Date.now()}_${i}`, this.scene);
+        projNode.position = new Vector3(
           this.heroX + Math.sin(ang) * 1.15,
-          this.getTerrainHeight(this.heroX, this.heroZ) + 1.35,
+          this.getTerrainHeight(this.heroX, this.heroZ) + 1.32,
           this.heroZ + Math.cos(ang) * 1.15,
         );
-        orb.parent = this.fxRoot;
+        projNode.rotation.y = ang;
+        projNode.parent = this.fxRoot;
+
+        const modelPath = isArrow
+          ? '/flyff/efectos/mallas/obj_middlearrow_01.glb'
+          : skill.vfx === 'bolt' || skill.vfx === 'raven'
+            ? '/openmu/effects/lightning_type01.glb'
+            : '/openmu/effects/FlameStrike.glb';
+
+        void this.assetManager
+          .instantiateNormalizedModel(modelPath, `proj_glb_${i}`, projNode, {
+            targetSize: isArrow ? 1.25 : 0.95,
+            zUpOpenMu: !isArrow,
+            seatOnGround: false,
+            emissiveHex: skill.colorHex,
+            emissiveIntensity: 0.85,
+          })
+          .catch(() => {});
+
         this.projectiles.push({
-          mesh: orb,
-          x: orb.position.x,
-          y: orb.position.y,
-          z: orb.position.z,
+          mesh: projNode,
+          x: projNode.position.x,
+          y: projNode.position.y,
+          z: projNode.position.z,
           vx: Math.sin(ang) * 28,
           vz: Math.cos(ang) * 28,
           life: 0.95,
@@ -1739,186 +1790,66 @@ export class MuWorldEngine {
   }
 
   private spawnSkillVfx(skill: SkillDef) {
-    const color = Color3.FromHexString(`#${skill.colorHex.toString(16).padStart(6, '0')}`);
     const hy = this.getTerrainHeight(this.heroX, this.heroZ);
     const node = new TransformNode(`vfx_${skill.id}_${Date.now()}`, this.scene);
-    node.position = new Vector3(this.heroX, hy + 0.75, this.heroZ);
+    node.position = new Vector3(this.heroX, hy + 0.08, this.heroZ);
     node.rotation.y = this.heroRotY;
     node.parent = this.fxRoot;
 
-    const makeGlowMat = (suffix: string, alpha = 0.88) => {
-      const mat = new StandardMaterial(`vfxMat_${suffix}_${Date.now()}`, this.scene);
-      mat.emissiveColor = color;
-      mat.diffuseColor = color;
-      mat.alpha = alpha;
-      mat.disableLighting = true;
-      mat.backFaceCulling = false;
-      return mat;
-    };
+    const effectGlb =
+      skill.vfx === 'buff'
+        ? '/openmu/effects/shield_up.glb'
+        : skill.vfx === 'lightning_shock' || skill.vfx === 'aqua_beam' || skill.vfx === 'bolt' || skill.vfx === 'evil_spirit'
+          ? '/openmu/effects/lightning_type01.glb'
+          : skill.vfx === 'nova' || skill.vfx === 'hellfire' || skill.vfx === 'meteor' || skill.vfx === 'fire_burst' || skill.vfx === 'fire_scream'
+            ? '/openmu/effects/FlameStrike.glb'
+            : skill.vfx === 'twisting' || skill.vfx === 'blood_storm' || skill.vfx === 'gigantic_storm'
+              ? '/openmu/effects/Change_Up_Eff.glb'
+              : '/openmu/effects/magic_powerup.glb';
 
-    // Ground aura disc (always visible under caster)
-    const aura = MeshBuilder.CreateDisc('vfxAura', { radius: skill.isAoe ? 2.4 : 1.35, tessellation: 24 }, this.scene);
-    aura.rotation.x = Math.PI / 2;
-    aura.position.y = -0.62;
-    aura.material = makeGlowMat('aura', 0.36);
-    aura.isPickable = false;
-    aura.parent = node;
-
-    // Main expanding shockwave ring
-    const ring = MeshBuilder.CreateTorus(
-      'vfxRing',
-      { diameter: skill.isAoe ? 3.5 : 2.1, thickness: 0.2, tessellation: 24 },
-      this.scene,
-    );
-    ring.material = makeGlowMat('ring', 0.9);
-    ring.isPickable = false;
-    ring.parent = node;
-
-    let spinSpeed = 8.5;
-    let riseSpeed = 1.2;
-    let expandRate = skill.isAoe ? 4.8 : 2.4;
-
-    if (
-      skill.vfx === 'slash' ||
-      skill.vfx === 'power_slash' ||
-      skill.vfx === 'sword_rush' ||
-      skill.vfx === 'death_stab'
-    ) {
-      const arc = MeshBuilder.CreateTorus('vfxSlashArc', { diameter: 3.1, thickness: 0.22, tessellation: 20 }, this.scene);
-      arc.rotation.x = Math.PI / 3;
-      arc.rotation.z = 0.45;
-      arc.position.y = 0.5;
-      arc.material = makeGlowMat('arc', 0.92);
-      arc.parent = node;
-
-      const lance = MeshBuilder.CreateCylinder('vfxLance', { diameterTop: 0.08, diameterBottom: 0.48, height: 2.8, tessellation: 10 }, this.scene);
-      lance.rotation.x = Math.PI / 2;
-      lance.position.set(0, 0.55, 1.5);
-      lance.material = makeGlowMat('lance', 0.85);
-      lance.parent = node;
-      spinSpeed = 11.5;
-    } else if (
-      skill.vfx === 'twisting' ||
-      skill.vfx === 'blood_storm' ||
-      skill.vfx === 'rageful_blow' ||
-      skill.vfx === 'earthshake' ||
-      skill.vfx === 'gigantic_storm'
-    ) {
-      const ring2 = MeshBuilder.CreateTorus('vfxTwinRing', { diameter: 2.9, thickness: 0.18, tessellation: 20 }, this.scene);
-      ring2.rotation.x = 0.65;
-      ring2.position.y = 0.65;
-      ring2.material = makeGlowMat('twin', 0.88);
-      ring2.parent = node;
-
-      const spire = MeshBuilder.CreateCylinder('vfxSpire', { diameterTop: 2.6, diameterBottom: 0.7, height: 3.4, tessellation: 12 }, this.scene);
-      spire.position.y = 1.1;
-      spire.material = makeGlowMat('spire', 0.45);
-      spire.parent = node;
-      spinSpeed = 15.0;
-    } else if (
-      skill.vfx === 'hellfire' ||
-      skill.vfx === 'nova' ||
-      skill.vfx === 'evil_spirit' ||
-      skill.vfx === 'fire_scream' ||
-      skill.vfx === 'chaotic_ray'
-    ) {
-      const pillar = MeshBuilder.CreateCylinder('vfxPillar', { diameterTop: 3.2, diameterBottom: 0.9, height: 4.8, tessellation: 14 }, this.scene);
-      pillar.material = makeGlowMat('pillar', 0.5);
-      pillar.position.y = 1.7;
-      pillar.parent = node;
-
-      for (let i = 0; i < 3; i++) {
-        const ang = (i / 3) * Math.PI * 2;
-        const orb = MeshBuilder.CreateSphere(`vfxOrb_${i}`, { diameter: 0.55, segments: 8 }, this.scene);
-        orb.position.set(Math.cos(ang) * 1.9, 0.9, Math.sin(ang) * 1.9);
-        orb.material = makeGlowMat(`orb${i}`, 0.95);
-        orb.parent = node;
-      }
-      spinSpeed = 12.0;
-    } else if (
-      skill.vfx === 'ice_storm' ||
-      skill.vfx === 'meteor' ||
-      skill.vfx === 'starfall' ||
-      skill.vfx === 'lightning_shock' ||
-      skill.vfx === 'aqua_beam'
-    ) {
-      if (skill.vfx === 'aqua_beam') {
-        const beam = MeshBuilder.CreateCylinder('vfxBeam', { diameter: 0.85, height: 6.5, tessellation: 12 }, this.scene);
-        beam.rotation.x = Math.PI / 2;
-        beam.position.set(0, 0.7, 3.3);
-        beam.material = makeGlowMat('beam', 0.75);
-        beam.parent = node;
-        spinSpeed = 2.0;
-        riseSpeed = 0.2;
-      } else {
-        for (let i = 0; i < 4; i++) {
-          const ang = (i / 4) * Math.PI * 2;
-          const shard = MeshBuilder.CreateCylinder(`vfxShard_${i}`, { diameterTop: 0.06, diameterBottom: 0.55, height: 1.9, tessellation: 6 }, this.scene);
-          shard.rotation.z = Math.PI;
-          shard.position.set(Math.cos(ang) * 1.5, 2.8 + (i % 2) * 0.7, Math.sin(ang) * 1.5);
-          shard.material = makeGlowMat(`shard${i}`, 0.86);
-          shard.parent = node;
-        }
-        riseSpeed = -2.6;
-        spinSpeed = 9.0;
-      }
-    } else if (skill.vfx === 'buff') {
-      const halo = MeshBuilder.CreateTorus('vfxHalo', { diameter: 2.2, thickness: 0.14, tessellation: 20 }, this.scene);
-      halo.position.y = 1.65;
-      halo.material = makeGlowMat('halo', 0.9);
-      halo.parent = node;
-
-      const beam = MeshBuilder.CreateCylinder('vfxBlessPillar', { diameter: 1.6, height: 4.2, tessellation: 14 }, this.scene);
-      beam.position.y = 1.4;
-      beam.material = makeGlowMat('bless', 0.35);
-      beam.parent = node;
-      riseSpeed = 2.1;
-      expandRate = 1.6;
-    } else {
-      const burst = MeshBuilder.CreatePolyhedron('vfxBurst', { type: 1, size: 0.65 }, this.scene);
-      burst.position.set(0, 0.9, 1.1);
-      burst.material = makeGlowMat('burst', 0.92);
-      burst.parent = node;
-      spinSpeed = 14.0;
-    }
+    void this.assetManager
+      .instantiateNormalizedModel(effectGlb, `skill_glb_${skill.id}`, node, {
+        targetSize: skill.isAoe ? 3.4 : 2.1,
+        zUpOpenMu: true,
+        seatOnGround: true,
+        emissiveHex: skill.colorHex,
+        emissiveIntensity: 0.78,
+      })
+      .catch(() => {});
 
     this.transientFx.push({
       node,
-      life: 0.55,
-      maxLife: 0.55,
-      expandRate,
-      spinSpeed,
-      riseSpeed,
+      life: 0.62,
+      maxLife: 0.62,
+      expandRate: skill.isAoe ? 1.8 : 0.95,
+      spinSpeed: skill.vfx === 'buff' ? 3.2 : 6.5,
+      riseSpeed: skill.vfx === 'buff' ? 0.65 : 0.12,
     });
   }
 
   private spawnHitImpactVfx(x: number, y: number, z: number, colorHex = 0xfbbf24, isCritical = false) {
-    const color = Color3.FromHexString(`#${colorHex.toString(16).padStart(6, '0')}`);
     const node = new TransformNode(`hitFx_${Date.now()}`, this.scene);
     node.position.set(x, y, z);
     node.parent = this.fxRoot;
 
-    const flash = MeshBuilder.CreatePolyhedron('hitBurst', { type: 1, size: isCritical ? 0.48 : 0.32 }, this.scene);
-    const mat = new StandardMaterial('hitMat', this.scene);
-    mat.emissiveColor = color;
-    mat.diffuseColor = color;
-    mat.alpha = 0.92;
-    mat.disableLighting = true;
-    flash.material = mat;
-    flash.parent = node;
-
-    const ring = MeshBuilder.CreateTorus('hitRing', { diameter: isCritical ? 1.75 : 1.15, thickness: 0.11, tessellation: 16 }, this.scene);
-    ring.rotation.x = Math.PI / 4;
-    ring.material = mat;
-    ring.parent = node;
+    const effectGlb = isCritical ? '/openmu/effects/FlameStrike.glb' : '/openmu/effects/lightning_type01.glb';
+    void this.assetManager
+      .instantiateNormalizedModel(effectGlb, 'hit_glb', node, {
+        targetSize: isCritical ? 1.45 : 1.0,
+        zUpOpenMu: true,
+        seatOnGround: false,
+        emissiveHex: colorHex,
+        emissiveIntensity: 0.88,
+      })
+      .catch(() => {});
 
     this.transientFx.push({
       node,
-      life: 0.34,
-      maxLife: 0.34,
-      expandRate: 3.4,
-      spinSpeed: 12.0,
-      riseSpeed: 0.6,
+      life: 0.36,
+      maxLife: 0.36,
+      expandRate: 1.4,
+      spinSpeed: 8.5,
+      riseSpeed: 0.45,
     });
   }
 
@@ -1981,52 +1912,67 @@ export class MuWorldEngine {
   }
 
   private maybeSpawnLoot(x: number, z: number, zenAmount: number) {
-    if (this.lootDrops.length > 24) return;
+    if (this.lootDrops.length > 26) return;
     const roll = Math.random();
     let kind: LootDrop['kind'] = 'zen';
     let label = `${Math.round(zenAmount * 0.6)} Zen`;
     let amount = Math.round(zenAmount * 0.6);
     let colorHex = 0xfbbf24;
 
-    if (roll < 0.08) {
+    if (roll < 0.07) {
       kind = 'bless';
       label = 'Jewel of Bless';
       amount = 1;
       colorHex = 0xf43f5e;
       soundSynth.playJewelDrop();
-    } else if (roll < 0.15) {
+    } else if (roll < 0.14) {
       kind = 'soul';
       label = 'Jewel of Soul';
       amount = 1;
       colorHex = 0x38bdf8;
       soundSynth.playJewelDrop();
-    } else if (roll < 0.19) {
+    } else if (roll < 0.18) {
       kind = 'chaos';
       label = 'Jewel of Chaos';
       amount = 1;
       colorHex = 0xf59e0b;
       soundSynth.playJewelDrop();
-    } else if (roll < 0.22) {
+    } else if (roll < 0.21) {
       kind = 'life';
       label = 'Jewel of Life';
       amount = 1;
       colorHex = 0xc084fc;
       soundSynth.playJewelDrop();
-    } else if (roll > 0.65) {
+    } else if (roll < 0.24) {
+      kind = 'creation';
+      label = 'Jewel of Creation';
+      amount = 1;
+      colorHex = 0x34d399;
+      soundSynth.playJewelDrop();
+    } else if (roll < 0.27) {
+      kind = 'talisman';
+      label = 'Talismán de Suerte';
+      amount = 1;
+      colorHex = 0xfde047;
+      soundSynth.playJewelDrop();
+    } else if (roll > 0.68) {
       return;
     }
 
-    const node = new TransformNode(`loot_${Date.now()}`, this.scene);
+    const node = new TransformNode(`loot_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`, this.scene);
     const y = this.getTerrainHeight(x, z);
-    node.position = new Vector3(x, y + 0.45, z);
+    node.position = new Vector3(x, y + 0.01, z);
     node.parent = this.fxRoot;
 
-    const gem = MeshBuilder.CreatePolyhedron('lootGem', { type: 1, size: 0.28 }, this.scene);
-    const mat = new StandardMaterial('lootMat', this.scene);
-    mat.emissiveColor = Color3.FromHexString(`#${colorHex.toString(16).padStart(6, '0')}`);
-    mat.diffuseColor = mat.emissiveColor;
-    gem.material = mat;
-    gem.parent = node;
+    void this.assetManager
+      .instantiateNormalizedModel(`/openmu/models/drop_${kind}.glb`, `drop_${kind}_${Date.now()}`, node, {
+        targetSize: kind === 'zen' ? 0.44 : 0.48,
+        zUpOpenMu: true,
+        seatOnGround: true,
+        emissiveHex: colorHex,
+        emissiveIntensity: kind === 'zen' ? 0.22 : 0.42,
+      })
+      .catch(() => {});
 
     this.lootDrops.push({
       id: `drp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -2040,11 +1986,13 @@ export class MuWorldEngine {
     });
   }
 
-  pickupNearestLoot() {
+  pickupNearestLoot(forceManual = true, filters?: LootFilterSettings): boolean {
     let bestIdx = -1;
-    let bestDist = 8.5;
+    let bestDist = 9.0;
     for (let i = 0; i < this.lootDrops.length; i++) {
-      const d = Math.hypot(this.lootDrops[i].x - this.heroX, this.lootDrops[i].z - this.heroZ);
+      const drop = this.lootDrops[i];
+      if (filters && !matchesLootFilter(drop.kind, filters, forceManual)) continue;
+      const d = Math.hypot(drop.x - this.heroX, drop.z - this.heroZ);
       if (d < bestDist) {
         bestDist = d;
         bestIdx = i;
@@ -2053,9 +2001,29 @@ export class MuWorldEngine {
     if (bestIdx >= 0) {
       const [drop] = this.lootDrops.splice(bestIdx, 1);
       drop.node.dispose();
-      soundSynth.playTradeSync();
+      soundSynth.playPickup(drop.kind !== 'zen');
       this.callbacks.onPickupLoot({ kind: drop.kind, label: drop.label, amount: drop.amount });
+      return true;
     }
+    return false;
+  }
+
+  collectAutoLoot(filters: LootFilterSettings): number {
+    if (!filters.autoLootEnabled) return 0;
+    let picked = 0;
+    for (let i = this.lootDrops.length - 1; i >= 0; i--) {
+      const drop = this.lootDrops[i];
+      if (!matchesLootFilter(drop.kind, filters, false)) continue;
+      const d = Math.hypot(drop.x - this.heroX, drop.z - this.heroZ);
+      if (d <= 8.5) {
+        this.lootDrops.splice(i, 1);
+        drop.node.dispose();
+        soundSynth.playPickup(drop.kind !== 'zen');
+        this.callbacks.onPickupLoot({ kind: drop.kind, label: drop.label, amount: drop.amount });
+        picked++;
+      }
+    }
+    return picked;
   }
 
   async syncRemotePeers(peers: RoomPeer[], localPeerId: string) {
@@ -2070,10 +2038,11 @@ export class MuWorldEngine {
         const root = new TransformNode(`peer_${p.peerId}`, this.scene);root.parent = this.worldRoot;
         root.position.set(p.x, this.getTerrainHeight(p.x,p.z),p.z);
         const content = new FlyffContent(this.scene);content.onError = this.flyff.onError;
-        entry = {root,content,targetX:p.x,targetZ:p.z,rotY:p.rotY,action:p.action};
+        entry = {name: p.name, root, content, targetX:p.x, targetZ:p.z, rotY:p.rotY, action:p.action};
         this.remotePeers.set(p.peerId,entry);
         const plate = createNameplatePlane(this.scene,p.name,'#38bdf8',2.8);plate.parent=root;plate.position.y=2.1;
       }
+      entry.name = p.name;
       entry.targetX=p.x;entry.targetZ=p.z;entry.rotY=p.rotY;
       const oldAction=entry.action;entry.action=p.action;
       await entry.content.character(p.classType,p.sex??'male',p.equipment??getStarterItemsForMuClass(p.peerId,p.name,p.classType),entry.root);
@@ -2155,6 +2124,48 @@ export class MuWorldEngine {
           const turnRate = Math.abs(lx) > 0.25 ? 2.8 : 1.9;
           this.camera.alpha += diff * Math.min(1, dt * turnRate);
         }
+      } else if (this.autoHuntEnabled && !this.isInSafeCity()) {
+        // Auto-hunt: walk toward nearest living monster and trigger Combo attack automatically
+        const candidates = this.queryNearbyMonsterIndices(this.heroX, this.heroZ, 68);
+        let bestIdx = -1;
+        let bestDist = Infinity;
+        for (const idx of candidates) {
+          if (this.monAlive[idx] !== 1) continue;
+          const d = Math.hypot(this.monX[idx] - this.heroX, this.monZ[idx] - this.heroZ);
+          if (d < bestDist) {
+            bestDist = d;
+            bestIdx = idx;
+          }
+        }
+        if (bestIdx >= 0) {
+          this.lockedTargetIdx = bestIdx;
+          const dx = this.monX[bestIdx] - this.heroX;
+          const dz = this.monZ[bestIdx] - this.heroZ;
+          this.heroRotY = Math.atan2(dx, dz);
+          if (bestDist > 4.2) {
+            const nx = dx / bestDist;
+            const nz = dz / bestDist;
+            const speed = 12.2 * (1 + this.activeEffectBonuses.speedBonusPct / 100);
+            const limit = this.currentMap.sizeMeters / 2 - 14;
+            const nextX = Math.max(-limit, Math.min(limit, this.heroX + nx * speed * dt));
+            const nextZ = Math.max(-limit, Math.min(limit, this.heroZ + nz * speed * dt));
+            const footY = this.heroRoot.position.y + (this.flyff.actor?.root.position.y ?? 0);
+            if (this.flyff.canMove(nextX, this.heroZ, this.heroX, this.heroZ, footY)) this.heroX = nextX;
+            if (this.flyff.canMove(this.heroX, nextZ, this.heroX, this.heroZ, footY)) this.heroZ = nextZ;
+            this.heroAction = 'move';
+          } else if (this.attackSwingTimer <= 0) {
+            this.heroAction = 'idle';
+          }
+          if (bestDist <= 6.8) {
+            this.autoHuntAttackTimer -= dt;
+            if (this.autoHuntAttackTimer <= 0 && !this.comboState.steps) {
+              this.autoHuntAttackTimer = 0.92;
+              this.callbacks.onAutoHuntAttack?.();
+            }
+          }
+        } else if (this.attackSwingTimer <= 0) {
+          this.heroAction = 'idle';
+        }
       } else if (this.attackSwingTimer <= 0) {
         this.heroAction = 'idle';
       }
@@ -2179,14 +2190,32 @@ export class MuWorldEngine {
         this.heroWeaponNode.rotation.x = 0.45;
       }
 
-      // Smooth 3rd-person camera follow (~3.4m default close distance) without triggering setTarget() alpha/radius reset
-      const desiredTargetY = hy + 1.32;
-      this.camera.target.set(
-        this.camera.target.x + (this.heroX - this.camera.target.x) * 0.28,
-        this.camera.target.y + (desiredTargetY - this.camera.target.y) * 0.28,
-        this.camera.target.z + (this.heroZ - this.camera.target.z) * 0.28,
-      );
-      this.camera.radius += (this.cameraDistance - this.camera.radius) * 0.22;
+      // Collision-free 3rd-person 360° camera (~5.4m default distance) with terrain clearance damping
+      const targetX = exponentialDamp(this.camera.target.x, this.heroX, 16, dt);
+      const targetY = exponentialDamp(this.camera.target.y, hy + 1.38, 16, dt);
+      const targetZ = exponentialDamp(this.camera.target.z, this.heroZ, 16, dt);
+      this.camera.target.set(targetX, targetY, targetZ);
+
+      const camSolve = solveCameraWithTerrain({
+        pivotX: targetX,
+        pivotY: targetY,
+        pivotZ: targetZ,
+        alpha: this.camera.alpha,
+        beta: clampCameraBeta(this.camera.beta),
+        desiredRadius: this.cameraDistance,
+        sampleTerrainHeight: (sx, sz) => this.getTerrainHeight(sx, sz),
+        minClearanceAboveTerrain: 0.78,
+        prevPos: this.camPrevEye,
+        dt,
+        smoothingRate: 15,
+      });
+      this.camPrevEye = { x: camSolve.eyeX, y: camSolve.eyeY, z: camSolve.eyeZ };
+      this.camera.radius = camSolve.effectiveRadius;
+      const eyeFloor = this.getTerrainHeight(camSolve.eyeX, camSolve.eyeZ) + 0.72;
+      const dyFromTarget = Math.max(camSolve.eyeY, eyeFloor) - targetY;
+      const cosB = Math.max(-0.85, Math.min(0.95, dyFromTarget / Math.max(0.5, camSolve.effectiveRadius)));
+      const safeBeta = Math.acos(cosB);
+      this.camera.beta = Math.min(camSolve.clampedBeta, Math.max(0.28, safeBeta));
 
       // Sync peer location
       if (now - this.lastMoveSyncTime > 120) {
@@ -2311,10 +2340,10 @@ export class MuWorldEngine {
       }
     }
 
-    // Rotate Loot Gems
+    // Keep loot drops strictly seated on terrain ground (NO floating!)
     for (const d of this.lootDrops) {
-      d.node.rotation.y += dt * 2.2;
-      d.node.position.y = this.getTerrainHeight(d.x, d.z) + 0.45 + Math.sin(now * 0.005) * 0.12;
+      d.node.rotation.y += dt * 1.1;
+      d.node.position.y = this.getTerrainHeight(d.x, d.z) + 0.01;
     }
 
     // Update Weather ThinInstances
@@ -2335,7 +2364,7 @@ export class MuWorldEngine {
       this.weatherMesh.thinInstanceBufferUpdated('matrix');
     }
 
-    // Telemetry + 80% Auto-Aim Target Lock callback to HUD (~4x/sec)
+    // Telemetry + 60% Auto-Aim Target Lock + Minimap snapshot (~4x/sec)
     if (now - this.lastTelemetryTime > 260) {
       this.lastTelemetryTime = now;
       this.callbacks.onWorldTelemetry?.({
@@ -2347,6 +2376,34 @@ export class MuWorldEngine {
         mapName: this.currentMap.name,
         areaKm2: this.currentMap.areaKm2,
       });
+
+      if (this.callbacks.onMinimapUpdate) {
+        const friends: MinimapEntitySnapshot['friends'] = [];
+        for (const [id, peer] of this.remotePeers.entries()) {
+          friends.push({ id, name: peer.name, x: peer.targetX, z: peer.targetZ });
+        }
+        const monsters: MinimapEntitySnapshot['monsters'] = [];
+        const scan = this.queryNearbyMonsterIndices(this.heroX, this.heroZ, 180);
+        for (let k = 0; k < scan.length && monsters.length < 70; k++) {
+          const idx = scan[k];
+          if (this.monAlive[idx] !== 1) continue;
+          const def = this.currentMap.monsters[this.monDefIdx[idx]];
+          monsters.push({
+            id: `m-${idx}`,
+            x: this.monX[idx],
+            z: this.monZ[idx],
+            isBoss: Boolean(def?.isBoss),
+          });
+        }
+        this.callbacks.onMinimapUpdate({
+          mapId: this.currentMap.id,
+          sizeMeters: this.currentMap.sizeMeters,
+          hero: { x: this.heroX, z: this.heroZ },
+          npcs: this.currentMap.npcs.map((n) => ({ id: n.id, name: n.name, x: n.x, z: n.z })),
+          friends,
+          monsters,
+        });
+      }
 
       const aim = this.autoAimAssist
         ? findAutoAimTarget(
@@ -2365,7 +2422,7 @@ export class MuWorldEngine {
         const scaled = scaleMonsterForPlayerLevel(def, heroLv, this.getPlayerAvgAttackEstimate(), {
           minLevel: this.currentMap.minLevel,
           maxLevel: this.currentMap.maxLevel,
-        });
+        }, this.currentMap.id);
         this.callbacks.onTargetMonsterChange?.({
           index: aim.targetIndex,
           stats: {
@@ -2385,23 +2442,28 @@ export class MuWorldEngine {
   }
 
   private spawnMonsterPowerFx(mx: number, mz: number, power: MonsterPowerDef) {
-    const color = Color3.FromHexString(power.colorHex);
+    const colorHex = Number.parseInt(power.colorHex.replace('#', ''), 16) || 0xf97316;
     const my = this.getTerrainHeight(mx, mz) + 1.25;
     const dx = this.heroX - mx;
     const dz = this.heroZ - mz;
     const dist = Math.max(0.5, Math.hypot(dx, dz));
 
-    const orb = MeshBuilder.CreateSphere('monPowerOrb', { diameter: 0.55, segments: 8 }, this.scene);
-    const mat = new StandardMaterial('monPowerMat', this.scene);
-    mat.emissiveColor = color;
-    mat.diffuseColor = Color3.Black();
-    mat.disableLighting = true;
-    orb.material = mat;
-    orb.position.set(mx, my, mz);
-    orb.parent = this.fxRoot;
+    const orbNode = new TransformNode(`monPower_${Date.now()}`, this.scene);
+    orbNode.position.set(mx, my, mz);
+    orbNode.rotation.y = Math.atan2(dx, dz);
+    orbNode.parent = this.fxRoot;
+    void this.assetManager
+      .instantiateNormalizedModel('/openmu/effects/FlameStrike.glb', 'mon_pwr_glb', orbNode, {
+        targetSize: 0.9,
+        zUpOpenMu: true,
+        seatOnGround: false,
+        emissiveHex: colorHex,
+        emissiveIntensity: 0.9,
+      })
+      .catch(() => {});
 
     this.enemyProjectiles.push({
-      mesh: orb,
+      mesh: orbNode,
       x: mx,
       y: my,
       z: mz,
@@ -2411,15 +2473,18 @@ export class MuWorldEngine {
     });
 
     const ringNode = new TransformNode(`monTelegraph_${Date.now()}`, this.scene);
-    ringNode.position.set(this.heroX, this.getTerrainHeight(this.heroX, this.heroZ) + 0.2, this.heroZ);
+    ringNode.position.set(this.heroX, this.getTerrainHeight(this.heroX, this.heroZ) + 0.06, this.heroZ);
     ringNode.parent = this.fxRoot;
-    const ring = MeshBuilder.CreateTorus('monTeleRing', { diameter: 2.2, thickness: 0.1, tessellation: 18 }, this.scene);
-    const rMat = new StandardMaterial('monTeleMat', this.scene);
-    rMat.emissiveColor = color;
-    rMat.disableLighting = true;
-    ring.material = rMat;
-    ring.parent = ringNode;
-    this.transientFx.push({ node: ringNode, life: 0.45, maxLife: 0.45, expandRate: 1.5, spinSpeed: 4, riseSpeed: 0.2 });
+    void this.assetManager
+      .instantiateNormalizedModel('/openmu/effects/MoveTargetPosEffect.glb', 'mon_tele_glb', ringNode, {
+        targetSize: 2.1,
+        zUpOpenMu: true,
+        seatOnGround: true,
+        emissiveHex: colorHex,
+        emissiveIntensity: 0.8,
+      })
+      .catch(() => {});
+    this.transientFx.push({ node: ringNode, life: 0.45, maxLife: 0.45, expandRate: 0.9, spinSpeed: 4, riseSpeed: 0.05 });
   }
 
   private updateNearbyMonsters(dt: number, now: number): number[] {
@@ -2443,7 +2508,7 @@ export class MuWorldEngine {
         if (this.monRespawn[idx] <= 0) {
           this.monAlive[idx] = 1;
           const def = this.currentMap.monsters[this.monDefIdx[idx]];
-          const scaled = scaleMonsterForPlayerLevel(def, heroLv, this.getPlayerAvgAttackEstimate(), mapRange);
+          const scaled = scaleMonsterForPlayerLevel(def, heroLv, this.getPlayerAvgAttackEstimate(), mapRange, this.currentMap.id);
           this.monMaxHp[idx] = scaled.maxHp;
           this.monHp[idx] = scaled.maxHp;
           this.monDmg[idx] = scaled.damage;
@@ -2495,7 +2560,7 @@ export class MuWorldEngine {
       const def = this.currentMap.monsters[this.monDefIdx[idx]];
       // Monster Special Powers, Melee & Critical Attacks
       if (this.mode === 'playing' && !heroInCity) {
-        const scaled = scaleMonsterForPlayerLevel(def, heroLv, this.getPlayerAvgAttackEstimate(), mapRange);
+        const scaled = scaleMonsterForPlayerLevel(def, heroLv, this.getPlayerAvgAttackEstimate(), mapRange, this.currentMap.id);
         const power = scaled.powers[0];
         if (distToHero <= (power ? Math.max(power.range, 2.7) : 2.7) && this.monAttackCd[idx] <= 0 && this.monPowerCd[idx] <= 0) {
           const rolled = rollMonsterAttack(scaled);

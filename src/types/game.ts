@@ -146,6 +146,7 @@ export interface MuCharacter {
   life: number;
   creation: number;
   harmony: number;
+  talisman?: number;
   hp: number;
   maxHp: number;
   mp: number;
@@ -218,10 +219,20 @@ export interface GameSettings {
   musicEnabled: boolean;
   musicVolume: number; // 0 to 1
   free3dCamera: boolean;
-  cameraDistance?: number; // 2.2 to 10.5m third-person distance (default 3.4m)
+  cameraDistance?: number; // 2.6 to 11.5m third-person distance (default 5.4m)
   cameraDistanceMigratedV2?: boolean;
+  cameraDistanceMigratedV3?: boolean;
   autoAimAssist?: boolean; // 60% auto-aim toggle (default true)
   targetFps: 30 | 45 | 60;
+}
+
+export interface MinimapEntitySnapshot {
+  mapId: MapId;
+  sizeMeters: number;
+  hero: { x: number; z: number };
+  npcs: Array<{ id: string; name: string; x: number; z: number }>;
+  friends: Array<{ id: string; name: string; x: number; z: number }>;
+  monsters: Array<{ id: string; x: number; z: number; isBoss?: boolean }>;
 }
 
 export interface ActiveEffect {

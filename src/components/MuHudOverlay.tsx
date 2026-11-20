@@ -31,6 +31,7 @@ import type {
   CharacterComboConfig,
   FloatingDamageNumber,
   HudButtonId,
+  MinimapEntitySnapshot,
   MuCharacter,
   NpcDef,
   SkillDef,
@@ -38,6 +39,13 @@ import type {
 } from '../types/game';
 import type { TargetMonsterInfo } from '../game/MuWorldEngine';
 import { getSkillRank } from '../game/combatAndProgression';
+import {
+  POTION_TIERS,
+  projectToMinimap,
+  type LootFilterKey,
+  type LootFilterSettings,
+  type PotionConfig,
+} from '../game/worldPhysicsMath';
 import { PubgJoystick } from './PubgJoystick';
 
 export interface WorldTelemetryInfo {
@@ -66,6 +74,11 @@ interface MuHudOverlayProps {
   worldTelemetry: WorldTelemetryInfo;
   damageNumbers: FloatingDamageNumber[];
   syncStatus: SyncStatusInfo;
+  minimapData: MinimapEntitySnapshot | null;
+  lootFilters: LootFilterSettings;
+  potionConfig: PotionConfig;
+  onUpdateLootFilters: (next: LootFilterSettings) => void;
+  onUpdatePotionConfig: (next: PotionConfig) => void;
   onJoystickVector: (x: number, y: number) => void;
   onPressAttack: () => void;
   onJump: () => void;
@@ -86,6 +99,16 @@ interface MuHudOverlayProps {
   onExitEditMode: () => void;
 }
 
+const LOOT_FILTER_OPTIONS: Array<{ key: LootFilterKey; label: string; colorClass: string }> = [
+  { key: 'zen', label: 'Zen', colorClass: 'text-amber-300' },
+  { key: 'life', label: 'Life', colorClass: 'text-purple-300' },
+  { key: 'soul', label: 'Soul', colorClass: 'text-sky-300' },
+  { key: 'bless', label: 'Bless', colorClass: 'text-rose-300' },
+  { key: 'chaos', label: 'Chaos', colorClass: 'text-amber-200' },
+  { key: 'creation', label: 'Creation', colorClass: 'text-emerald-300' },
+  { key: 'talisman', label: 'Talismán', colorClass: 'text-yellow-300' },
+];
+
 export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
   character,
   comboConfig,
@@ -102,6 +125,11 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
   worldTelemetry,
   damageNumbers,
   syncStatus,
+  minimapData,
+  lootFilters,
+  potionConfig,
+  onUpdateLootFilters,
+  onUpdatePotionConfig,
   onJoystickVector,
   onPressAttack,
   onJump,
@@ -125,6 +153,8 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
   const [showComboPicker, setShowComboPicker] = useState(false);
   const [powersOpen, setPowersOpen] = useState(true);
   const [assignComboMode, setAssignComboMode] = useState(false);
+  const [showLootMenu, setShowLootMenu] = useState(false);
+  const [showPotionMenu, setShowPotionMenu] = useState(false);
   const lastActionFireRef = useRef<Record<string, number>>({});
   const dragState = useRef<{
     id: HudButtonId;
@@ -342,7 +372,7 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
           </div>
 
           {activeEffects.length > 0 && (
-            <div className="flex items-center gap-1.5 flex-wrap pointer-events-none">
+            <div className="fixed top-[96px] lg:top-[104px] left-[132px] sm:left-[152px] z-15 flex items-center gap-1.5 flex-wrap max-w-[30vw] pointer-events-none">
               {activeEffects.map((eff) => (
                 <div
                   key={eff.id}
@@ -358,6 +388,79 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* TOP-LEFT CORNER MINI-MAP (Gold=Hero, Blue=NPC, Green=Friends, Red=Monsters) */}
+      {!editMode && minimapData && (
+        <div
+          data-testid="hud-minimap"
+          className="pointer-events-none fixed top-[96px] lg:top-[104px] left-3 z-15 w-[112px] h-[112px] sm:w-[132px] sm:h-[132px] rounded-lg bg-[#090e17]/88 border border-amber-600/60 shadow-xl overflow-hidden select-none"
+        >
+          {/* Subtle coordinate crosshairs */}
+          <div className="absolute inset-x-0 top-1/2 h-px bg-slate-700/45" />
+          <div className="absolute inset-y-0 left-1/2 w-px bg-slate-700/45" />
+          <div className="absolute top-0.5 left-1 right-1 flex items-center justify-between text-[8px] font-mono-tabular text-slate-300/90">
+            <span className="truncate font-semibold text-amber-200">{getMapById(minimapData.mapId).name}</span>
+            <span>{minimapData.monsters.length}m</span>
+          </div>
+
+          {/* Red dots = Monsters */}
+          {minimapData.monsters.map((m) => {
+            const p = projectToMinimap(m.x, m.z, minimapData.mapId, minimapData.sizeMeters);
+            return (
+              <span
+                key={m.id}
+                style={{ left: `${p.xPct}%`, top: `${p.yPct}%` }}
+                className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-full ${
+                  m.isBoss ? 'w-2 h-2 bg-red-500 ring-1 ring-amber-300' : 'w-1.5 h-1.5 bg-red-400/90'
+                }`}
+              />
+            );
+          })}
+
+          {/* Blue dots = NPCs */}
+          {minimapData.npcs.map((n) => {
+            const p = projectToMinimap(n.x, n.z, minimapData.mapId, minimapData.sizeMeters);
+            return (
+              <span
+                key={n.id}
+                style={{ left: `${p.xPct}%`, top: `${p.yPct}%` }}
+                className="absolute -translate-x-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-sky-400 border border-sky-100/70"
+              />
+            );
+          })}
+
+          {/* Green dots = Wi-Fi / Bluetooth Friends */}
+          {minimapData.friends.map((f) => {
+            const p = projectToMinimap(f.x, f.z, minimapData.mapId, minimapData.sizeMeters);
+            return (
+              <span
+                key={f.id}
+                style={{ left: `${p.xPct}%`, top: `${p.yPct}%` }}
+                className="absolute -translate-x-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full bg-emerald-400 ring-1 ring-emerald-100"
+              />
+            );
+          })}
+
+          {/* Gold dot = Player Hero */}
+          {(() => {
+            const hp = projectToMinimap(minimapData.hero.x, minimapData.hero.z, minimapData.mapId, minimapData.sizeMeters);
+            return (
+              <span
+                data-testid="minimap-hero-dot"
+                style={{ left: `${hp.xPct}%`, top: `${hp.yPct}%` }}
+                className="absolute -translate-x-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full bg-amber-400 ring-2 ring-amber-100 shadow-[0_0_6px_#fbbf24]"
+              />
+            );
+          })()}
+
+          <div className="absolute bottom-0 inset-x-0 bg-black/65 px-1 py-0.5 flex items-center justify-between text-[7px] font-mono-tabular">
+            <span className="text-amber-300">●Tú</span>
+            <span className="text-sky-300">●NPC</span>
+            <span className="text-emerald-300">●Amg</span>
+            <span className="text-rose-400">●Mob</span>
+          </div>
         </div>
       )}
 
@@ -532,40 +635,203 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
 
       {wrapButton(
         'potion',
-        <button
-          onPointerDown={(e) => {
-            if (editMode) return;
-            e.stopPropagation();
-            fireImmediateAction('potion', onHealPotion);
-          }}
-          onClick={(e) => {
-            e.stopPropagation();
-            fireImmediateAction('potion', onHealPotion);
-          }}
-          className="w-12 h-12 rounded-full bg-[#1a0f14]/92 border-2 border-rose-500/70 text-rose-200 flex flex-col items-center justify-center shadow-lg active:scale-95 cursor-pointer touch-none select-none"
-        >
-          <Heart className="w-4 h-4 text-rose-400 pointer-events-none" />
-          <span className="text-[9px] font-bold pointer-events-none">HP/MP</span>
-        </button>,
+        <div className="relative">
+          <button
+            data-testid="hud-potion-btn"
+            onPointerDown={(e) => {
+              if (editMode) return;
+              e.stopPropagation();
+              fireImmediateAction('potion', onHealPotion);
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              fireImmediateAction('potion', onHealPotion);
+            }}
+            className="w-12 h-12 rounded-full bg-[#1a0f14]/92 border-2 border-rose-500/70 text-rose-200 flex flex-col items-center justify-center shadow-lg active:scale-95 cursor-pointer touch-none select-none"
+          >
+            <Heart className="w-4 h-4 text-rose-400 pointer-events-none" />
+            <span className="text-[9px] font-bold pointer-events-none">HP/MP</span>
+          </button>
+
+          <button
+            type="button"
+            data-testid="hud-potion-config-btn"
+            aria-label="Configurar poción HP/MP"
+            onPointerDown={(e) => {
+              if (editMode) return;
+              e.stopPropagation();
+            }}
+            onClick={(e) => {
+              if (editMode) return;
+              e.stopPropagation();
+              setShowLootMenu(false);
+              setShowPotionMenu((v) => !v);
+            }}
+            className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-[#0f1624] border border-rose-400/70 text-rose-200 flex items-center justify-center shadow cursor-pointer"
+          >
+            <SlidersHorizontal className="w-2.5 h-2.5 pointer-events-none" />
+          </button>
+
+          {showPotionMenu && !editMode && (
+            <div
+              data-testid="hud-potion-menu"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              className="absolute right-14 top-0 w-56 rounded-xl bg-[#0d121d]/96 border border-rose-500/60 p-2.5 shadow-2xl space-y-2 z-30"
+            >
+              <div className="flex items-center justify-between text-[11px] font-bold text-rose-300">
+                <span>Poción Dual HP + MP</span>
+                <button
+                  type="button"
+                  onClick={() => setShowPotionMenu(false)}
+                  className="text-slate-400 hover:text-white cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <div className="space-y-1">
+                {POTION_TIERS.map((tier) => {
+                  const selected = potionConfig.tierId === tier.id;
+                  return (
+                    <button
+                      key={tier.id}
+                      type="button"
+                      onClick={() => onUpdatePotionConfig({ ...potionConfig, tierId: tier.id })}
+                      className={`w-full px-2 py-1.5 rounded-lg border text-left text-[10px] flex items-center justify-between cursor-pointer ${
+                        selected
+                          ? 'bg-rose-600/25 border-rose-400 text-rose-100 font-bold'
+                          : 'bg-[#141b2b] border-slate-700 text-slate-300'
+                      }`}
+                    >
+                      <span>{tier.shortName}</span>
+                      <span className="font-mono-tabular text-amber-300">
+                        {tier.zenCost > 0 ? `${tier.zenCost} Zen` : 'Gratis'}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="pt-1 border-t border-slate-800 space-y-1">
+                <div className="text-[10px] text-slate-300 font-semibold">
+                  Auto-curar en COMBO (&lt; {potionConfig.autoHealThresholdPct}% HP/MP)
+                </div>
+                <div className="grid grid-cols-3 gap-1">
+                  {[35, 55, 75].map((pct) => (
+                    <button
+                      key={pct}
+                      type="button"
+                      onClick={() => onUpdatePotionConfig({ ...potionConfig, autoHealThresholdPct: pct })}
+                      className={`py-1 rounded text-[10px] font-mono-tabular border cursor-pointer ${
+                        potionConfig.autoHealThresholdPct === pct
+                          ? 'bg-emerald-600/30 border-emerald-400 text-emerald-200 font-bold'
+                          : 'bg-[#141b2b] border-slate-700 text-slate-400'
+                      }`}
+                    >
+                      {pct}%
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>,
       )}
 
       {wrapButton(
         'loot',
-        <button
-          onPointerDown={(e) => {
-            if (editMode) return;
-            e.stopPropagation();
-            fireImmediateAction('loot', onPickupLoot);
-          }}
-          onClick={(e) => {
-            e.stopPropagation();
-            fireImmediateAction('loot', onPickupLoot);
-          }}
-          className="w-12 h-12 rounded-full bg-[#141a28]/92 border-2 border-amber-500/60 text-amber-200 flex flex-col items-center justify-center shadow-lg active:scale-95 cursor-pointer touch-none select-none"
-        >
-          <Hand className="w-4 h-4 text-amber-300 pointer-events-none" />
-          <span className="text-[9px] font-bold pointer-events-none">Recoger</span>
-        </button>,
+        <div className="relative">
+          <button
+            data-testid="hud-loot-btn"
+            onPointerDown={(e) => {
+              if (editMode) return;
+              e.stopPropagation();
+              fireImmediateAction('loot', onPickupLoot);
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              fireImmediateAction('loot', onPickupLoot);
+            }}
+            className={`w-12 h-12 rounded-full bg-[#141a28]/92 border-2 text-amber-200 flex flex-col items-center justify-center shadow-lg active:scale-95 cursor-pointer touch-none select-none ${
+              lootFilters.autoLootEnabled ? 'border-emerald-400/80' : 'border-amber-500/60'
+            }`}
+          >
+            <Hand className="w-4 h-4 text-amber-300 pointer-events-none" />
+            <span className="text-[9px] font-bold pointer-events-none">Recoger</span>
+          </button>
+
+          <button
+            type="button"
+            data-testid="hud-loot-config-btn"
+            aria-label="Filtros de recolección"
+            onPointerDown={(e) => {
+              if (editMode) return;
+              e.stopPropagation();
+            }}
+            onClick={(e) => {
+              if (editMode) return;
+              e.stopPropagation();
+              setShowPotionMenu(false);
+              setShowLootMenu((v) => !v);
+            }}
+            className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-[#0f1624] border border-amber-400/75 text-amber-200 flex items-center justify-center shadow cursor-pointer"
+          >
+            <SlidersHorizontal className="w-2.5 h-2.5 pointer-events-none" />
+          </button>
+
+          {showLootMenu && !editMode && (
+            <div
+              data-testid="hud-loot-menu"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              className="absolute right-14 bottom-0 w-52 rounded-xl bg-[#0d121d]/96 border border-amber-500/60 p-2.5 shadow-2xl space-y-2 z-30"
+            >
+              <div className="flex items-center justify-between text-[11px] font-bold text-amber-300">
+                <span>Filtros de Recoger</span>
+                <button
+                  type="button"
+                  onClick={() => setShowLootMenu(false)}
+                  className="text-slate-400 hover:text-white cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  onUpdateLootFilters({ ...lootFilters, autoLootEnabled: !lootFilters.autoLootEnabled })
+                }
+                className={`w-full px-2 py-1.5 rounded-lg border text-[10px] font-bold flex items-center justify-between cursor-pointer ${
+                  lootFilters.autoLootEnabled
+                    ? 'bg-emerald-600/25 border-emerald-400 text-emerald-200'
+                    : 'bg-[#141b2b] border-slate-700 text-slate-400'
+                }`}
+              >
+                <span>Auto-Recoger</span>
+                <span>{lootFilters.autoLootEnabled ? 'ACTIVO' : 'MANUAL'}</span>
+              </button>
+              <div className="grid grid-cols-2 gap-1">
+                {LOOT_FILTER_OPTIONS.map((opt) => {
+                  const active = lootFilters[opt.key];
+                  return (
+                    <button
+                      key={opt.key}
+                      type="button"
+                      onClick={() => onUpdateLootFilters({ ...lootFilters, [opt.key]: !active })}
+                      className={`px-2 py-1 rounded border text-[10px] flex items-center justify-between cursor-pointer ${
+                        active
+                          ? 'bg-[#172136] border-amber-500/60 font-semibold'
+                          : 'bg-[#111622] border-slate-800 opacity-55'
+                      }`}
+                    >
+                      <span className={opt.colorClass}>{opt.label}</span>
+                      <span className="text-[9px] text-slate-200">{active ? '✓' : '—'}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>,
       )}
 
       {wrapButton(
@@ -749,7 +1015,7 @@ export const MuHudOverlay: React.FC<MuHudOverlayProps> = ({
             {comboArmed ? 'COMBO ON' : 'COMBO'}
           </span>
           <span className="text-[8px] font-mono-tabular text-amber-200/90 pointer-events-none">
-            {comboConfig.comboSkillIds.slice(0, 5).length}/5
+            {comboArmed ? 'Auto+Cura' : `${comboConfig.comboSkillIds.slice(0, 5).length}/5`}
           </span>
         </button>,
       )}

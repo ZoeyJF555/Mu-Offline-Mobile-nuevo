@@ -7,9 +7,19 @@ import { FlyffAudio, FlyffCharacter, FlyffEffects, FlyffWorld, readJSON } from '
 import { EquipmentAppearance } from './flyff/EquipmentAppearance';
 import { SurfaceCollision } from './flyff/SurfaceCollision';
 import { RECIPES } from './flyff/recipes';
+import { stepHeroVerticalPhysics, type HeroVerticalState } from './worldPhysicsMath';
 
 const ORIGIN = 1536;
-const SLOTS = { helmet: 'helm', torso: 'armor', pants: 'pants', hands: 'gloves', feet: 'boots', weapon: 'weapon', offhand: 'shield' } as const;
+const SLOTS = {
+  helmet: 'helm',
+  torso: 'armor',
+  pants: 'pants',
+  hands: 'gloves',
+  feet: 'boots',
+  weapon: 'weapon',
+  offhand: 'shield',
+  wings: 'wings',
+} as const;
 export class FlyffContent {
   readonly base = new URL(`${import.meta.env.BASE_URL}flyff/`, location.href).href;
   actor: FlyffCharacter | null = null;
@@ -36,6 +46,11 @@ export class FlyffContent {
   private pendingSounds: Promise<void> | null = null;
   private volume = .7;
   private muted = false;
+  private heroVertState: HeroVerticalState = { y: 0, vy: 0, isAirborne: false, airTime: 0 };
+  private pendingJump = false;
+  private lastAirPhase: 'grounded' | 'rising' | 'falling' = 'grounded';
+  private lastJustJumped = false;
+  private lastJustLanded = false;
   onError: (error:unknown)=>void = console.warn;
   onWear: (slot: string, durability: number)=>void = ()=>{};
   constructor(private scene: Scene) {
@@ -195,15 +210,39 @@ export class FlyffContent {
     if(!this.world)return true;
     return this.collision.canMove(fromX,fromZ,x,z,feet,(px,pz)=>this.height(px,pz),(px,pz)=>this.ready(px,pz));
   }
-  walkHeight(x:number,z:number,current:number,_dt:number) {
-    if(!this.world)return this.height(x,z);
-    const actor=this.actor,feet=current+(actor?.root.position.y??0);
-    const target=this.collision.floor(x,z,feet+.65,this.height(x,z));
-    if(actor){
-      actor.root.position.y=Math.max(0,feet-target);
-      if(actor.root.position.y>.06&&!actor.jumping){actor.jumping=true;actor.velocityY=0;actor.play('jump_fall',false);}
+  resetVerticalPosition(y: number) {
+    this.heroVertState = { y, vy: 0, isAirborne: false, airTime: 0 };
+    this.pendingJump = false;
+    this.lastAirPhase = 'grounded';
+    this.lastJustJumped = false;
+    this.lastJustLanded = false;
+    if (this.actor) {
+      this.actor.jumping = false;
+      this.actor.root.position.y = 0;
     }
-    return target;
+  }
+  walkHeight(x:number,z:number,current:number,dt:number) {
+    if(!this.world)return this.height(x,z);
+    if (!Number.isFinite(this.heroVertState.y) || (Math.abs(this.heroVertState.y - current) > 8 && !this.heroVertState.isAirborne)) {
+      this.heroVertState.y = current;
+    }
+    const baseTerrain = this.height(x,z);
+    const floorY = this.collision.floor(x, z, this.heroVertState.y + 0.65, baseTerrain);
+    const step = stepHeroVerticalPhysics({
+      state: this.heroVertState,
+      floorY,
+      dt: Math.max(0.001, dt),
+      jumpRequested: this.pendingJump,
+    });
+    this.pendingJump = false;
+    this.heroVertState = step.state;
+    this.lastAirPhase = step.phase;
+    this.lastJustJumped = step.justJumped;
+    this.lastJustLanded = step.justLanded;
+    if (this.actor) {
+      this.actor.root.position.y = 0;
+    }
+    return step.state.y;
   }
   update(dt:number,x:number,z:number,moving:boolean,rotation:number) {
     this.effects.update(dt);this.world?.update(dt);this.worldClock+=dt;
@@ -212,10 +251,29 @@ export class FlyffContent {
       this.worldClock=0;
       void this.stream(x,z).catch(this.onError);
     }
-    if(this.actor){this.actor.root.rotation.y=rotation;
-      this.actor.update(dt,{moving,running:true,height:0,surface:this.world?.surfaceAt(x+ORIGIN,z+ORIGIN)??'land'});
+    if(this.actor){
+      this.actor.root.rotation.y=rotation;
+      (this.actor as any).update(dt,{
+        moving,
+        running:true,
+        height:0,
+        surface:this.world?.surfaceAt(x+ORIGIN,z+ORIGIN)??'land',
+        externalAirPhase: this.world ? this.lastAirPhase : null,
+        justJumped: this.lastJustJumped,
+        justLanded: this.lastJustLanded,
+      });
+      this.lastJustJumped = false;
+      this.lastJustLanded = false;
     }
   }
-  jump(){this.actor?.jump(0);}
+  jump(){
+    if (!this.world) {
+      this.actor?.jump(0);
+      return;
+    }
+    if (!this.heroVertState.isAirborne) {
+      this.pendingJump = true;
+    }
+  }
   dispose(){this.disposed=true;this.generation++;this.clearWorld();this.appearance?.dispose();this.actor?.dispose();this.effects.dispose();this.audio?.dispose();}
 }

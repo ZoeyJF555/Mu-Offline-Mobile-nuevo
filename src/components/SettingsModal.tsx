@@ -180,22 +180,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </button>
           </div>
 
-          {/* Third-Person Camera Distance (Close Character Height ~3.4m) */}
+          {/* Third-Person Camera Distance (+2m pull-back default ~5.4m) */}
           <div className="p-3.5 rounded-lg bg-[#141a28] border border-slate-800 space-y-2">
             <div className="flex items-center justify-between text-xs">
               <span className="font-semibold text-slate-100">
-                Distancia Cámara 3ra Persona (Cercana al Héroe)
+                Distancia Cámara 3ra Persona (Estándar 5.4 m)
               </span>
               <span className="font-mono-tabular text-amber-300">
-                {(settings.cameraDistance ?? 3.4).toFixed(1)} m
+                {(settings.cameraDistance ?? 5.4).toFixed(1)} m
               </span>
             </div>
             <input
               type="range"
-              min={2.2}
-              max={10.5}
+              min={2.6}
+              max={11.5}
               step={0.2}
-              value={settings.cameraDistance ?? 3.4}
+              value={settings.cameraDistance ?? 5.4}
               onChange={(e) =>
                 onUpdateSettings({ ...settings, cameraDistance: Number(e.target.value) })
               }

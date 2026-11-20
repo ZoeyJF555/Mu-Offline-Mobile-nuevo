@@ -906,13 +906,13 @@ export function getDefaultComboConfig(classType: HeroClass): CharacterComboConfi
 }
 
 export const DEFAULT_BUTTON_LAYOUTS: Record<HudButtonId, ButtonLayoutItem> = {
-  joystick: { id: 'joystick', label: 'Joystick PUBG', xPct: 11, yPct: 74, scale: 1.0 },
-  attack: { id: 'attack', label: 'Atacar', xPct: 91, yPct: 78, scale: 1.04 },
-  combo: { id: 'combo', label: 'Combo x5', xPct: 79, yPct: 82, scale: 0.96 },
-  jump: { id: 'jump', label: 'Saltar (J)', xPct: 91, yPct: 57, scale: 0.94 },
-  skillTray: { id: 'skillTray', label: 'Poderes (10)', xPct: 68, yPct: 56, scale: 0.96 },
-  potion: { id: 'potion', label: 'Poción', xPct: 92, yPct: 39, scale: 0.9 },
-  loot: { id: 'loot', label: 'Recoger (E)', xPct: 67, yPct: 82, scale: 0.9 },
+  joystick: { id: 'joystick', label: 'Joystick PUBG', xPct: 11, yPct: 76, scale: 1.0 },
+  attack: { id: 'attack', label: 'Atacar', xPct: 91, yPct: 79, scale: 1.04 },
+  combo: { id: 'combo', label: 'Auto-Combo x5', xPct: 78, yPct: 83, scale: 0.96 },
+  jump: { id: 'jump', label: 'Saltar (J)', xPct: 91, yPct: 58, scale: 0.94 },
+  skillTray: { id: 'skillTray', label: 'Poderes (10)', xPct: 68, yPct: 48, scale: 0.94 },
+  potion: { id: 'potion', label: 'HP/MP Poción', xPct: 92, yPct: 38, scale: 0.9 },
+  loot: { id: 'loot', label: 'Recoger (E)', xPct: 65, yPct: 83, scale: 0.9 },
   mapWarp: { id: 'mapWarp', label: 'Mapas (M)', xPct: 51, yPct: 9, scale: 0.96 },
   stats: { id: 'stats', label: 'Héroe/Skills (C)', xPct: 62, yPct: 9, scale: 0.96 },
   sync: { id: 'sync', label: 'Wi-Fi / BT', xPct: 73, yPct: 9, scale: 0.96 },

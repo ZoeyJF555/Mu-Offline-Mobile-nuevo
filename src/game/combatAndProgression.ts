@@ -7,6 +7,7 @@ import type {
   CharacterSex,
   CharacterVariantKey,
   HeroClass,
+  MapId,
   MapMonsterDef,
   MonsterArchetype,
   MonsterPowerDef,
@@ -20,6 +21,142 @@ import type {
 export const MAX_STAT_POINTS = 65000;
 export const MAX_HERO_LEVEL = 99;
 export const POINTS_PER_LEVEL = 5;
+
+/**
+ * Porcentaje base de experiencia otorgada por cada mapa según progresión:
+ * - Flaris (Nv. 1–24): 6% base por monstruo de nivel inicial
+ * - Robledal (Nv. 25–46): 9% tier intermedio
+ * - Puerto de Bruma (Nv. 47–76): 12% tier avanzado
+ * - Cráter de Ceniza (Nv. 77–99): 22% tier maestro para llegar a Nv. 99 Reset
+ */
+export const MAP_XP_TIER_PCT: Record<MapId, number> = {
+  flaris: 6,
+  robledal: 9,
+  puerto: 12,
+  ceniza: 22,
+};
+
+export const MAP_LEVEL_BANDS: Record<MapId, { minLevel: number; maxLevel: number }> = {
+  flaris: { minLevel: 1, maxLevel: 24 },
+  robledal: { minLevel: 25, maxLevel: 46 },
+  puerto: { minLevel: 47, maxLevel: 76 },
+  ceniza: { minLevel: 77, maxLevel: 99 },
+};
+
+/**
+ * Tabla de experiencia requerida por nivel (1..99), calibrada junto a MAP_XP_TIER_PCT
+ * para que subir del Nivel 1 al Nivel 99 Reset requiera recorrer los 4 mapas durante
+ * ~5 días jugando 3 a 4 horas diarias (~15–20 horas efectivas a ~420 kills/h).
+ */
+export const XP_TABLE_BY_LEVEL: readonly number[] = Array.from({ length: MAX_HERO_LEVEL }, (_, idx) => {
+  const level = idx + 1;
+  if (level >= MAX_HERO_LEVEL) return 0;
+  if (level === 1) return 100;
+  if (level <= 24) {
+    // Flaris (Nv. 1–24): arranca en 100 XP (6% = 6 XP -> ~17 kills) hasta ~560 XP (~2.1h)
+    return Math.round(100 + (level - 1) * 14 + Math.pow(level - 1, 1.55) * 1.15);
+  }
+  if (level <= 46) {
+    // Robledal (Nv. 25–46): ~1,650 kills (~3.9h)
+    const offset = level - 24;
+    return Math.round(11000 + offset * 420 + Math.pow(offset, 1.5) * 32);
+  }
+  if (level <= 76) {
+    // Puerto de Bruma (Nv. 47–76): ~2,420 kills (~5.7h)
+    const offset = level - 46;
+    return Math.round(46000 + offset * 1450 + Math.pow(offset, 1.5) * 90);
+  }
+  // Cráter de Ceniza (Nv. 77–98 -> 99): ~2,400 kills (~5.7h)
+  const offset = level - 76;
+  return Math.round(290000 + offset * 11500 + Math.pow(offset, 1.55) * 480);
+});
+
+export function getXpRequiredForLevel(level: number): number {
+  const clamped = Math.max(1, Math.min(MAX_HERO_LEVEL, Math.floor(level)));
+  return XP_TABLE_BY_LEVEL[clamped - 1] ?? 0;
+}
+
+const MAP_BENCHMARK_XP_POOL: Record<MapId, number> = {
+  flaris: 100,
+  robledal: 1850,
+  puerto: 5400,
+  ceniza: 16500,
+};
+
+export function computeMapScaledXpReward(
+  mapId: MapId,
+  heroLevel: number,
+  monsterLevel: number,
+  isBoss = false,
+): { xp: number; mapTierPct: number; efficiencyRatio: number } {
+  const mapTierPct = MAP_XP_TIER_PCT[mapId] ?? 6;
+  const band = MAP_LEVEL_BANDS[mapId] ?? MAP_LEVEL_BANDS.flaris;
+  const safeHero = Math.max(1, Math.min(MAX_HERO_LEVEL, heroLevel));
+
+  const levelSpanBoost =
+    mapId === 'flaris'
+      ? 1 + Math.max(0, monsterLevel - 1) * 0.032
+      : mapId === 'robledal'
+        ? 1 + Math.max(0, monsterLevel - band.minLevel) * 0.035
+        : mapId === 'puerto'
+          ? 1 + Math.max(0, monsterLevel - band.minLevel) * 0.034
+          : 1 + Math.max(0, monsterLevel - band.minLevel) * 0.038;
+
+  // Penalización si el jugador se queda en un mapa inferior cuando ya superó el nivel del mapa,
+  // obligándolo a avanzar a mapas superiores; y ligera mitigación si entra muy bajo de nivel.
+  let efficiencyRatio = 1.0;
+  if (safeHero > band.maxLevel + 2) {
+    const over = safeHero - band.maxLevel;
+    efficiencyRatio = Math.max(0.14, 1 / (1 + over * 0.28));
+  } else if (safeHero < band.minLevel - 4) {
+    efficiencyRatio = 0.72;
+  }
+
+  // En Flaris Nv.1: 100 * 0.06 = 6 XP exactos (6% de nivel).
+  // En mapas superiores usa el pool de nivel del mapa multiplicado por su tasa 9% / 12% / 22%
+  const rawBase = (MAP_BENCHMARK_XP_POOL[mapId] ?? 100) * (mapTierPct / 100) * levelSpanBoost;
+  const bossMult = isBoss ? 2.4 : 1.0;
+  const xp = Math.max(2, Math.round(rawBase * efficiencyRatio * bossMult));
+  return { xp, mapTierPct, efficiencyRatio };
+}
+
+export function estimateResetProgressionHours(killsPerHour = 420): {
+  totalKills: number;
+  totalHours: number;
+  daysAt35HoursPerDay: number;
+  byMap: Record<MapId, { levels: string; tierPct: number; kills: number; hours: number }>;
+} {
+  const byMap = {} as Record<MapId, { levels: string; tierPct: number; kills: number; hours: number }>;
+  let totalKills = 0;
+
+  for (const mapId of ['flaris', 'robledal', 'puerto', 'ceniza'] as MapId[]) {
+    const band = MAP_LEVEL_BANDS[mapId];
+    const maxL = Math.min(band.maxLevel, MAX_HERO_LEVEL - 1);
+    let mapKills = 0;
+    for (let lvl = band.minLevel; lvl <= maxL; lvl++) {
+      const req = getXpRequiredForLevel(lvl);
+      const monLvl = Math.min(band.maxLevel, Math.max(band.minLevel + 2, lvl));
+      const { xp } = computeMapScaledXpReward(mapId, lvl, monLvl, false);
+      mapKills += Math.ceil(req / Math.max(1, xp));
+    }
+    const hours = Number((mapKills / killsPerHour).toFixed(2));
+    byMap[mapId] = {
+      levels: `${band.minLevel}-${band.maxLevel}`,
+      tierPct: MAP_XP_TIER_PCT[mapId],
+      kills: mapKills,
+      hours,
+    };
+    totalKills += mapKills;
+  }
+
+  const totalHours = Number((totalKills / killsPerHour).toFixed(2));
+  return {
+    totalKills,
+    totalHours,
+    daysAt35HoursPerDay: Number((totalHours / 3.5).toFixed(2)),
+    byMap,
+  };
+}
 
 export interface VariantSkillRow {
   skillId: string;
@@ -608,6 +745,7 @@ export function scaleMonsterForPlayerLevel(
   playerLevel: number,
   playerAvgAttack = 75,
   mapRange?: { minLevel: number; maxLevel: number },
+  mapId?: MapId,
 ): ScaledMonsterStats {
   const safePlayerLevel = Math.max(1, Math.min(MAX_HERO_LEVEL, playerLevel));
   // Mantiene la identidad del mapa (1-24 Flaris, 25-46 Robledal, 47-76 Puerto, 77-99 Ceniza) adaptándose dinámicamente al nivel
@@ -619,6 +757,16 @@ export function scaleMonsterForPlayerLevel(
     targetLevel = Math.max(mapRange.minLevel, Math.min(mapRange.maxLevel, targetLevel));
   }
 
+  const resolvedMapId: MapId =
+    mapId ??
+    (mapRange?.maxLevel === 24
+      ? 'flaris'
+      : mapRange?.maxLevel === 46
+        ? 'robledal'
+        : mapRange?.maxLevel === 76
+          ? 'puerto'
+          : 'ceniza');
+
   const levelRatio = targetLevel / Math.max(1, def.level);
   const hpFactor = 1 + (levelRatio - 1) * 0.58 + (safePlayerLevel - 1) * 0.035;
   const dmgFactor = 1 + (levelRatio - 1) * 0.46 + (safePlayerLevel - 1) * 0.024;
@@ -626,7 +774,7 @@ export function scaleMonsterForPlayerLevel(
   const maxHp = Math.round(def.hp * hpFactor * (def.isBoss ? 1.18 : 1));
   const damage = Math.round(def.damage * dmgFactor);
   const defense = Math.round(targetLevel * 1.45 + (def.isBoss ? 18 : 6));
-  const xp = Math.round(def.xp * (1 + (safePlayerLevel - 1) * 0.11));
+  const { xp } = computeMapScaledXpReward(resolvedMapId, safePlayerLevel, targetLevel, Boolean(def.isBoss));
   const zen = Math.round(def.zen * (1 + (safePlayerLevel - 1) * 0.09));
 
   const powers = MONSTER_POWERS_BY_ARCHETYPE[def.archetype] || MONSTER_POWERS_BY_ARCHETYPE.bull;

@@ -28,6 +28,8 @@ import {
   loadButtonLayouts,
   loadComboConfig,
   loadGameSettings,
+  loadLootFilters,
+  loadPotionConfig,
   loginAccount,
   normalizeCharacterRecord,
   performHeroReset,
@@ -40,6 +42,8 @@ import {
   saveChatMessage,
   saveComboConfig,
   saveGameSettings,
+  saveLootFilters,
+  savePotionConfig,
   setCharacterSpecialization,
   wearEquipment,
   repairEquipment,
@@ -62,8 +66,17 @@ import {
   evaluateAchievements,
   getSkillCooldownSec,
   getSkillRank,
+  getXpRequiredForLevel,
   resolveAsyncDuel,
 } from './game/combatAndProgression';
+import {
+  DEFAULT_CAMERA_DISTANCE,
+  DEFAULT_LOOT_FILTERS,
+  DEFAULT_POTION_CONFIG,
+  computeDualPotionRestore,
+  type LootFilterSettings,
+  type PotionConfig,
+} from './game/worldPhysicsMath';
 import { MuWorldEngine, type EngineCallbacks, type TargetMonsterInfo } from './game/MuWorldEngine';
 import { soundSynth } from './game/soundSynth';
 import { cloudSyncManager } from './services/cloudSyncManager';
@@ -92,6 +105,7 @@ import type {
   HeroClass,
   HudButtonId,
   MapId,
+  MinimapEntitySnapshot,
   MuAccount,
   MuCharacter,
   MuItem,
@@ -118,8 +132,9 @@ const INITIAL_SETTINGS: GameSettings = {
   musicEnabled: true,
   musicVolume: 0.45,
   free3dCamera: false,
-  cameraDistance: 3.4,
+  cameraDistance: DEFAULT_CAMERA_DISTANCE,
   cameraDistanceMigratedV2: true,
+  cameraDistanceMigratedV3: true,
   autoAimAssist: true,
   targetFps: 60,
 };
@@ -182,6 +197,9 @@ export default function App() {
   const [serverChallenges, setServerChallenges] = useState<AsyncDuelChallenge[]>([]);
   const [lastDuelResult, setLastDuelResult] = useState<AsyncDuelRecord | null>(null);
   const [skillNotice, setSkillNotice] = useState<string | null>(null);
+  const [lootFilters, setLootFilters] = useState<LootFilterSettings>(DEFAULT_LOOT_FILTERS);
+  const [potionConfig, setPotionConfig] = useState<PotionConfig>(DEFAULT_POTION_CONFIG);
+  const [minimapData, setMinimapData] = useState<MinimapEntitySnapshot | null>(null);
 
   const autoStartedRef = useRef(false);
   const ledgerRef = useRef<SharedLedgerEntry[]>([]);
@@ -193,6 +211,10 @@ export default function App() {
   const settingsRef = useRef<GameSettings>(INITIAL_SETTINGS);
   const screenStageRef = useRef(screenStage);
   const currentAccRef = useRef<MuAccount | null>(null);
+  const lootFiltersRef = useRef<LootFilterSettings>(DEFAULT_LOOT_FILTERS);
+  const potionConfigRef = useRef<PotionConfig>(DEFAULT_POTION_CONFIG);
+  const autoHealAtRef = useRef<number>(0);
+  const pressAttackRef = useRef<() => void>(() => {});
   charRef.current = character;
   itemsRef.current = items;
   roomRef.current = roomState;
@@ -202,6 +224,8 @@ export default function App() {
   ledgerRef.current = ledger;
   eventsRef.current = eventHistory;
   skillCooldownsRef.current = skillCooldowns;
+  lootFiltersRef.current = lootFilters;
+  potionConfigRef.current = potionConfig;
 
   const pushBanner = useCallback((text: string, color = '#fbbf24') => {
     const id = Date.now() + Math.random();
@@ -309,10 +333,12 @@ export default function App() {
   const loadAllFromDexie = useCallback(
     async (preferAccountId?: string, preferCharId?: string) => {
       await initDexie();
-      const [accList, loadedSettings, loadedLayouts, led, evs, chats, duels, challenges] = await Promise.all([
+      const [accList, loadedSettings, loadedLayouts, loadedFilters, loadedPotions, led, evs, chats, duels, challenges] = await Promise.all([
         listAccounts(),
         loadGameSettings(),
         loadButtonLayouts(),
+        loadLootFilters(),
+        loadPotionConfig(),
         getSharedLedger(),
         getEventSessions(),
         getChatHistory(),
@@ -323,6 +349,8 @@ export default function App() {
       setAccounts(accList);
       setGameSettings(loadedSettings);
       setButtonLayouts(loadedLayouts);
+      setLootFilters(loadedFilters);
+      setPotionConfig(loadedPotions);
       setLedger(led);
       setEventHistory(evs);
       setChatMessages(chats);
@@ -367,7 +395,9 @@ export default function App() {
     const requestedMap = params.get('map') as MapId | null;
     const targetChar = requestedMap ? { ...character, currentMapId: requestedMap } : character;
     if (requestedMap) {
+      charRef.current = targetChar;
       setCharacter(targetChar);
+      void updateCharacter(targetChar);
     }
     if (accounts[0] && !currentAccount) {
       setCurrentAccount(accounts[0]);
@@ -434,7 +464,7 @@ export default function App() {
     soundSynth.setMusicConfig(gameSettings.musicEnabled, gameSettings.musicVolume);
     engineRef.current?.setBrightness(gameSettings.brightness);
     engineRef.current?.setFree3dMode(gameSettings.free3dCamera);
-    engineRef.current?.setCameraDistance(gameSettings.cameraDistance ?? 3.4);
+    engineRef.current?.setCameraDistance(gameSettings.cameraDistance ?? DEFAULT_CAMERA_DISTANCE);
     engineRef.current?.setAutoAimAssist(gameSettings.autoAimAssist ?? true);
     engineRef.current?.setTargetFps(gameSettings.targetFps);
   }, [gameSettings]);
@@ -746,7 +776,7 @@ export default function App() {
         while (nextXp >= nextXpToNext && nextLevel < MAX_HERO_LEVEL) {
           nextXp -= nextXpToNext;
           nextLevel += 1;
-          nextXpToNext = Math.round(nextXpToNext * 1.24);
+          nextXpToNext = getXpRequiredForLevel(nextLevel);
           nextMaxHp += 28;
           nextMaxMp += 18;
           nextMaxSd += 22;
@@ -801,6 +831,8 @@ export default function App() {
           soul: c.soul + (drop.kind === 'soul' ? drop.amount : 0),
           chaos: c.chaos + (drop.kind === 'chaos' ? drop.amount : 0),
           life: c.life + (drop.kind === 'life' ? drop.amount : 0),
+          creation: (c.creation ?? 0) + (drop.kind === 'creation' ? drop.amount : 0),
+          talisman: (c.talisman ?? 0) + (drop.kind === 'talisman' ? drop.amount : 0),
         };
         const saved = await updateCharacter(updated);
         setCharacter(saved);
@@ -812,7 +844,11 @@ export default function App() {
               ? '#60a5fa'
               : drop.kind === 'life'
                 ? '#c084fc'
-                : '#fbbf24',
+                : drop.kind === 'creation'
+                  ? '#34d399'
+                  : drop.kind === 'talisman'
+                    ? '#fde047'
+                    : '#fbbf24',
         );
       },
       onPlayerDamaged: (rawAmount, isCrit) => {
@@ -891,6 +927,12 @@ export default function App() {
       onFpsUpdate: (fps) => {
         setMeasuredFps(fps);
       },
+      onMinimapUpdate: (snap) => {
+        setMinimapData(snap);
+      },
+      onAutoHuntAttack: () => {
+        pressAttackRef.current();
+      },
       onWorldTelemetry: (info) => {
         setWorldTelemetry(info);
       },
@@ -904,7 +946,7 @@ export default function App() {
     engine.setBrightness(settingsRef.current.brightness);
     engine.setAudio(settingsRef.current.volume, settingsRef.current.muted);
     engine.setFree3dMode(settingsRef.current.free3dCamera);
-    engine.setCameraDistance(settingsRef.current.cameraDistance ?? 3.4);
+    engine.setCameraDistance(settingsRef.current.cameraDistance ?? DEFAULT_CAMERA_DISTANCE);
     engine.setAutoAimAssist(settingsRef.current.autoAimAssist ?? true);
     engine.setTargetFps(settingsRef.current.targetFps);
 
@@ -1027,6 +1069,12 @@ export default function App() {
       handleCastSkill(def);
     }
   }, [comboArmed, comboConfig, handleCastSkill, pushBanner]);
+
+  pressAttackRef.current = handlePressAttack;
+
+  useEffect(() => {
+    engineRef.current?.setAutoHuntEnabled(comboArmed);
+  }, [comboArmed]);
 
   // Global keyboard shortcuts while playing/paused
   useEffect(() => {
@@ -1271,20 +1319,88 @@ export default function App() {
     }
   };
 
-  const handleHealPotion = async () => {
-    if (!character) return;
-    const updated = {
-      ...character,
-      hp: character.maxHp,
-      mp: character.maxMp,
-      sd: character.maxSd,
-      ag: character.maxAg,
-    };
-    const saved = await updateCharacter(updated);
-    setCharacter(saved);
-    soundSynth.playTradeSync();
-    pushBanner('HP, MP, SD y AG restaurados', '#4ade80');
+  const handleUpdateLootFilters = (next: LootFilterSettings) => {
+    setLootFilters(next);
+    void saveLootFilters(next);
   };
+
+  const handleUpdatePotionConfig = (next: PotionConfig) => {
+    setPotionConfig(next);
+    void savePotionConfig(next);
+  };
+
+  const handleHealPotion = useCallback(async () => {
+    const c = charRef.current;
+    if (!c) return;
+    const cfg = potionConfigRef.current;
+    let res = computeDualPotionRestore({
+      hp: c.hp,
+      maxHp: c.maxHp,
+      mp: c.mp,
+      maxMp: c.maxMp,
+      sd: c.sd,
+      maxSd: c.maxSd,
+      ag: c.ag,
+      maxAg: c.maxAg,
+      tierId: cfg.tierId,
+    });
+    if (c.zen < res.tier.zenCost) {
+      res = computeDualPotionRestore({
+        hp: c.hp,
+        maxHp: c.maxHp,
+        mp: c.mp,
+        maxMp: c.maxMp,
+        sd: c.sd,
+        maxSd: c.maxSd,
+        ag: c.ag,
+        maxAg: c.maxAg,
+        tierId: 'menor',
+      });
+    }
+    const updated: MuCharacter = {
+      ...c,
+      hp: res.nextHp,
+      mp: res.nextMp,
+      sd: res.nextSd,
+      ag: res.nextAg,
+      zen: Math.max(0, c.zen - res.tier.zenCost),
+    };
+    charRef.current = updated;
+    setCharacter(updated);
+    soundSynth.playPotion();
+    pushBanner(
+      `+${res.restoredHp} HP / +${res.restoredMp} MP${res.tier.zenCost > 0 ? ` (-${res.tier.zenCost} Zen)` : ''}`,
+      '#4ade80',
+    );
+    const saved = await updateCharacter(updated);
+    setCharacter(normalizeCharacterRecord(saved));
+  }, [pushBanner]);
+
+  // Auto-loot (filtered) & auto-heal loop when playing
+  useEffect(() => {
+    if (screenStage !== 'playing') return;
+    const timer = window.setInterval(() => {
+      if (lootFiltersRef.current.autoLootEnabled) {
+        engineRef.current?.collectAutoLoot(lootFiltersRef.current);
+      }
+      if (comboArmed) {
+        const c = charRef.current;
+        if (c && (c.hp < c.maxHp || c.mp < c.maxMp)) {
+          const hpPct = (c.hp / Math.max(1, c.maxHp)) * 100;
+          const mpPct = (c.mp / Math.max(1, c.maxMp)) * 100;
+          const threshold = potionConfigRef.current.autoHealThresholdPct;
+          if (hpPct < threshold || mpPct < Math.min(45, threshold)) {
+            const now = Date.now();
+            if (now - autoHealAtRef.current > 1700) {
+              autoHealAtRef.current = now;
+              void handleHealPotion();
+            }
+          }
+        }
+      }
+    }, 350);
+    return () => window.clearInterval(timer);
+  }, [screenStage, comboArmed, handleHealPotion]);
 
   const handleEquip = async (itemId: string) => {
     if (!character) return;
@@ -1295,7 +1411,8 @@ export default function App() {
       nextItems.filter((i) => i.isEquipped),
       character.sex,
     ).catch(console.error);
-    soundSynth.playForge(true);
+    const toggled = nextItems.find((i) => i.id === itemId);
+    soundSynth.playEquip(toggled?.slot === 'wings');
     setForgeMessage('Equipo actualizado y guardado en IndexedDB (Dexie).');
   };
 
@@ -1607,6 +1724,11 @@ export default function App() {
             worldTelemetry={worldTelemetry}
             damageNumbers={damageNumbers}
             syncStatus={syncStatus}
+            minimapData={minimapData}
+            lootFilters={lootFilters}
+            potionConfig={potionConfig}
+            onUpdateLootFilters={handleUpdateLootFilters}
+            onUpdatePotionConfig={handleUpdatePotionConfig}
             onJoystickVector={(x, y) => engineRef.current?.setJoystickVector(x, y)}
             onPressAttack={handlePressAttack}
             onJump={() => engineRef.current?.jump()}
@@ -1614,7 +1736,7 @@ export default function App() {
             onCastSkill={handleCastSkill}
             onUpdateComboConfig={handleUpdateComboConfig}
             onHealPotion={handleHealPotion}
-            onPickupLoot={() => engineRef.current?.pickupNearestLoot()}
+            onPickupLoot={() => engineRef.current?.pickupNearestLoot(true, lootFiltersRef.current)}
             onTalkNpc={(npc) => {
               setActiveNpc(npc);
               setNpcStatusMessage(null);

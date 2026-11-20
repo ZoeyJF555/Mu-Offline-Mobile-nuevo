@@ -24,8 +24,13 @@ export class MuAssetManager {
     const existing = this.containerCache.get(fileName);
     if (existing) return existing;
 
-    const basePath = `${import.meta.env.BASE_URL || './'}models/`;
-    const promise = SceneLoader.LoadAssetContainerAsync(basePath, fileName, this.scene).catch((err) => {
+    const appBase = import.meta.env.BASE_URL || './';
+    const rootUrl = fileName.startsWith('/') ? `${appBase.replace(/\/$/, '')}${fileName}` : `${appBase}models/${fileName}`;
+    const lastSlash = rootUrl.lastIndexOf('/');
+    const basePath = rootUrl.slice(0, lastSlash + 1);
+    const cleanFile = rootUrl.slice(lastSlash + 1);
+
+    const promise = SceneLoader.LoadAssetContainerAsync(basePath, cleanFile, this.scene).catch((err) => {
       this.containerCache.delete(fileName);
       throw err;
     });
@@ -48,6 +53,7 @@ export class MuAssetManager {
       emissiveIntensity?: number;
       tintHex?: number;
       receiveShadows?: boolean;
+      doubleSided?: boolean;
     },
   ): Promise<{ root: TransformNode; meshes: AbstractMesh[] }> {
     const container = await this.loadContainer(fileName);
@@ -83,6 +89,9 @@ export class MuAssetManager {
       if (opts?.receiveShadows) {
         m.receiveShadows = true;
       }
+      if (opts?.doubleSided && m.material) {
+        m.material.backFaceCulling = false;
+      }
       if ((opts?.emissiveHex !== undefined || opts?.tintHex !== undefined) && m.material) {
         const cloned = m.material.clone(`${instanceName}_${m.material.name}_mat`);
         if (cloned instanceof PBRMaterial) {
@@ -93,12 +102,75 @@ export class MuAssetManager {
             const em = Color3.FromHexString(`#${opts.emissiveHex.toString(16).padStart(6, '0')}`);
             cloned.emissiveColor = em.scale(opts.emissiveIntensity);
           }
+          if (opts?.doubleSided) cloned.backFaceCulling = false;
         }
         m.material = cloned;
       }
     }
 
     return { root, meshes };
+  }
+
+  /**
+   * Instantiates an OpenMU/Flyff GLB with automatic Z-up / Y-up normalization, horizontal centering,
+   * target height scaling, and exact floor seating (minY === 0) so drops sit flush on terrain.
+   */
+  async instantiateNormalizedModel(
+    fileName: string,
+    instanceName: string,
+    parent?: TransformNode,
+    opts?: {
+      targetSize?: number;
+      zUpOpenMu?: boolean;
+      seatOnGround?: boolean;
+      emissiveHex?: number;
+      emissiveIntensity?: number;
+    },
+  ): Promise<{ root: TransformNode; meshes: AbstractMesh[] }> {
+    const inst = await this.instantiateModel(fileName, instanceName, parent, {
+      doubleSided: true,
+      emissiveHex: opts?.emissiveHex,
+      emissiveIntensity: opts?.emissiveIntensity,
+    });
+
+    const holder = new TransformNode(`${instanceName}_norm`, this.scene);
+    const children = [...inst.root.getChildren()];
+    for (const ch of children) {
+      ch.parent = holder;
+    }
+    holder.parent = inst.root;
+    if (opts?.zUpOpenMu) {
+      holder.rotation.x = -Math.PI / 2;
+    }
+
+    inst.root.computeWorldMatrix(true);
+    let min = new Vector3(Infinity, Infinity, Infinity);
+    let max = new Vector3(-Infinity, -Infinity, -Infinity);
+    let hasVerts = false;
+    for (const m of inst.meshes) {
+      if (m.getTotalVertices() <= 0) continue;
+      m.computeWorldMatrix(true);
+      const bb = m.getBoundingInfo().boundingBox;
+      min = Vector3.Minimize(min, bb.minimumWorld);
+      max = Vector3.Maximize(max, bb.maximumWorld);
+      hasVerts = true;
+    }
+
+    if (hasVerts) {
+      const dx = max.x - min.x;
+      const dy = max.y - min.y;
+      const dz = max.z - min.z;
+      const maxDim = Math.max(0.01, dx, dy, dz);
+      const targetSize = opts?.targetSize ?? 0.52;
+      const scale = targetSize / maxDim;
+      holder.scaling.setAll(scale);
+      const cx = ((min.x + max.x) * 0.5) * scale;
+      const cz = ((min.z + max.z) * 0.5) * scale;
+      const groundShift = opts?.seatOnGround !== false ? -min.y * scale : -((min.y + max.y) * 0.5) * scale;
+      holder.position.set(-cx, groundShift, -cz);
+    }
+
+    return inst;
   }
 
   /**

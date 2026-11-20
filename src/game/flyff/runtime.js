@@ -46,7 +46,7 @@ export class FlyffAudio {
   dispose() { this.muted = true; this.context?.close(); this.cache.clear(); }
 }
 
-const SLOT_NAMES = ['helmet', 'torso', 'pants', 'hands', 'feet', 'weapon', 'offhand'];
+const SLOT_NAMES = ['helmet', 'torso', 'pants', 'hands', 'feet', 'weapon', 'offhand', 'wings'];
 
 export function splitGarments(meshes) {
   for (const mesh of [...meshes]) {
@@ -89,9 +89,9 @@ export class FlyffCharacter {
     // Both files use the same 30-joint native rig; share the animated skeleton.
     for (const mesh of body.meshes) if (mesh.skeleton) mesh.skeleton = outfit.skeletons[0];
     splitGarments(outfit.meshes);
-    this.gear = Object.fromEntries(SLOT_NAMES.map(s => [s, { equipped: true, durability: 100 }]));
+    this.gear = Object.fromEntries(SLOT_NAMES.map(s => [s, { equipped: s !== 'wings', durability: s === 'wings' ? 0 : 100 }]));
     this.clip = null; this.time = 0; this.velocityY = 0; this.jumping = false;
-    this.actionTimer = 0; this.actionClip = null;
+    this.actionTimer = 0; this.actionClip = null; this.wingPhase = 0; this.wingsNode = null;
     this.hp = 100; this.fragments = []; this.eventLog = []; this.updateVisibility();
   }
   emit(type, detail = {}) {
@@ -119,8 +119,11 @@ export class FlyffCharacter {
   }
   updateVisibility() {
     for (const mesh of this.outfit.meshes) {
-      const slot = mesh.name.match(/equip_(helmet|torso|pants|hands|feet|weapon|offhand)_/)?.[1];
+      const slot = mesh.name.match(/equip_(helmet|torso|pants|hands|feet|weapon|offhand|wings)_/)?.[1];
       if (slot) mesh.setEnabled(this.gear[slot].equipped && mesh.metadata?.visualSelected !== false);
+    }
+    if (this.wingsNode) {
+      this.wingsNode.setEnabled(Boolean(this.gear.wings?.equipped));
     }
     for (const mesh of this.body.meshes) {
       const slot = mesh.name.match(/body_(torso|legs|hands|feet)_/)?.[1];
@@ -155,7 +158,7 @@ export class FlyffCharacter {
     this.actionTimer = 0; this.actionClip = null;
     this.play('jump_start', false); this.sound(`jump_${this.config.sex}`, .35); return true;
   }
-  update(dt, { moving = false, running = false, surface = 'grass', height = this.root.position.y } = {}) {
+  update(dt, { moving = false, running = false, surface = 'grass', height = this.root.position.y, externalAirPhase = null, justJumped = false, justLanded = false } = {}) {
     const previousTime = this.time; this.time += dt;
     if (this.actionTimer > 0) {
       this.actionTimer -= dt;
@@ -164,10 +167,43 @@ export class FlyffCharacter {
         this.actionClip = null;
       }
     }
+    if (this.wingsNode && this.gear.wings?.equipped) {
+      const speed = externalAirPhase && externalAirPhase !== 'grounded' ? 7.0 : moving ? 5.0 : 2.1;
+      this.wingPhase += dt * speed;
+      const amp = moving || (externalAirPhase && externalAirPhase !== 'grounded') ? 0.08 : 0.035;
+      this.wingsNode.scaling.x = 1 + Math.sin(this.wingPhase) * amp;
+    }
     const floor=height+(this.root.parent?.getAbsolutePosition().y??0);
     for (const f of this.fragments) updateFragment(f,dt,this.groundAt,floor);
     this.fragments = this.fragments.filter(f => f.life <= 4);
-    if (this.jumping) {
+
+    if (externalAirPhase !== null) {
+      this.root.position.y = height;
+      if (justJumped) {
+        this.jumping = true;
+        this.actionTimer = 0; this.actionClip = null;
+        this.play('jump_start', false);
+        this.sound(`jump_${this.config.sex}`, .35);
+        return;
+      }
+      if (justLanded) {
+        this.jumping = false;
+        if (this.actionTimer <= 0) {
+          this.play(moving ? (running ? 'run' : 'walk') : 'jump_land', moving);
+        }
+        this.sound('land', .35); this.emit('land');
+        return;
+      }
+      if (externalAirPhase === 'rising' || externalAirPhase === 'falling') {
+        this.jumping = true;
+        if (this.actionTimer <= 0) {
+          if (externalAirPhase === 'falling' && this.clip !== 'jump_fall') this.play('jump_fall', false);
+          else if (externalAirPhase === 'rising' && this.time > .1 && this.clip === 'jump_start') this.play('jump_rise', false);
+        }
+        return;
+      }
+      this.jumping = false;
+    } else if (this.jumping) {
       this.velocityY -= 18 * dt; this.root.position.y += this.velocityY * dt;
       if (this.actionTimer <= 0) {
         if (this.velocityY < 0 && this.clip !== 'jump_fall') this.play('jump_fall', false);

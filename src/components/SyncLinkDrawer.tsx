@@ -213,6 +213,50 @@ export const SyncLinkDrawer: React.FC<SyncLinkDrawerProps> = ({
         <div className="flex-1 overflow-y-auto mu-scroll p-5 space-y-5">
           {tab === 'link' && (
             <>
+              {/* 1-Click Quick Invite Bar (Wi-Fi / Bluetooth) */}
+              <div className="p-3.5 rounded-xl bg-gradient-to-r from-[#132036] to-[#171b2e] border border-sky-500/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <div className="text-xs font-bold text-sky-200">
+                    Invitar Amigos por Wi-Fi o Bluetooth
+                  </div>
+                  <div className="text-[11px] text-slate-300 mt-0.5">
+                    {roomState
+                      ? `Sala ${roomState.code} lista · Comparte el enlace o empareja Bluetooth para verlos en verde en el minimapa.`
+                      : 'Crea una invitación Wi-Fi en 1 toque o vincula un dispositivo cercano por Bluetooth.'}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    data-testid="quick-invite-wifi"
+                    onClick={async () => {
+                      setTransport('wifi');
+                      if (roomState) {
+                        await copyInviteLink();
+                      } else {
+                        await onCreateRoom(eventType, 'wifi');
+                      }
+                    }}
+                    className="min-h-[38px] px-3.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Wifi className="w-3.5 h-3.5" />
+                    {roomState ? (copied ? 'Enlace Copiado' : 'Copiar Invitación Wi-Fi') : 'Invitar por Wi-Fi'}
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="quick-invite-bt"
+                    onClick={async () => {
+                      setTransport('bluetooth');
+                      await onPairBluetooth();
+                    }}
+                    className="min-h-[38px] px-3.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Bluetooth className="w-3.5 h-3.5" />
+                    Vincular Bluetooth
+                  </button>
+                </div>
+              </div>
+
               {/* Transport Selector */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <button

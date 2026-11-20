@@ -2,18 +2,23 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   AUTO_AIM_PROBABILITY,
+  MAP_XP_TIER_PCT,
   MAX_HERO_LEVEL,
   MAX_STAT_POINTS,
   POINTS_PER_LEVEL,
   TEN_CHARACTER_TABLES,
+  XP_TABLE_BY_LEVEL,
   buildAsyncDuelChallenge,
   computeHeroDamageStats,
   computeHeroDefenseMitigation,
+  computeMapScaledXpReward,
   decodeDuelToken,
   encodeDuelToken,
+  estimateResetProgressionHours,
   evaluateAchievements,
   findAutoAimTarget,
   getEffectiveSkillMultiplier,
+  getXpRequiredForLevel,
   resolveAsyncDuel,
   rollAutoAimHit,
   rollMonsterAttack,
@@ -224,3 +229,26 @@ test('async duel token roundtrip & duel resolution work deterministically offlin
   assert.ok(record.roundLog.length >= 1);
   assert.equal(record.transportMode, 'bluetooth');
 });
+
+test('XP tables and map-scaled XP rates (6%, 9%, 12%, 22%) take ~5 days (3-4h/day) to reach Lv.99 Reset', () => {
+  assert.equal(XP_TABLE_BY_LEVEL.length, MAX_HERO_LEVEL);
+  assert.equal(MAP_XP_TIER_PCT.flaris, 6);
+  assert.equal(MAP_XP_TIER_PCT.robledal, 9);
+  assert.equal(MAP_XP_TIER_PCT.puerto, 12);
+  assert.equal(MAP_XP_TIER_PCT.ceniza, 22);
+
+  // Starting kill in Flaris at Lv.1 grants exact 6% XP (6 of 100)
+  const lv1Req = getXpRequiredForLevel(1);
+  const flarisKill = computeMapScaledXpReward('flaris', 1, 1, false);
+  assert.equal(lv1Req, 100);
+  assert.equal(flarisKill.xp, 6);
+
+  // Over-leveling in Flaris penalizes XP so player must advance to Robledal / Puerto / Ceniza
+  const overleveledFlaris = computeMapScaledXpReward('flaris', 35, 24, false);
+  assert.ok(overleveledFlaris.efficiencyRatio < 0.4);
+
+  const est = estimateResetProgressionHours(420);
+  assert.ok(est.totalHours >= 15 && est.totalHours <= 20, `Expected 15-20h total, got ${est.totalHours}h`);
+  assert.ok(est.daysAt35HoursPerDay >= 4.2 && est.daysAt35HoursPerDay <= 5.8);
+});
+

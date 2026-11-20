@@ -154,7 +154,15 @@ export const MuInventoryModal: React.FC<MuInventoryModalProps> = ({
                 <div className="text-[9px] text-purple-300">Life</div>
                 <div className="text-xs font-bold text-purple-200">{character.life}</div>
               </div>
-              <div className="p-1 rounded bg-[#121724] border border-slate-800 col-span-2">
+              <div className="p-1 rounded bg-[#121724] border border-slate-800">
+                <div className="text-[9px] text-emerald-300">Creation</div>
+                <div className="text-xs font-bold text-emerald-200">{character.creation ?? 0}</div>
+              </div>
+              <div className="p-1 rounded bg-[#121724] border border-slate-800">
+                <div className="text-[9px] text-yellow-300">Talismán</div>
+                <div className="text-xs font-bold text-yellow-200">{character.talisman ?? 0}</div>
+              </div>
+              <div className="p-1 rounded bg-[#121724] border border-slate-800 col-span-3">
                 <div className="text-[9px] text-emerald-300">Harmony (+14/+15)</div>
                 <div className="text-xs font-bold text-emerald-200">{character.harmony}</div>
               </div>
