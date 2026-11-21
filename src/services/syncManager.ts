@@ -1,3 +1,4 @@
+import { getConfiguredCloudApiUrl } from './githubOtaService';
 import type {
   ActiveEffect,
   AsyncDuelChallenge,
@@ -25,7 +26,7 @@ export interface SyncCallbacks {
     sessionCode: string;
     item: MuItem;
     timestamp: string;
-  }) => void;
+  }) => Promise<boolean>;
   onTradeConfirmed: (payload: {
     tradeId: string;
     toPeerName: string;
@@ -59,8 +60,8 @@ export class LocalSyncManager {
       return Promise.resolve();
     }
     return new Promise((resolve, reject) => {
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const url = `${protocol}//${window.location.host}/ws`;
+      const url = new URL('/ws', getConfiguredCloudApiUrl() || window.location.origin);
+      url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
       const socket = new WebSocket(url);
 
       socket.onopen = () => {
@@ -86,7 +87,11 @@ export class LocalSyncManager {
               this.callbacks.onEventCompleted(msg.room, msg.reward);
               break;
             case 'trade:received':
-              this.callbacks.onTradeReceived(msg);
+              void this.callbacks.onTradeReceived(msg).then(saved => {
+                if (saved && socket === this.ws && socket.readyState === WebSocket.OPEN) {
+                  socket.send(JSON.stringify({ type:'trade:saved',tradeId:msg.tradeId }));
+                }
+              }).catch(() => this.callbacks.onError('No se pudo guardar el ítem recibido.'));
               break;
             case 'trade:confirmed':
               this.callbacks.onTradeConfirmed(msg);

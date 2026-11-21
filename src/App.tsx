@@ -9,6 +9,7 @@ import {
 import { getMapById } from './data/muWorldData';
 import {
   addItemToCharacter,
+  acceptRoomItem,
   allocateStatPoint,
   buyJewelFromNpc,
   buyShopItem,
@@ -682,19 +683,16 @@ export default function App() {
       },
       onTradeReceived: async (payload) => {
         const activeChar = charRef.current;
-        if (!activeChar) return;
+        if (!activeChar) return false;
         const incomingItem: MuItem = {
           ...payload.item,
-          id: `${payload.item.id}-rx-${Date.now().toString(36)}`,
+          id: `${payload.item.id}-rx-${payload.tradeId}`,
           charId: activeChar.id,
           isEquipped: false,
           sharedFromSession: payload.sessionCode,
           acquiredAt: payload.timestamp,
         };
-        const nextItems = await addItemToCharacter(activeChar.id, incomingItem);
-        setItems(nextItems);
-
-        await recordSharedLedger({
+        const nextItems = await acceptRoomItem(activeChar.id, incomingItem, {
           id: payload.tradeId,
           sessionId: payload.sessionCode,
           transportMode: payload.transport,
@@ -707,12 +705,15 @@ export default function App() {
           status: 'committed',
           createdAt: payload.timestamp,
         });
+        if (!nextItems) return false;
+        if (charRef.current?.id === activeChar.id) setItems(nextItems);
         setLedger(await getSharedLedger());
         soundSynth.playTradeSync();
         setSyncMessage(
           `Recibiste ${incomingItem.name} +${incomingItem.enhanceLevel} de ${payload.fromPeerName}. Guardado en IndexedDB.`,
         );
         pushBanner(`Recibido: ${incomingItem.name} +${incomingItem.enhanceLevel}`, '#38bdf8');
+        return true;
       },
       onTradeConfirmed: async (payload) => {
         const activeChar = charRef.current;
@@ -1799,6 +1800,7 @@ export default function App() {
             onHealPotion={handleHealPotion}
             onPickupLoot={() => engineRef.current?.pickupNearestLoot(true, lootFiltersRef.current)}
             onTalkNpc={(npc) => {
+              engineRef.current?.greetNpc(npc.id);
               setActiveNpc(npc);
               setNpcStatusMessage(null);
               setActiveDrawer('npc');

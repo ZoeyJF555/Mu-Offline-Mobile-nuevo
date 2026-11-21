@@ -7,7 +7,6 @@ import {
   Download,
   ExternalLink,
   FileArchive,
-  GitBranch,
   Link2,
   RefreshCw,
   Smartphone,
@@ -19,6 +18,7 @@ import { generateAndroidApkKitZip } from '../services/apkKitGenerator';
 import { cloudSyncManager } from '../services/cloudSyncManager';
 import {
   applyWebOtaUpdate,
+  bundledApkVersion,
   checkForGithubOtaUpdate,
   getConfiguredCloudApiUrl,
   getLinkedGithubRepoSlug,
@@ -28,6 +28,7 @@ import {
 } from '../services/githubOtaService';
 import type { SyncStatusInfo } from '../types/game';
 import { PWAInstallButton } from './PWAInstallButton';
+import { PrivateBackupPanel } from './PrivateBackupPanel';
 
 interface ApkSyncDrawerProps {
   open: boolean;
@@ -101,7 +102,9 @@ export const ApkSyncDrawer: React.FC<ApkSyncDrawerProps> = ({
   const handleCheckAndApplyUpdate = async () => {
     setNotice(null);
     const status = await runOtaCheck();
-    if (status.updateAvailable) {
+    if (status.updateAvailable && bundledApkVersion) {
+      setNotice(status.updateReason);
+    } else if (status.updateAvailable) {
       setNotice(
         `${status.updateReason || 'Actualización encontrada en GitHub.'} Recargando versión más reciente...`,
       );
@@ -121,24 +124,14 @@ export const ApkSyncDrawer: React.FC<ApkSyncDrawerProps> = ({
     setDownloadingKit(true);
     setNotice(null);
     try {
-      const slug = setLinkedGithubRepoSlug(repoUrl);
-      const pagesEntry =
-        otaStatus?.pagesUrl ||
-        `https://${slug.split('/')[0].toLowerCase()}.github.io/${slug.split('/')[1]}/`;
-      const blob = await generateAndroidApkKitZip({
-        webAppUrl: pagesEntry,
-        repoUrl: `https://github.com/${slug}`,
-        appVersion: otaStatus?.localVersion || '2.2.0',
-      });
+      const blob = await generateAndroidApkKitZip();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
       a.download = 'mu-lorencia-apk-github-kit.zip';
       a.click();
       URL.revokeObjectURL(url);
-      setNotice(
-        `Kit APK + GitHub Actions descargado apuntando a ${pagesEntry}. Al compilar el APK recibirá tus actualizaciones de GitHub automáticamente.`,
-      );
+      setNotice('Kit APK descargado. Copia sus archivos a tu repositorio y sigue las instrucciones del ZIP.');
     } finally {
       setDownloadingKit(false);
     }
@@ -159,20 +152,6 @@ export const ApkSyncDrawer: React.FC<ApkSyncDrawerProps> = ({
     } finally {
       setSyncingCloud(false);
     }
-  };
-
-  const handleExportGithubSnapshot = async () => {
-    const jsonText = await cloudSyncManager.buildGithubSyncSnapshotJson();
-    const blob = new Blob([jsonText], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `github-sync-snapshot-${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-    setNotice(
-      'Registro completo (cuentas, héroes, inventarios, intercambios Wi-Fi/BT y duelos) exportado en JSON para respaldo en GitHub.',
-    );
   };
 
   const handleExportJson = async () => {
@@ -309,14 +288,14 @@ export const ApkSyncDrawer: React.FC<ApkSyncDrawerProps> = ({
                   className="text-xs text-emerald-300 hover:text-emerald-200 inline-flex items-center gap-1 font-semibold"
                 >
                   <CheckCircle2 className="w-3.5 h-3.5" />
-                  APK {otaStatus.latestReleaseTag}
+                  Descargar APK {otaStatus.latestReleaseTag}
                   <ExternalLink className="w-3 h-3" />
                 </a>
               )}
             </div>
 
             <p className="text-xs text-slate-300 leading-relaxed">
-              Cada <code>git push</code> a tu repositorio reconstruye GitHub Pages y el APK en Actions. Cuando la Web o el APKweb tienen internet, descargan la nueva versión del Service Worker y actualizan el juego automáticamente sin perder tu IndexedDB.
+              Actions actualiza GitHub Pages y prepara el APK. El APK trae los recursos para jugar sin conexión. Para actualizarlo, instala la nueva versión firmada sobre la actual.
             </p>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -383,25 +362,7 @@ export const ApkSyncDrawer: React.FC<ApkSyncDrawerProps> = ({
             </div>
           </div>
 
-          {/* 3. GitHub Export */}
-          <div className="p-4 rounded-xl bg-[#141a26] border border-slate-800 space-y-2.5">
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <div className="flex items-center gap-2 text-sm font-semibold text-sky-300">
-                <GitBranch className="w-4 h-4" />
-                3. Registro &amp; Respaldo para Repositorio GitHub
-              </div>
-              <button
-                onClick={handleExportGithubSnapshot}
-                className="min-h-[38px] px-3 rounded-lg bg-sky-700 hover:bg-sky-600 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
-              >
-                <Download className="w-3.5 h-3.5" />
-                Exportar Registro GitHub (.json)
-              </button>
-            </div>
-            <p className="text-xs text-slate-300 leading-relaxed">
-              Tus cuentas, personajes, niveles, resets, ítems ganados en duelos Wi-Fi/BT y eventos quedan guardados en IndexedDB y listos para respaldar o enviar al repositorio GitHub sin pérdida alguna.
-            </p>
-          </div>
+          <PrivateBackupPanel />
 
           {/* 4. Dexie IndexedDB Inspector & Backup */}
           <div className="p-4 rounded-xl bg-[#141a26] border border-slate-800 space-y-3">

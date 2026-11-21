@@ -463,12 +463,32 @@ export async function addItemToCharacter(charId: string, item: MuItem): Promise<
   return saveItemsForCharacter(charId, next);
 }
 
+// The acknowledgment is sent only after both inventory and ledger commit.
+export async function acceptRoomItem(charId: string,item: MuItem,entry: SharedLedgerEntry): Promise<MuItem[] | null> {
+  const result = await db.transaction('rw',db.Characters,db.SharedLedger,async () => {
+    const char = await db.Characters.get(charId);
+    if (!char) return null;
+    if (await db.SharedLedger.get(entry.id)) return combineCharItems(char);
+    const next = {...char,inventory:[...(char.inventory ?? []),item],updatedAt:Date.now(),isSynced:false};
+    await db.Characters.put(next);
+    await db.SharedLedger.put(entry);
+    return combineCharItems(next);
+  });
+  if (result) notifyMutated();
+  return result;
+}
+
 export async function removeItemFromCharacter(charId: string, itemId: string): Promise<MuItem[]> {
-  const current = await getItemsForCharacter(charId);
-  return saveItemsForCharacter(
-    charId,
-    current.filter((i) => i.id !== itemId),
-  );
+  const saved = await db.transaction('rw',db.Characters,async () => {
+    const current = await db.Characters.get(charId);
+    if (!current) return [];
+    const next = combineCharItems(current).filter(item => item.id !== itemId);
+    const slots = splitCharItems(next);
+    await db.Characters.put({...current,...slots,updatedAt:Date.now(),isSynced:false});
+    return next;
+  });
+  notifyMutated();
+  return saved;
 }
 
 export async function wearEquipment(charId: string, slot: string, durability: number, itemId?: string): Promise<void> {
@@ -754,15 +774,6 @@ export async function buyShopItem(
   char: MuCharacter,
   shopItem: ShopItemDef,
 ): Promise<{ ok: boolean; message: string; character: MuCharacter; items: MuItem[] }> {
-  const currentItems = await getItemsForCharacter(char.id);
-  if (char.zen < shopItem.zenCost) {
-    return {
-      ok: false,
-      message: `Zen insuficiente. Necesitas ${shopItem.zenCost.toLocaleString()} Zen.`,
-      character: char,
-      items: currentItems,
-    };
-  }
   const newItem: MuItem = {
     id: `itm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
     charId: char.id,
@@ -778,19 +789,31 @@ export async function buyShopItem(
     magicPower: shopItem.magicPower,
     luck: true,
     excellentOpt: shopItem.excellentOpt,
+    evoTier: shopItem.evoTier,
     isEquipped: false,
     originalOwner: char.name,
     sharedFromSession: null,
     acquiredAt: new Date().toISOString(),
   };
-  const savedChar = await updateCharacter({ ...char, zen: char.zen - shopItem.zenCost });
-  const savedItems = await addItemToCharacter(char.id, newItem);
-  return {
-    ok: true,
-    message: `Compraste ${shopItem.name} +${shopItem.enhanceLevel} por ${shopItem.zenCost.toLocaleString()} Zen.`,
-    character: savedChar,
-    items: savedItems,
-  };
+  const result = await db.transaction('rw',db.Characters,async () => {
+    const latest = await db.Characters.get(char.id);
+    if (!latest) return { ok:false,message:'Personaje no disponible.',character:char,items:[] };
+    if (latest.zen < shopItem.zenCost) return {
+      ok:false,message:`Zen insuficiente. Necesitas ${shopItem.zenCost.toLocaleString()} Zen.`,
+      character:latest,items:combineCharItems(latest),
+    };
+    const saved = {
+      ...latest, zen:latest.zen-shopItem.zenCost,
+      inventory:[...(latest.inventory ?? []),newItem],updatedAt:Date.now(),isSynced:false,
+    };
+    await db.Characters.put(saved);
+    return {
+      ok:true,message:`Compraste ${shopItem.name} +${shopItem.enhanceLevel} por ${shopItem.zenCost.toLocaleString()} Zen.`,
+      character:saved,items:combineCharItems(saved),
+    };
+  });
+  if (result.ok) notifyMutated();
+  return result;
 }
 
 export async function buyJewelFromNpc(

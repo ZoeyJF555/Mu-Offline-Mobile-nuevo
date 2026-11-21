@@ -1,4 +1,6 @@
 import type { MapId, MuItem, MuMapConfig, ShopItemDef } from '../types/game';
+import { monstersForMap } from './bestiary.ts';
+import { ARTISAN_CATALOG } from './artisanEquipment.ts';
 
 /**
  * 4 Mundos Únicos de Madrigal (MU Lorencia Offline & Sync):
@@ -7,7 +9,7 @@ import type { MapId, MuItem, MuMapConfig, ShopItemDef } from '../types/game';
  * - PUERTO DE BRUMA: Monstruos Nv. 47 a 76
  * - CRÁTER DE CENIZA: Monstruos Nv. 77 a 99
  */
-export const MU_MAPS: MuMapConfig[] = [
+const BASE_MAPS: MuMapConfig[] = [
   {
     id: 'flaris',
     worldIndex: 0,
@@ -326,6 +328,25 @@ export const MU_MAPS: MuMapConfig[] = [
   },
 ];
 
+const ARTISAN_NPCS = {
+  flaris: ['Lira del Alba', 'Forja de Madrigal · Armas y Sets', 'blacksmith', -6, 7, 0x326a87, 0xc2fcff],
+  robledal: ['Ari del Sendero', 'Arcos y Armaduras del Bosque', 'elf', 4, 9, 0x2e7850, 0xe5f594],
+  puerto: ['Naira de las Velas', 'Báculos y Gemas de Marea', 'wizard', 4, -9, 0x2d5278, 0x7dffd8],
+  ceniza: ['Daro de la Fragua', 'Forja de Lorencia · Armas y Sets', 'blacksmith', -9, 5, 0x8b3c37, 0xffb472],
+} as const;
+
+export const MU_MAPS: MuMapConfig[] = BASE_MAPS.map(map => {
+  const [name,title,role,dx,dz,robeColor,accentColor] = ARTISAN_NPCS[map.id];
+  return {
+    ...map,
+    monsters: monstersForMap(map.id, map.monsters),
+    npcs: [...map.npcs, {
+      id: `${map.id}-artisan`, name, title, role,
+      x: (map.spawn?.x ?? 0) + dx, z: (map.spawn?.z ?? 0) + dz, robeColor, accentColor,
+    }],
+  };
+});
+
 export function getMapById(mapId: MapId): MuMapConfig {
   return MU_MAPS.find((m) => m.id === mapId) || MU_MAPS[0];
 }
@@ -381,6 +402,7 @@ export function getItemVisualSpec(item?: Pick<MuItem, 'enhanceLevel' | 'rarity'>
 }
 
 export const MU_SHOP_CATALOG: ShopItemDef[] = [
+  ...ARTISAN_CATALOG,
   // --- ARMAS ---
   {
     id: 'shop-kris',

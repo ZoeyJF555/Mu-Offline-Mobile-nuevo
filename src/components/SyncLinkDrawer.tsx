@@ -144,7 +144,7 @@ export const SyncLinkDrawer: React.FC<SyncLinkDrawerProps> = ({
               Multijugador Local Wi-Fi & Bluetooth · Duelos Asíncronos e Intercambio
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              Invita amigos vía Wi-Fi o Bluetooth; todo intercambio, duelo y recompensa queda guardado permanentemente en IndexedDB aunque canceles o termines la invitación.
+              Invita amigos con un código de sala por Wi-Fi. También puedes compartir códigos de duelo usando el menú de tu teléfono.
             </p>
           </div>
           <button
@@ -192,7 +192,7 @@ export const SyncLinkDrawer: React.FC<SyncLinkDrawerProps> = ({
             }`}
           >
             <History className="w-4 h-4" />
-            Historial Cero-Pérdida ({ledger.length})
+            Historial local ({ledger.length})
           </button>
         </div>
 
@@ -200,7 +200,7 @@ export const SyncLinkDrawer: React.FC<SyncLinkDrawerProps> = ({
         <div className="px-5 py-2 bg-emerald-950/50 border-b border-emerald-500/30 flex items-center gap-2 text-[11px] text-emerald-200">
           <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
           <span>
-            Garantía Cero-Pérdida: cancelar o finalizar una invitación Wi-Fi/Bluetooth nunca borra tus ítems, recompensas ni duelos; se respaldan en IndexedDB y se sincronizan al repositorio/servidor al volver a tener internet.
+            Al finalizar una sala, los intercambios que recibieron confirmación quedan en IndexedDB. Con Copia privada activada, tu inventario se respalda en el servidor configurado.
           </span>
         </div>
 
@@ -217,11 +217,11 @@ export const SyncLinkDrawer: React.FC<SyncLinkDrawerProps> = ({
               <div className="p-3.5 rounded-xl bg-gradient-to-r from-[#132036] to-[#171b2e] border border-sky-500/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
                   <div className="text-xs font-bold text-sky-200">
-                    Invitar Amigos por Wi-Fi o Bluetooth
+                    Invitar amigos por Wi-Fi
                   </div>
                   <div className="text-[11px] text-slate-300 mt-0.5">
                     {roomState
-                      ? `Sala ${roomState.code} lista · Comparte el enlace o empareja Bluetooth para verlos en verde en el minimapa.`
+                      ? `Sala ${roomState.code} lista · Comparte el enlace con el invitado para verlo en el minimapa.`
                       : 'Crea una invitación Wi-Fi en 1 toque o vincula un dispositivo cercano por Bluetooth.'}
                   </div>
                 </div>
@@ -299,7 +299,7 @@ export const SyncLinkDrawer: React.FC<SyncLinkDrawerProps> = ({
                     </span>
                   </div>
                   <p className="text-xs text-slate-400 mt-1.5">
-                    Empareja dispositivos Android/Chrome cercanos por Bluetooth y sincroniza la sala e intercambios.
+                    Permite buscar dispositivos cercanos. Los eventos e intercambios se conectan por Wi-Fi al servidor.
                   </p>
                 </button>
               </div>
@@ -308,7 +308,7 @@ export const SyncLinkDrawer: React.FC<SyncLinkDrawerProps> = ({
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-xl bg-[#151c2c] border border-indigo-500/30">
                   <div className="text-xs text-slate-300">
                     {bluetoothDeviceName
-                      ? `Dispositivo vinculado: ${bluetoothDeviceName}. Ya puedes crear o unirte a la sala.`
+                      ? `Dispositivo vinculado: ${bluetoothDeviceName}. Para eventos o intercambios, elige Wi-Fi.`
                       : 'Escanea dispositivos Bluetooth cercanos con Web Bluetooth API.'}
                   </div>
                   <button
@@ -342,10 +342,10 @@ export const SyncLinkDrawer: React.FC<SyncLinkDrawerProps> = ({
                       </select>
                     </label>
                     <button
-                      onClick={() => onCreateRoom(eventType, transport)}
+                      onClick={() => onCreateRoom(eventType, 'wifi')}
                       className="w-full min-h-[44px] rounded-lg bg-amber-600 hover:bg-amber-500 text-slate-950 font-semibold text-sm cursor-pointer"
                     >
-                      Crear Sala {transport === 'wifi' ? 'Wi-Fi' : 'Bluetooth'}
+                      Crear Sala Wi-Fi
                     </button>
                   </div>
 
@@ -364,7 +364,7 @@ export const SyncLinkDrawer: React.FC<SyncLinkDrawerProps> = ({
                       />
                     </label>
                     <button
-                      onClick={() => onJoinRoom(joinCode, transport)}
+                      onClick={() => onJoinRoom(joinCode, 'wifi')}
                       disabled={!joinCode.trim()}
                       className="w-full min-h-[44px] rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-40 text-white font-semibold text-sm cursor-pointer disabled:cursor-not-allowed"
                     >

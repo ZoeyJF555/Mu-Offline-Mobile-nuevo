@@ -1,3 +1,4 @@
+import { artisanArmor } from '../data/artisanEquipment';
 // Game integration of the converted Flyff resources; original resource notices in public/flyff/licencias.
 import { Color3, PBRMaterial, Scene, TransformNode, Vector3 } from '@babylonjs/core';
 import type { CharacterSex, HeroClass, MuItem, SkillDef } from '../types/game';
@@ -53,6 +54,8 @@ export class FlyffContent {
   private lastJustLanded = false;
   private hasEquippedWings = false;
   private hoverOffsetY = 0;
+  private hoverPhase = 0;
+  private wasHovering = false;
   onError: (error:unknown)=>void = console.warn;
   onWear: (slot: string, durability: number)=>void = ()=>{};
   constructor(private scene: Scene) {
@@ -97,12 +100,25 @@ export class FlyffContent {
       const isWings = slot === 'wings';
       this.actor.equip(slot, Boolean(item && (isWings || (item.durability ?? 100) > 0)));
       this.actor.gear[slot].durability = isWings ? 100 : (item?.durability ?? 100);
-      const visual=getItemVisualSpec(item);
+      const armor = artisanArmor(item?.setName);
+      const visual=getItemVisualSpec(item, armor?.color);
       for(const mesh of this.actor.outfit.meshes.filter(m=>m.name.startsWith(`equip_${slot}_`))) {
         if(mesh.material instanceof PBRMaterial) {
           // Each slot owns its material so pants and upper armor may glow independently.
-          if(!mesh.metadata?.gameMaterial) {this.actor.ownedMaterials.add(mesh.material);mesh.material=mesh.material.clone(`game_${mesh.name}`);mesh.metadata={...mesh.metadata,gameMaterial:true};this.actor.ownedMaterials.add(mesh.material);}
-          (mesh.material as PBRMaterial).emissiveColor=Color3.FromHexString(`#${visual.emissiveHex.toString(16).padStart(6,'0')}`).scale(visual.emissiveIntensity*.35);
+          if (!mesh.metadata?.originalAlbedo) {
+            const originalAlbedo = mesh.material.albedoColor.clone();
+            this.actor.ownedMaterials.add(mesh.material);
+            mesh.material = mesh.material.clone(`game_${mesh.name}`);
+            mesh.metadata = { ...mesh.metadata, originalAlbedo };
+            this.actor.ownedMaterials.add(mesh.material);
+          }
+          const material = mesh.material as PBRMaterial;
+          const base = mesh.metadata.originalAlbedo as Color3;
+          if (armor) {
+            const tint = Color3.FromHexString(`#${armor.color.toString(16).padStart(6,'0')}`);
+            material.albedoColor.copyFrom(base).multiplyInPlace(Color3.Lerp(Color3.White(), tint, .65));
+          } else material.albedoColor.copyFrom(base);
+          material.emissiveColor=Color3.FromHexString(`#${visual.emissiveHex.toString(16).padStart(6,'0')}`).scale(visual.emissiveIntensity*.35);
         }
       }
     }
@@ -133,16 +149,6 @@ export class FlyffContent {
     void this.effects.spawn('efectos/sfx_hitsword01.json',new Vector3(x,y+.8,z),.55).catch(this.onError);
     void this.audio?.play('hit_sword',.3).catch(this.onError);
   }
-  private ensureTilesVisible(world: FlyffWorld) {
-    for (const tile of world.tiles.values()) {
-      tile.root.parent = this.origin;
-      tile.root.setEnabled(true);
-      for (const m of tile.root.getChildMeshes(false)) {
-        m.setEnabled(true);
-        m.isVisible = true;
-      }
-    }
-  }
   async loadWorld(x:number,z:number) {
     const generation=++this.worldGeneration;this.loadingWorld=true;
     try {
@@ -160,10 +166,7 @@ export class FlyffContent {
       this.lastStreamX = x;
       this.lastStreamZ = z;
       await next.stream(x+ORIGIN,z+ORIGIN,1,580);
-      if(!this.disposed&&generation===this.worldGeneration) {
-        this.ensureTilesVisible(next);
-        this.refreshCollision();
-      }
+      if (!this.disposed && generation === this.worldGeneration) this.refreshCollision();
     } catch (err) {
       if (!this.disposed && generation === this.worldGeneration && !(err instanceof Error && err.message === 'World disposed')) {
         throw err;
@@ -185,11 +188,9 @@ export class FlyffContent {
     this.lastStreamX = x;
     this.lastStreamZ = z;
     try {
-      await world.stream(x+ORIGIN,z+ORIGIN,1,580);
-      if(world===this.world&&!this.disposed&&generation===this.worldGeneration){
-        this.ensureTilesVisible(world);
-        this.refreshCollision();
-      }
+      await world.stream(x+ORIGIN,z+ORIGIN,1,580,() => {
+        if (world === this.world && !this.disposed && generation === this.worldGeneration) this.refreshCollision();
+      });
     } catch (err) {
       if (!this.disposed && generation === this.worldGeneration && !(err instanceof Error && err.message === 'World disposed')) {
         throw err;
@@ -273,7 +274,10 @@ export class FlyffContent {
     const targetHover = computeWingFlightOffsetY(inSafeCity, this.hasEquippedWings);
     this.hoverOffsetY = exponentialDamp(this.hoverOffsetY, targetHover, 7.5, Math.min(0.08, dt));
     const hovering = !inSafeCity && this.hasEquippedWings;
-    const bob = this.hoverOffsetY > 0.15 ? Math.sin(this.worldClock * 4.2) * 0.065 * Math.min(1, this.hoverOffsetY) : 0;
+    if (hovering && !this.wasHovering && this.actor) void this.audio?.play('wind', .18).catch(this.onError);
+    this.wasHovering = hovering;
+    this.hoverPhase = (this.hoverPhase + dt * 4.2) % (2 * Math.PI);
+    const bob = this.hoverOffsetY > 0.15 ? Math.sin(this.hoverPhase) * 0.065 * Math.min(1, this.hoverOffsetY) : 0;
     if(this.actor){
       this.actor.root.rotation.y=rotation;
       (this.actor as any).update(dt,{

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { GoogleGenAI, Type } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
+import { mountPrivateBackup } from './src/server/privateBackup.ts';
 import type {
   AsyncDuelChallenge,
   AsyncDuelRecord,
@@ -79,6 +80,8 @@ interface ServerRoom {
   bossMaxHp: number;
   peers: Map<string, { peer: RoomPeer; ws: WebSocket }>;
   sharedFeed: SharedLedgerEntry[];
+  pendingTrades: Map<string,{ sender: string; recipient: string; item: MuItem; entry: SharedLedgerEntry }>;
+  tradedItems: Set<string>;
   createdAt: number;
 }
 
@@ -186,6 +189,8 @@ async function startServer() {
             bossMaxHp: 1200,
             peers: new Map(),
             sharedFeed: [],
+            pendingTrades: new Map(),
+            tradedItems: new Set(),
             createdAt: Date.now(),
           };
           const hostPeer: RoomPeer = { ...peer, role: 'host', transport };
@@ -313,56 +318,50 @@ async function startServer() {
           const targetPeerId = String(msg.targetPeerId || '');
           const fromPeer = room.peers.get(currentPeerId)?.peer;
           const targetEntry = room.peers.get(targetPeerId);
-          if (!fromPeer || !targetEntry || !item) return;
-
-          const tradeId = `trd-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-          const timestamp = new Date().toISOString();
-          const snapshotJson = JSON.stringify(item);
-
-          const feedEntry: SharedLedgerEntry = {
-            id: tradeId,
-            sessionId: room.code,
-            transportMode: room.transport,
-            partnerName: `${fromPeer.name} → ${targetEntry.peer.name}`,
-            role: fromPeer.role,
-            direction: 'sent',
-            itemId: item.id,
-            itemName: `${item.name} +${item.enhanceLevel}`,
-            itemSnapshotJson: snapshotJson,
-            status: 'committed',
-            createdAt: timestamp,
-          };
-          room.sharedFeed.push(feedEntry);
-
-          if (targetEntry.ws.readyState === WebSocket.OPEN) {
-            targetEntry.ws.send(
-              JSON.stringify({
-                type: 'trade:received',
-                tradeId,
-                fromPeerName: fromPeer.name,
-                fromRole: fromPeer.role,
-                transport: room.transport,
-                sessionCode: room.code,
-                item,
-                timestamp,
-              }),
-            );
+          if (!fromPeer || !targetEntry || !item?.id || targetPeerId === currentPeerId) return;
+          if (targetEntry.ws.readyState !== WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type:'room:error',message:'El invitado se desconectó. El ítem sigue en tu inventario.' }));
+            return;
           }
 
-          ws.send(
-            JSON.stringify({
-              type: 'trade:confirmed',
-              tradeId,
-              toPeerName: targetEntry.peer.name,
-              toRole: targetEntry.peer.role,
-              transport: room.transport,
-              sessionCode: room.code,
-              item,
-              timestamp,
-            }),
-          );
+          const key = `${currentPeerId}:${item.id}`;
+          if (room.tradedItems.has(key)) return;
+          const pending = [...room.pendingTrades.values()].find(offer => offer.sender === currentPeerId && offer.item.id === item.id);
+          if (pending && pending.recipient !== targetPeerId) return;
+          if (!pending && room.pendingTrades.size >= 64) {
+            ws.send(JSON.stringify({ type:'room:error',message:'Hay demasiados intercambios pendientes.' }));
+            return;
+          }
+          const entry: SharedLedgerEntry = pending?.entry ?? {
+            id: `trd-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+            sessionId: room.code, transportMode: room.transport,
+            partnerName: `${fromPeer.name} → ${targetEntry.peer.name}`, role:fromPeer.role,
+            direction:'sent',itemId:item.id,itemName:`${item.name} +${item.enhanceLevel}`,
+            itemSnapshotJson:JSON.stringify(item),status:'committed',createdAt:new Date().toISOString(),
+          };
+          const offer = pending ?? { sender:currentPeerId,recipient:targetPeerId,item,entry };
+          room.pendingTrades.set(entry.id,offer);
+          targetEntry.ws.send(JSON.stringify({
+            type:'trade:received',tradeId:entry.id,fromPeerName:fromPeer.name,fromRole:fromPeer.role,
+            transport:room.transport,sessionCode:room.code,item:offer.item,timestamp:entry.createdAt,
+          }));
+          return;
+        }
 
-          broadcastRoom(room, { type: 'room:state', room: serializeRoom(room) });
+        if (msg.type === 'trade:saved') {
+          const tradeId = String(msg.tradeId ?? '');
+          const offer = room.pendingTrades.get(tradeId);
+          if (!offer || offer.recipient !== currentPeerId) return;
+          const from = room.peers.get(offer.sender), to = room.peers.get(offer.recipient);
+          if (!from || !to || from.ws.readyState !== WebSocket.OPEN) return;
+          room.pendingTrades.delete(tradeId);
+          room.tradedItems.add(`${offer.sender}:${offer.item.id}`);
+          room.sharedFeed.push(offer.entry);
+          from.ws.send(JSON.stringify({
+            type:'trade:confirmed',tradeId,toPeerName:to.peer.name,toRole:to.peer.role,
+            transport:room.transport,sessionCode:room.code,item:offer.item,timestamp:offer.entry.createdAt,
+          }));
+          broadcastRoom(room, { type:'room:state',room:serializeRoom(room) });
           return;
         }
 
@@ -456,102 +455,12 @@ async function startServer() {
     });
   });
 
-  // API: Cloud Sync (Golden Rule: Compare updatedAt timestamps, never overwrite newer data)
-  app.post('/api/cloud/sync', (req, res) => {
-    const {
-      accounts = [],
-      characters = [],
-      ledger = [],
-      duels = [],
-      events = [],
-      activeAccountId = null,
-    } = req.body as {
-      accounts?: MuAccount[];
-      characters?: MuCharacter[];
-      ledger?: SharedLedgerEntry[];
-      duels?: AsyncDuelRecord[];
-      events?: EventSessionRecord[];
-      activeAccountId?: string | null;
-    };
-
-    const acceptedAccountIds: string[] = [];
-    const acceptedCharacterIds: string[] = [];
-    const newerAccounts: MuAccount[] = [];
-    const newerCharacters: MuCharacter[] = [];
-    let dirty = false;
-
-    for (const localAcc of accounts) {
-      if (!localAcc?.id) continue;
-      const serverAcc = cloudStore.accounts[localAcc.id];
-      if (!serverAcc || Number(localAcc.updatedAt) >= Number(serverAcc.updatedAt)) {
-        cloudStore.accounts[localAcc.id] = { ...localAcc, isSynced: true };
-        acceptedAccountIds.push(localAcc.id);
-        dirty = true;
-      } else {
-        // Server is newer -> cloud wins
-        newerAccounts.push({ ...serverAcc, isSynced: true });
-      }
-    }
-
-    for (const localChar of characters) {
-      if (!localChar?.id) continue;
-      const serverChar = cloudStore.characters[localChar.id];
-      if (!serverChar || Number(localChar.updatedAt) >= Number(serverChar.updatedAt)) {
-        cloudStore.characters[localChar.id] = { ...localChar, isSynced: true };
-        acceptedCharacterIds.push(localChar.id);
-        dirty = true;
-      } else {
-        // Server is newer -> cloud wins
-        newerCharacters.push({ ...serverChar, isSynced: true });
-      }
-    }
-
-    for (const entry of ledger) {
-      if (entry?.id && !cloudStore.ledger[entry.id]) {
-        cloudStore.ledger[entry.id] = entry;
-        dirty = true;
-      }
-    }
-    for (const duel of duels) {
-      if (duel?.id && !cloudStore.duels[duel.id]) {
-        cloudStore.duels[duel.id] = duel;
-        dirty = true;
-      }
-    }
-    for (const ev of events) {
-      if (ev?.id) {
-        const prev = cloudStore.events[ev.id];
-        if (!prev || (!prev.endedAt && ev.endedAt) || ev.wavesCleared > prev.wavesCleared) {
-          cloudStore.events[ev.id] = ev;
-          dirty = true;
-        }
-      }
-    }
-
-    // Pull any characters belonging to activeAccountId that exist on cloud
-    if (activeAccountId) {
-      const sentIds = new Set(characters.map((c) => c.id));
-      for (const serverChar of Object.values(cloudStore.characters)) {
-        if (serverChar.accountId === activeAccountId && !sentIds.has(serverChar.id)) {
-          newerCharacters.push({ ...serverChar, isSynced: true });
-        }
-      }
-    }
-
-    if (dirty) {
-      saveCloudStore(cloudStore);
-    }
-
-    res.json({
-      acceptedAccountIds,
-      acceptedCharacterIds,
-      newerAccounts,
-      newerCharacters,
-      syncedLedgerCount: Object.keys(cloudStore.ledger).length,
-      syncedDuelsCount: Object.keys(cloudStore.duels).length,
-      serverTimestamp: Date.now(),
-    });
+  // Older clients sent account records without authentication. Do not accept
+  // or expose them; backups now use client-side encryption and a recovery key.
+  app.all(['/api/cloud/sync','/api/cloud/github-export','/api/cloud/recovery-questions','/api/cloud/recover'], (_req, res) => {
+    res.status(410).json({ error:'Usa la copia privada con código de recuperación.' });
   });
+  mountPrivateBackup(app,process.env.MU_BACKUP_DIR,process.env.MU_BACKUP_ORIGINS);
 
   // API: Publish & List Async Duel Challenges (Wi-Fi / Offline Sync)
   app.get('/api/duels/challenges', (_req, res) => {
@@ -570,87 +479,6 @@ async function startServer() {
     cloudStore.challenges[challenge.id] = challenge;
     saveCloudStore(cloudStore);
     res.json({ ok: true, challenge });
-  });
-
-  // API: GitHub Repo Sync Export Snapshot
-  app.get('/api/cloud/github-export', (_req, res) => {
-    res.json({
-      repository: 'ZoeyJF555/Mu-Offline-Mobile-nuevo-',
-      exportedAt: new Date().toISOString(),
-      version: APP_VERSION,
-      summary: {
-        accounts: Object.keys(cloudStore.accounts).length,
-        characters: Object.keys(cloudStore.characters).length,
-        ledgerEntries: Object.keys(cloudStore.ledger).length,
-        duelRecords: Object.keys(cloudStore.duels).length,
-        eventSessions: Object.keys(cloudStore.events).length,
-      },
-      data: cloudStore,
-    });
-  });
-
-  // API: Fetch secret questions for cross-device account recovery
-  app.get('/api/cloud/recovery-questions', (req, res) => {
-    const username = String(req.query.username || '').trim().toLowerCase();
-    if (!username) {
-      res.status(400).json({ found: false });
-      return;
-    }
-    const found = Object.values(cloudStore.accounts).find(
-      (a) => a.username.toLowerCase() === username,
-    );
-    if (!found) {
-      res.json({ found: false });
-      return;
-    }
-    res.json({
-      found: true,
-      secretQ1: found.secretQ1,
-      secretQ2: found.secretQ2,
-    });
-  });
-
-  // API: Verify secret answers, set new password, and download Account + Characters to device
-  app.post('/api/cloud/recover', (req, res) => {
-    const { username, secretA1Hash, secretA2Hash, newPasswordHash, updatedAt } = req.body as {
-      username: string;
-      secretA1Hash: string;
-      secretA2Hash: string;
-      newPasswordHash: string;
-      updatedAt: number;
-    };
-
-    const cleanUser = String(username || '').trim().toLowerCase();
-    const account = Object.values(cloudStore.accounts).find(
-      (a) => a.username.toLowerCase() === cleanUser,
-    );
-    if (!account) {
-      res.status(404).json({ ok: false, error: 'Cuenta no encontrada en la nube.' });
-      return;
-    }
-    if (account.secretA1 !== secretA1Hash || account.secretA2 !== secretA2Hash) {
-      res.status(403).json({ ok: false, error: 'Las respuestas secretas no coinciden con el respaldo en la nube.' });
-      return;
-    }
-
-    const updatedAccount: MuAccount = {
-      ...account,
-      passwordHash: newPasswordHash,
-      updatedAt: Math.max(Date.now(), Number(updatedAt) || Date.now()),
-      isSynced: true,
-    };
-    cloudStore.accounts[updatedAccount.id] = updatedAccount;
-    saveCloudStore(cloudStore);
-
-    const characters = Object.values(cloudStore.characters)
-      .filter((c) => c.accountId === updatedAccount.id)
-      .map((c) => ({ ...c, isSynced: true }));
-
-    res.json({
-      ok: true,
-      account: updatedAccount,
-      characters,
-    });
   });
 
   // API: List active Wi-Fi rooms on local server

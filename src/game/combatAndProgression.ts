@@ -1,3 +1,4 @@
+import { SPECIES_BY_ID } from '../data/bestiary.ts';
 import { MU_CLASSES, MU_SKILLS } from '../data/muSkillsAndClasses';
 import { getWingEvoBonusStats, getWingEvoTier } from './worldPhysicsMath';
 import type {
@@ -795,7 +796,8 @@ export function scaleMonsterForPlayerLevel(
   const { xp } = computeMapScaledXpReward(resolvedMapId, safePlayerLevel, targetLevel, Boolean(def.isBoss));
   const zen = Math.round(def.zen * (1 + (safePlayerLevel - 1) * 0.09));
 
-  const powers = MONSTER_POWERS_BY_ARCHETYPE[def.archetype] || MONSTER_POWERS_BY_ARCHETYPE.bull;
+  const species = def.speciesId && SPECIES_BY_ID.get(def.speciesId);
+  const powers = species ? [species.power] : MONSTER_POWERS_BY_ARCHETYPE[def.archetype] || MONSTER_POWERS_BY_ARCHETYPE.bull;
   const topPower = powers[0];
   const playerEstNormal = Math.max(10, Math.round(playerAvgAttack - defense * 0.25));
   const critChancePct = def.isBoss ? 24 : Math.min(20, 12 + Math.floor(targetLevel / 14));

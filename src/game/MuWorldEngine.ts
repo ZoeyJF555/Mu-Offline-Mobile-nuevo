@@ -12,6 +12,7 @@ import {
   MeshBuilder,
   NullEngine,
   PointLight,
+  PBRMaterial,
   Quaternion,
   Scene,
   StandardMaterial,
@@ -62,6 +63,10 @@ import { FlyffContent } from './FlyffContent';
 import { getStarterItemsForMuClass } from '../data/muSkillsAndClasses';
 import { MuAssetManager } from './MuAssetManager';
 import { soundSynth } from './soundSynth';
+import { createCreature } from './OriginalCreature';
+import { creatureFx } from './CreatureEffects';
+import { SPECIES_BY_ID, type MonsterElement } from '../data/bestiary';
+import { artisanWeapon } from '../data/artisanEquipment';
 
 export type EngineCameraMode = 'title' | 'character_select' | 'playing';
 
@@ -365,9 +370,11 @@ export class MuWorldEngine {
   private engine: Engine;
   private scene: Scene;
   private camera: ArcRotateCamera;
+  private bestiaryMaterial: StandardMaterial | null = null;
   private assetManager: MuAssetManager;
 
   private flyff: FlyffContent;
+  private currentEquippedWeapon: string | undefined;
   private heroSex: 'male' | 'female' = 'male';
   private callbacks: EngineCallbacks;
   private mode: EngineCameraMode = 'title';
@@ -827,6 +834,7 @@ export class MuWorldEngine {
   }
 
   async syncHeroAppearance(classType: HeroClass, equippedItems: MuItem[], sex?: 'male' | 'female') {
+    this.currentEquippedWeapon = equippedItems.find(item => item.slot === 'weapon' && item.isEquipped)?.name;
     this.heroClass = classType; this.heroSex = sex ?? this.heroStatsSnapshot?.sex ?? 'male';
     this.heroEquippedItems = equippedItems;
     try { await this.rebuildHeroModel(); } catch (error) { this.flyff.onError(error); throw error; }
@@ -860,6 +868,8 @@ export class MuWorldEngine {
     this.disposeChildren(this.cityRoot);
     this.disposeChildren(this.floraRoot);
     this.disposeChildren(this.monsterRoot);
+    this.bestiaryMaterial?.dispose();
+    this.bestiaryMaterial = null;
     this.disposeChildren(this.fxRoot);
     this.activeNpcs = [];
     this.friendlyBots = [];
@@ -964,8 +974,18 @@ export class MuWorldEngine {
         const inst = await this.assetManager.instantiateModel(npcDef.role === 'chaos_goblin' ? 'npc_goblin.glb' : 'npc_merchant.glb', `npc_${npcDef.id}`, this.cityRoot);
         if (mySeq !== this.loadSeq) { inst.root.dispose(); return; }
         inst.root.position.set(npcDef.x, this.getTerrainHeight(npcDef.x, npcDef.z), npcDef.z);
+        inst.root.rotation.y = Math.atan2(targetX - npcDef.x, targetZ - npcDef.z);
+        for (const mesh of inst.meshes) {
+          if (!(mesh.material instanceof PBRMaterial) || /head_mat|arms_mat/.test(mesh.material.name)) continue;
+          const material = mesh.material.clone(`npcFabric_${mesh.name}`);
+          const trim = /pauldrons_mat|greaves_mat/.test(mesh.material.name);
+          material.albedoColor = Color3.FromHexString('#' + (trim ? npcDef.accentColor : npcDef.robeColor).toString(16).padStart(6,'0'));
+          mesh.material = material;
+          inst.root.onDisposeObservable.addOnce(() => material.dispose());
+        }
         const plate = createNameplatePlane(this.scene, npcDef.name, '#fde68a', 3.4);
         plate.parent = inst.root; plate.position.y = 2.75;
+        plate.onDisposeObservable.addOnce(() => plate.material?.dispose(false, true));
         this.activeNpcs.push({ def: npcDef, root: inst.root });
       }
       await this.populateMonsters(mapCfg, mySeq);
@@ -1400,14 +1420,26 @@ export class MuWorldEngine {
     // Prepare ThinInstance master meshes for every monster archetype in this map
     const uniqueGlbs = new Set<string>();
     for (const d of defs) {
-      uniqueGlbs.add(ARCHETYPE_TO_GLB[d.archetype] || 'mon_bull.glb');
+      if (!d.speciesId) uniqueGlbs.add(ARCHETYPE_TO_GLB[d.archetype] || 'mon_bull.glb');
+      else if (!this.thinMasterMeshes.has(d.speciesId)) {
+        const master = createCreature(this.scene, d.speciesId);
+        if (!this.bestiaryMaterial) {
+          this.bestiaryMaterial = new StandardMaterial('bestiaryPalette', this.scene);
+          this.bestiaryMaterial.specularColor.set(.12, .12, .12);
+        }
+        master.material = this.bestiaryMaterial;
+        master.parent = this.monsterRoot;
+        master.setEnabled(false);
+        this.thinMasterMeshes.set(d.speciesId, { mesh: master, matrices: [] });
+      }
     }
     for (const glb of uniqueGlbs) {
       const master = await this.assetManager.getThinInstanceMaster(glb, `mon_${mapCfg.id}`);
       if (master && seq === this.loadSeq) {
+        master.setEnabled(false);
         master.parent = this.monsterRoot;
         this.thinMasterMeshes.set(glb, { mesh: master, matrices: [] });
-      }
+      } else if (master && !master.parent) master.dispose();
     }
   }
 
@@ -1662,6 +1694,14 @@ export class MuWorldEngine {
     this.heroAction = 'skill';
     this.attackSwingTimer = 0.34;
     this.flyff.cast(skill);
+    const craft = artisanWeapon(this.currentEquippedWeapon);
+    if (craft && !skill.isBuff) {
+      const socket = this.flyff.actor?.outfit.transformNodes.find(n =>
+        n.name === (craft.classType === 'ELF' ? 'socket_leftHand' : 'socket_rightHand'));
+      const point = socket?.getAbsolutePosition() ?? this.heroRoot.position.add(new Vector3(0, 1, 0));
+      this.addCreatureEffect(point, point, craft.element, 'greeting');
+      soundSynth.playCreatureSfx(craft.element, 'strike');
+    }
     this.spawnSkillVfx(skill);
 
     const dmgRoll = this.computeHeroDamage(skill, bonusStatPower);
@@ -2019,7 +2059,12 @@ export class MuWorldEngine {
       const xp = this.monXp[idx];
       const zen = this.monZen[idx];
       const def = this.currentMap.monsters[this.monDefIdx[idx]];
-      soundSynth.playMonsterHit();
+      const species = def?.speciesId && SPECIES_BY_ID.get(def.speciesId);
+      if (species) {
+        soundSynth.playCreatureSfx(species.power.element, 'defeat');
+        const place = new Vector3(mx, groundY + .4, mz);
+        this.addCreatureEffect(place, place, species.power.element, 'defeat');
+      } else soundSynth.playMonsterHit();
       this.callbacks.onKillMonster(xp, zen, Boolean(def?.isBoss));
       this.maybeSpawnLoot(mx, mz, zen);
     }
@@ -2589,7 +2634,35 @@ export class MuWorldEngine {
     }
   }
 
+  greetNpc(id: string) {
+    const npc = this.activeNpcs.find(entry => entry.def.id === id);
+    if (!npc || Math.hypot(npc.def.x - this.heroX, npc.def.z - this.heroZ) > 6.5) return;
+    const element: MonsterElement = npc.def.role === 'blacksmith' ? 'ember' :
+      npc.def.role === 'wizard' ? 'storm' : npc.def.role === 'elf' ? 'venom' : 'light';
+    const position = npc.root.position.add(new Vector3(0, 1.15, 0));
+    this.addCreatureEffect(position, position, element, 'greeting');
+    soundSynth.playCreatureSfx(element, 'greeting');
+  }
+
+  private addCreatureEffect(start: Vector3, target: Vector3, element: MonsterElement, style: Parameters<typeof creatureFx>[5]) {
+    // Keep crowded encounters within the same effect budget as a few duels.
+    if (this.transientFx.length >= 36) return;
+    const node = creatureFx(this.scene, this.fxRoot, start, target, element, style);
+    const life = style === 'bolt' ? .25 : style === 'cleave' ? .28 : .55;
+    this.transientFx.push({
+      node, life, maxLife: life, expandRate: style === 'bolt' ? 0 : .42,
+      spinSpeed: style === 'bolt' || style === 'cleave' ? 0 : 2.4, riseSpeed: style === 'defeat' ? 1.3 : 0,
+    });
+  }
+
   private spawnMonsterPowerFx(mx: number, mz: number, power: MonsterPowerDef) {
+    if (power.element && power.style) {
+      const start = new Vector3(mx, this.getTerrainHeight(mx, mz) + .9, mz);
+      const impact = new Vector3(this.heroX, this.getTerrainHeight(this.heroX, this.heroZ) + .88, this.heroZ);
+      this.addCreatureEffect(start, impact, power.element, power.style);
+      soundSynth.playCreatureSfx(power.element, 'power');
+      return;
+    }
     const colorHex = Number.parseInt(power.colorHex.replace('#', ''), 16) || 0xf97316;
     const my = this.getTerrainHeight(mx, mz) + 1.25;
     const dx = this.heroX - mx;
@@ -2729,6 +2802,7 @@ export class MuWorldEngine {
           } else if (distToHero <= 2.75) {
             this.monAttackCd[idx] = 1.55;
             this.monStrikeAnim[idx] = 0.28;
+            if (power?.element) soundSynth.playCreatureSfx(power.element, 'strike');
             this.flyff.hurt(rolled.damage);
             this.callbacks.onPlayerDamaged(rolled.damage, rolled.isCrit);
             if ((this.activeEffectBonuses.reflectBonusPct ?? 0) > 0) {
@@ -2744,7 +2818,7 @@ export class MuWorldEngine {
         }
       }
 
-      const glb = ARCHETYPE_TO_GLB[def.archetype] || 'mon_bull.glb';
+      const glb = def.speciesId || ARCHETYPE_TO_GLB[def.archetype] || 'mon_bull.glb';
       const bucket = this.thinMasterMeshes.get(glb);
       if (bucket) {
         const my = this.getTerrainHeight(mx, mz);
@@ -2835,9 +2909,11 @@ export class MuWorldEngine {
     for (const entry of this.thinMasterMeshes.values()) {
       if (entry.matrices.length === 0) {
         entry.mesh.thinInstanceCount = 0;
+        entry.mesh.setEnabled(false);
       } else {
         entry.mesh.thinInstanceSetBuffer('matrix', new Float32Array(entry.matrices), 16, false);
         entry.mesh.thinInstanceCount = entry.matrices.length / 16;
+        entry.mesh.setEnabled(true);
       }
     }
     if (this.monShadowMesh) {

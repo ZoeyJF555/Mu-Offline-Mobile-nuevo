@@ -262,6 +262,8 @@ export interface MonsterPowerDef {
   cooldownSec: number;
   colorHex: string;
   effectDebuff?: string;
+  element?: 'stone' | 'ember' | 'frost' | 'storm' | 'venom' | 'void' | 'tide' | 'light';
+  style?: 'cleave' | 'bolt' | 'pulse';
 }
 
 export interface ScaledMonsterStats {
@@ -431,6 +433,7 @@ export type MonsterArchetype =
   | 'boss';
 
 export interface MapMonsterDef {
+  speciesId?: string;
   name: string;
   archetype: MonsterArchetype;
   level: number;

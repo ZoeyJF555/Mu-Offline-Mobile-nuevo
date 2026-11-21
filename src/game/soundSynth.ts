@@ -1,3 +1,4 @@
+import { MONSTER_ELEMENTS, type MonsterElement } from '../data/bestiary';
 import type { AmbientBedKind, SkillVfxKind } from '../types/game';
 
 interface MusicMotif {
@@ -64,12 +65,14 @@ class MuSoundSynth {
 
   private bedSource: AudioBufferSourceNode | null = null;
   private bedGain: GainNode | null = null;
+  private lastCreatureSound = -Infinity;
   private wavCache = new Map<string, Promise<AudioBuffer | null>>();
 
   private playWav(relativeUrl: string, vol = 0.5): boolean {
     const ctx = this.ensureContext();
     if (!ctx || typeof fetch !== 'function') return false;
-    const base = typeof window !== 'undefined' ? new URL(relativeUrl.replace(/^\//, ''), `${window.location.origin}/`).href : relativeUrl;
+    const appBase = new URL(import.meta.env.BASE_URL || './', window.location.href);
+    const base = new URL(relativeUrl.replace(/^\//, ''), appBase).href;
     let p = this.wavCache.get(base);
     if (!p) {
       p = fetch(base)
@@ -350,6 +353,31 @@ class MuSoundSynth {
       osc.start(now);
       osc.stop(now + 0.31);
     });
+  }
+
+  playCreatureSfx(element: MonsterElement, kind: 'strike' | 'power' | 'defeat' | 'greeting') {
+    const ctx = this.ensureContext();
+    if (!ctx || ctx.state !== 'running') return;
+    const now = ctx.currentTime;
+    if (now - this.lastCreatureSound < .08) return;
+    this.lastCreatureSound = now;
+    const pitch = MONSTER_ELEMENTS[element].hz;
+    const duration = kind === 'strike' ? .13 : kind === 'defeat' ? .36 : .27;
+    const detune = kind === 'strike' ? .76 : kind === 'defeat' ? .55 : 1;
+    const osc = ctx.createOscillator(), overtone = ctx.createOscillator(), gain = ctx.createGain();
+    osc.type = ['stone','void','ember'].includes(element) ? 'sawtooth' : 'triangle';
+    overtone.type = 'sine';
+    osc.frequency.setValueAtTime(pitch * detune, now);
+    osc.frequency.exponentialRampToValueAtTime(pitch * (kind === 'greeting' ? 1.42 : .34), now+duration);
+    overtone.frequency.setValueAtTime(pitch*1.49, now);
+    overtone.frequency.exponentialRampToValueAtTime(pitch*.64, now+duration);
+    gain.gain.setValueAtTime(.001, now);
+    gain.gain.linearRampToValueAtTime(Math.max(.001,this.g(kind === 'power' ? .095 : .063)), now+.018);
+    gain.gain.exponentialRampToValueAtTime(.001, now+duration);
+    osc.connect(gain); overtone.connect(gain); gain.connect(ctx.destination);
+    osc.start(); overtone.start();
+    osc.stop(now+duration); overtone.stop(now+duration);
+    overtone.onended = () => { osc.disconnect(); overtone.disconnect(); gain.disconnect(); };
   }
 
   playMonsterHit() {

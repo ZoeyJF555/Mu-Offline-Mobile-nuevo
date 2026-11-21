@@ -1,7 +1,33 @@
-import { Matrix, TransformNode, Vector3, type Scene, type ISceneLoaderAsyncResult } from '@babylonjs/core';
+import { AURORA_WING_NAME, artisanArmor, artisanWeapon, type ArtisanWeapon } from '../../data/artisanEquipment';
+import { buildArtisanWeapon, buildAuroraWings } from './ArtisanWeapon';
+import { Matrix, Mesh, TransformNode, Vector3, VertexBuffer, type AnimationGroup, type Scene, type ISceneLoaderAsyncResult } from '@babylonjs/core';
 import type { MuItem } from '../../types/game';
 import { getWingEvoTier, getWingTargetWidth, type WingEvoTier } from '../worldPhysicsMath';
 import { FlyffCharacter, importGLB, splitGarments } from './runtime.js';
+
+// Flyff's exported wing props have no skeleton or clips. Bend each half
+// about the centerline, leaving the attachment stable. MU uses its own clips.
+function prepareWingFlex(mesh: Mesh): (angle: number) => void {
+  mesh.makeGeometryUnique();
+  const rest = new Float32Array(mesh.getVerticesData(VertexBuffer.PositionKind)!);
+  const restNormals = new Float32Array(mesh.getVerticesData(VertexBuffer.NormalKind)!);
+  const positions = rest.slice(), normals = restNormals.slice();
+  mesh.setVerticesData(VertexBuffer.PositionKind, positions, true);
+  mesh.setVerticesData(VertexBuffer.NormalKind, normals, true);
+  return angle => {
+    for (let i = 0; i < rest.length; i += 3) {
+      const x = rest[i], z = rest[i + 2];
+      const flex = angle * Math.max(-1, Math.min(1, x * 2));
+      const sin = Math.sin(flex), cos = Math.cos(flex);
+      positions[i] = cos * x - sin * z;
+      positions[i + 2] = sin * x + cos * z;
+      normals[i] = cos * restNormals[i] - sin * restNormals[i + 2];
+      normals[i + 2] = sin * restNormals[i] + cos * restNormals[i + 2];
+    }
+    mesh.updateVerticesData(VertexBuffer.PositionKind, positions);
+    mesh.updateVerticesData(VertexBuffer.NormalKind, normals);
+  };
+}
 
 /** One native rig shared by all garments. Item identity selects geometry, not just color. */
 export class EquipmentAppearance {
@@ -9,6 +35,9 @@ export class EquipmentAppearance {
   private generation = 0;
   private disposed = false;
   private wingMount: TransformNode | null = null;
+  private wingFlexers = new Map<string, Array<(angle: number) => void>>();
+  private wingAnimations = new Map<string, AnimationGroup[]>();
+  private activeWingKey: string | undefined;
 
   constructor(private scene: Scene, private base: string, private actor: FlyffCharacter, private library: any) {}
 
@@ -29,8 +58,46 @@ export class EquipmentAppearance {
       mount.position.set(0, 1.05, -0.1);
     }
     this.wingMount = mount;
-    (this.actor as any).wingsNode = mount;
+    this.actor.wingsNode = mount;
     return mount;
+  }
+
+  private useArtisanWeapon(weapon: ArtisanWeapon) {
+    const key = `weapon:${weapon.key}`;
+    if (!this.loaded.has(key)) {
+      const socket = this.actor.outfit.transformNodes.find(node =>
+        node.name === (weapon.classType === 'ELF' ? 'socket_leftHand' : 'socket_rightHand'));
+      if (!socket) throw new Error('No se encontró el anclaje de arma');
+      const mesh = buildArtisanWeapon(this.scene, weapon);
+      mesh.name = `equip_weapon_${key}`;
+      mesh.parent = socket;
+      this.trackCreatedMesh(key, mesh);
+    }
+    return key;
+  }
+
+  private trackCreatedMesh(key: string, mesh: Mesh) {
+    mesh.metadata = { equipmentFile: key, visualSelected: false };
+    mesh.setEnabled(false);
+    this.actor.outfit.meshes.push(mesh);
+    this.actor.ownedMaterials.add(mesh.material);
+    this.loaded.set(key, Promise.resolve({
+      meshes: [mesh], transformNodes: [], skeletons: [], animationGroups: [],
+      particleSystems: [], geometries: [], lights: [], spriteManagers: [],
+    }));
+  }
+
+  private useAuroraWings() {
+    const key = 'wings:artisan-aurora';
+    if (!this.loaded.has(key)) {
+      const mesh = buildAuroraWings(this.scene);
+      mesh.name = `equip_wings_${key}`;
+      mesh.parent = this.ensureWingMount();
+      mesh.alwaysSelectAsActiveMesh = true;
+      this.wingFlexers.set(key, [prepareWingFlex(mesh)]);
+      this.trackCreatedMesh(key,mesh);
+    }
+    return key;
   }
 
   private async load(file: string, slot?: string, evoTier: WingEvoTier = 1) {
@@ -75,6 +142,7 @@ export class EquipmentAppearance {
           let lMin = new Vector3(Infinity, Infinity, Infinity);
           let lMax = new Vector3(-Infinity, -Infinity, -Infinity);
           let hasVerts = false;
+          const points: Vector3[] = [];
           const v = new Vector3();
           const p = new Vector3();
           const skelPos = new Vector3();
@@ -120,6 +188,7 @@ export class EquipmentAppearance {
               lMin = Vector3.Minimize(lMin, p);
               lMax = Vector3.Maximize(lMax, p);
               hasVerts = true;
+              points.push(p.clone());
             }
           }
 
@@ -131,17 +200,27 @@ export class EquipmentAppearance {
             const scale = Math.max(0.16, Math.min(targetWidth / spanX, targetHeight / spanY));
             holder.scaling.setAll(scale);
 
-            const cx = ((lMin.x + lMax.x) * 0.5) * scale;
-            const cy = ((lMin.y + lMax.y) * 0.5) * scale;
-            const targetCenterY = isOpenMu ? 0.14 : 0.12;
-            holder.position.set(-cx, targetCenterY - cy, 0.04 - lMin.z * scale);
+            const centerX = (lMin.x + lMax.x) * 0.5;
+            const rootPoints = points.filter(p =>
+              Math.abs(p.x - centerX) < spanX * 0.18 && p.z < lMin.z + (lMax.z - lMin.z) * 0.3);
+            const rootY = rootPoints.length
+              ? rootPoints.reduce((sum, p) => sum + p.y, 0) / rootPoints.length
+              : (lMin.y + lMax.y) * 0.5;
+            holder.position.set(-centerX * scale, -rootY * scale, 0.04 - lMin.z * scale);
           }
 
+          for (const group of result.animationGroups) group.stop();
+          this.wingAnimations.set(key, result.animationGroups);
           result.meshes
             .filter((m) => m.getTotalVertices() > 0)
             .forEach((mesh, i) => {
               mesh.name = `equip_wings_${key}_${i}`;
               mesh.alwaysSelectAsActiveMesh = true;
+              if (!isOpenMu && mesh instanceof Mesh && !mesh.skeleton && mesh.isVerticesDataPresent(VertexBuffer.NormalKind)) {
+                const flexers = this.wingFlexers.get(key) ?? [];
+                flexers.push(prepareWingFlex(mesh));
+                this.wingFlexers.set(key, flexers);
+              }
               if (mesh.material) {
                 const mats: any[] = (mesh.material as any).subMaterials || [mesh.material];
                 for (const mat of mats) {
@@ -219,19 +298,28 @@ export class EquipmentAppearance {
       let file: string | undefined;
       let evoTier: WingEvoTier = 1;
       if (slot === 'wings') {
+        if (item.name === AURORA_WING_NAME) {
+          selected.set(slot, this.useAuroraWings());
+          continue;
+        }
         evoTier = getWingEvoTier(item.name, item.evoTier);
         file =
           this.library.wings?.[item.name] ??
           this.library.wings?.['Alas de Ángel MU (OpenMU)'] ??
           'equipo/wing_flyff_feather.glb';
       } else if (slot === 'weapon' || slot === 'offhand') {
+        const custom = slot === 'weapon' && artisanWeapon(item.name);
+        if (custom) {
+          selected.set(slot, this.useArtisanWeapon(custom));
+          continue;
+        }
         file =
           this.library.weapons[item.name] ??
           (slot === 'offhand'
             ? this.library.weapons[item.category === 'weapon' ? 'Espada Rúnica' : 'Escudo Dragón']
             : undefined);
       } else {
-        file = this.library.sets[item.setName]?.[this.actor.config.sex];
+        file = this.library.sets[artisanArmor(item.setName)?.base ?? item.setName]?.[this.actor.config.sex];
       }
       if (file) {
         const asset = await this.load(file, ['weapon', 'offhand', 'wings'].includes(slot) ? slot : undefined, evoTier);
@@ -240,6 +328,14 @@ export class EquipmentAppearance {
     }
 
     if (this.disposed || generation !== this.generation) return;
+    const wingKey = selected.get('wings');
+    if (wingKey !== this.activeWingKey) {
+      for (const group of this.wingAnimations.get(this.activeWingKey ?? '') ?? []) group.stop();
+      for (const group of this.wingAnimations.get(wingKey ?? '') ?? []) group.start(true, 0.92);
+      const wingFlexers = this.wingFlexers.get(wingKey ?? '');
+      this.actor.wingFlex = wingFlexers ? angle => wingFlexers.forEach(flex => flex(angle)) : null;
+      this.activeWingKey = wingKey;
+    }
     for (const mesh of this.actor.outfit.meshes) {
       const slot = mesh.name.match(/^equip_(helmet|torso|pants|hands|feet|weapon|offhand|wings)_/)?.[1];
       if (!slot) continue;
@@ -265,6 +361,9 @@ export class EquipmentAppearance {
   dispose() {
     this.disposed = true;
     this.generation++;
+    this.actor.wingFlex = null;
+    this.wingFlexers.clear();
+    this.wingAnimations.clear();
     this.wingMount?.dispose();
     this.wingMount = null;
     this.loaded.forEach((p) =>
