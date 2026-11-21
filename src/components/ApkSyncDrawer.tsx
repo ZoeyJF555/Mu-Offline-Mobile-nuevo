@@ -18,7 +18,6 @@ import { generateAndroidApkKitZip } from '../services/apkKitGenerator';
 import { cloudSyncManager } from '../services/cloudSyncManager';
 import {
   applyWebOtaUpdate,
-  bundledApkVersion,
   checkForGithubOtaUpdate,
   getConfiguredCloudApiUrl,
   getLinkedGithubRepoSlug,
@@ -102,9 +101,7 @@ export const ApkSyncDrawer: React.FC<ApkSyncDrawerProps> = ({
   const handleCheckAndApplyUpdate = async () => {
     setNotice(null);
     const status = await runOtaCheck();
-    if (status.updateAvailable && bundledApkVersion) {
-      setNotice(status.updateReason);
-    } else if (status.updateAvailable) {
+    if (status.updateAvailable) {
       setNotice(
         `${status.updateReason || 'Actualización encontrada en GitHub.'} Recargando versión más reciente...`,
       );
